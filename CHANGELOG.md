@@ -19,6 +19,13 @@ All notable changes are recorded here. The format follows
   Preferences when yt-dlp is missing.
 - Twitch: a "Set up Twitch to see live channels" entry that opens Preferences,
   and live channels (music and ASMR) listed once signed in.
+- Starting something (entering a room, Tune in, Play as ambience, the mini player)
+  opens Now at once with "Connecting to X…" and a spinner, disables the pressed
+  control, and on failure shows a plain-words card with Try again and Back; the
+  previous state stays intact.
+- Mix: with no ambience the row reads "No ambience" with a Choose ambience
+  button, and the level slider and Mute stay hidden until a source exists.
+  Play as ambience shows a toast with Undo.
 - `tests/probes/listening-o6-timing.py` times selection and audits GTK-thread work.
 
 ### Changed
@@ -40,6 +47,7 @@ All notable changes are recorded here. The format follows
   The room videos change as a result.
 - One click on a room card previews it immediately (the double-click wait is gone);
   a quick second click, double-click or Enter still enters.
+- Try again appears in a Mix row's menu only when that layer failed.
 - Favourites, the World radio cache and Twitch channels are read off the GTK thread.
 
 ## [2.3.1] - 2026-11-18

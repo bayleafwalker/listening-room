@@ -149,6 +149,7 @@ class LayerRow(Gtk.Box):
         if row['failed']:
             self.subtitle.add_css_class('error')
         self.next_item.set_visible(bool(row.get('can_next')))
+        self.retry_item.set_visible(bool(row['failed']))
         self.stop_item.set_visible(not row['closed'])
         if self.scale is not None:
             if 'volume' not in self.timers:

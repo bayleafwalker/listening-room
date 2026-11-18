@@ -35,7 +35,13 @@ search result to start from, and the mood choices.
 Mix sheet blends music, the room's sound bed and an optional layer. Change… on
 Music or Ambience opens Listen to choose a source; for Ambience every result's
 action is Play as ambience (offline sounds, radio, live channels, YouTube, the
-library), and choosing one returns you to the Mix.
+library), and choosing one returns you to the Mix with an "Ambience: name"
+toast and an Undo. With no ambience the row says "No ambience" with a Choose
+ambience button, and the level and Mute controls stay hidden until one plays.
+Try again appears in a row's menu only when that layer failed. Starting anything
+(entering a room, Tune in, Play as ambience, the mini player) opens Now at once
+with "Connecting to X…" and a spinner; if it fails, a plain-words card offers
+Try again or Back and the previous state is kept.
 
 ![The Mix sheet](docs/screenshots/06-mix.png)
 
