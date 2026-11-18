@@ -267,5 +267,3 @@ their normal player controls.
 `tests/probes/listening-hub-mix.py` checks real systemd/mpv replacement,
 independent layers, retained levels and unchanged master volume with local HTTP
 fixtures and null audio. It does not establish Twitch service compatibility.
-See [scene motion passes](../scene-reviews/scene-pass-review.md) for the per-room
-weather, light, fire, steam and water decisions and remaining visual limits.

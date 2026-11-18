@@ -3,7 +3,8 @@ Room artwork and prompts: CC0-1.0 (public domain dedication)
 The images in this directory and the prompt files (prompts-*.json) were
 generated with an AI image tool from the prompts recorded here. To the extent
 any rights exist, they are dedicated to the public domain under CC0 1.0
-Universal. Full text: ../../LICENSES/CC0-1.0.txt
+Universal. Some images carry the generator's embedded C2PA provenance
+manifest, which records only the tool and creation date. Full text: ../../LICENSES/CC0-1.0.txt
 https://creativecommons.org/publicdomain/zero/1.0/
 
 This notice also covers the scene tuning files (../scene_tuning/), the scene

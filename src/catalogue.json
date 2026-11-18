@@ -212,7 +212,7 @@
       "kind": "app",
       "command": ["listening-hub-jellyfin"],
       "website": "https://github.com/jeffvli/feishin",
-      "description": "Browse your Jellyfin music library in a dedicated desktop player. The Kotona server is prefilled; sign in in the app.",
+      "description": "Browse your Jellyfin music library in a dedicated desktop player. A configured server is prefilled; sign in in the app.",
       "tags": ["library", "music", "Jellyfin", "Feishin"]
     },
     {
