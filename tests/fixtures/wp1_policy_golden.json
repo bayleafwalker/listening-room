@@ -1,0 +1,606 @@
+{
+ "generated_from": "e306ee6 (baseline main) via tests/wp1_harness.py run_policy_scenario",
+ "scenarios": {
+  "call and disconnect together": [
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": true,
+    "calls": [
+     [
+      "music",
+      "pause",
+      null
+     ],
+     [
+      "atmosphere",
+      "pause",
+      null
+     ],
+     [
+      "picture",
+      "pause",
+      null
+     ],
+     [
+      "extra_video",
+      "pause",
+      null
+     ]
+    ],
+    "disconnect": true,
+    "duck": true,
+    "ducked": [],
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": true
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": true,
+    "resume_offer": true
+   }
+  ],
+  "call seen only as capture stream (phone role)": [
+   {
+    "call_active": true,
+    "calls": [
+     [
+      "music",
+      "volume",
+      10.0
+     ],
+     [
+      "atmosphere",
+      "volume",
+      4.0
+     ]
+    ],
+    "disconnect": false,
+    "duck": true,
+    "ducked": [
+     "atmosphere",
+     "music"
+    ],
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [
+     [
+      "music",
+      "volume",
+      50.0
+     ],
+     [
+      "atmosphere",
+      "volume",
+      20.0
+     ]
+    ],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   }
+  ],
+  "corked call stream is not a call": [
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   }
+  ],
+  "duck on call (audio.json only)": [
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": true,
+    "calls": [
+     [
+      "music",
+      "volume",
+      10.0
+     ],
+     [
+      "atmosphere",
+      "volume",
+      4.0
+     ]
+    ],
+    "disconnect": false,
+    "duck": true,
+    "ducked": [
+     "atmosphere",
+     "music"
+    ],
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [
+     [
+      "music",
+      "volume",
+      50.0
+     ],
+     [
+      "atmosphere",
+      "volume",
+      20.0
+     ]
+    ],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   }
+  ],
+  "duck on call (audio.json) and restore": [
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": true,
+    "calls": [
+     [
+      "music",
+      "volume",
+      10.0
+     ],
+     [
+      "atmosphere",
+      "volume",
+      4.0
+     ]
+    ],
+    "disconnect": false,
+    "duck": true,
+    "ducked": [
+     "atmosphere",
+     "music"
+    ],
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": true,
+    "calls": [],
+    "disconnect": false,
+    "duck": true,
+    "ducked": [
+     "atmosphere",
+     "music"
+    ],
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [
+     [
+      "music",
+      "volume",
+      50.0
+     ],
+     [
+      "atmosphere",
+      "volume",
+      20.0
+     ]
+    ],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   }
+  ],
+  "duck on call (controller setting only)": [
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": true,
+    "calls": [
+     [
+      "music",
+      "volume",
+      10.0
+     ],
+     [
+      "atmosphere",
+      "volume",
+      4.0
+     ]
+    ],
+    "disconnect": false,
+    "duck": false,
+    "ducked": [
+     "atmosphere",
+     "music"
+    ],
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [
+     [
+      "music",
+      "volume",
+      50.0
+     ],
+     [
+      "atmosphere",
+      "volume",
+      20.0
+     ]
+    ],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   }
+  ],
+  "duck on call while paused-by-disconnect already": [
+   {
+    "call_active": false,
+    "calls": [
+     [
+      "music",
+      "pause",
+      null
+     ],
+     [
+      "atmosphere",
+      "pause",
+      null
+     ],
+     [
+      "picture",
+      "pause",
+      null
+     ],
+     [
+      "extra_video",
+      "pause",
+      null
+     ]
+    ],
+    "disconnect": true,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": true
+   },
+   {
+    "call_active": true,
+    "calls": [],
+    "disconnect": true,
+    "duck": true,
+    "ducked": [],
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": true
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": true,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": true
+   }
+  ],
+  "music role stream is not a call": [
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   }
+  ],
+  "no policy enabled: nothing happens even with a call and no output": [
+   {
+    "call_active": true,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": true,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": true,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   }
+  ],
+  "pactl failure never pauses": [
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": true,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": true,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [
+     [
+      "music",
+      "pause",
+      null
+     ],
+     [
+      "atmosphere",
+      "pause",
+      null
+     ],
+     [
+      "picture",
+      "pause",
+      null
+     ],
+     [
+      "extra_video",
+      "pause",
+      null
+     ]
+    ],
+    "disconnect": true,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": true
+   }
+  ],
+  "pause disabled: no pause when output vanishes": [
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   }
+  ],
+  "pause-on-disconnect then reconnect": [
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": false
+   },
+   {
+    "call_active": false,
+    "calls": [
+     [
+      "music",
+      "pause",
+      null
+     ],
+     [
+      "atmosphere",
+      "pause",
+      null
+     ],
+     [
+      "picture",
+      "pause",
+      null
+     ],
+     [
+      "extra_video",
+      "pause",
+      null
+     ]
+    ],
+    "disconnect": true,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": true
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": true,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": true
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": true,
+    "resume_offer": true
+   },
+   {
+    "call_active": false,
+    "calls": [],
+    "disconnect": false,
+    "duck": false,
+    "ducked": null,
+    "has_error": false,
+    "reconnected": false,
+    "resume_offer": true
+   }
+  ]
+ }
+}
