@@ -353,8 +353,16 @@ The six offline atmospheres are original procedural 40-second sound beds: rain
 on glass, fireplace, distant thunder, forest wind, train carriage and a
 synthetic nonverbal café murmur. They use no external recordings or sampled
 voices. `render_atmospheres.py` creates WAV files and CC0 provenance/hashes
-during packaging. Signal/loop tests and null-output decoding check technical
-properties, not perceptual listening quality.
+during packaging. Each bed is built from the events that define it (droplets,
+crackles, thunder rolls, gusts and leaf rustle, paired rail-joint clacks,
+formant-shaped babble and clinks) rather than from filtered noise, and every bed
+is scaled to the same level: RMS 0.08 of full scale (about -22 dBFS) with peaks
+softly limited below 0.65. `tests/test_listening_atmosphere_character.py`
+measures spectral flatness and tilt, onset rate, low-frequency rumble events,
+gust-rate modulation, clack periodicity and voiced formant texture, and checks
+that the six beds differ, loop without a click and render byte-identically. Those
+are objective checks, not a judgement of how real the sounds are; procedural
+synthesis stays an approximation of recordings.
 
 ## Optional online connections
 

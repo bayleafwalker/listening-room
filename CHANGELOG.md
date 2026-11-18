@@ -3,6 +3,22 @@
 All notable changes are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+- The six offline sounds now sound like their names. Each is synthesized from the
+  events that define it instead of a filtered noise bed: dense droplets and
+  runnels for rain, a warm roar with crackles, pops and hiss for the fireplace,
+  long irregular rolls over light rain for thunder, gusts that drive leaf rustle
+  for forest wind, a swaying rumble with paired rail-joint clacks for the train,
+  and unintelligible formant-shaped babble with cup clinks for the café. Still
+  original procedural synthesis, CC0, with the same names and file names; levels
+  are matched across the six. Descriptions were tightened to match.
+
+### Added
+- Objective checks for the sounds (spectrum, event structure, distinctness, loop
+  seam, level, determinism): `tests/test_listening_atmosphere_character.py`.
+
 ## [2.3.1] - 2026-11-18
 
 First public release. The application had been developed privately; this is

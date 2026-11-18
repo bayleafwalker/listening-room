@@ -7,17 +7,17 @@ from pathlib import Path
 
 SOUNDS = (
     {'id': 'rain-glass', 'name': 'Rain on glass', 'outdoor': True,
-     'description': 'A steady soft shower with scattered drops on sheltered glass.'},
+     'description': 'Dense small droplets on sheltered glass, with a few larger drops and runnels over a soft wash.'},
     {'id': 'fireplace', 'name': 'Fireplace', 'outdoor': False,
-     'description': 'A low fire with scattered, restrained crackles.'},
+     'description': 'A low warm roar with irregular crackles and pops, and an occasional hiss.'},
     {'id': 'distant-thunder', 'name': 'Distant thunder', 'outdoor': True,
-     'description': 'Deep, slow thunder rolls behind a light rain texture.'},
+     'description': 'Low, slow rumbles that roll and fade at irregular intervals over light rain.'},
     {'id': 'forest-wind', 'name': 'Forest wind', 'outdoor': True,
-     'description': 'Slow gusts through leaves, without bird calls or voices.'},
+     'description': 'Slow gusts with leaf rustle that rises and falls with them; no bird calls or voices.'},
     {'id': 'train-carriage', 'name': 'Train carriage', 'outdoor': False,
-     'description': 'A muffled carriage rumble and softly repeating rail joints.'},
+     'description': 'A low carriage rumble with a gentle sway and rail-joint clacks in pairs.'},
     {'id': 'cafe-murmur', 'name': 'Café · nonverbal murmur', 'outdoor': False,
-     'description': 'Synthetic room rustle and soft cup-like clinks; no recorded voices.'},
+     'description': 'Synthetic, unintelligible babble with soft cup clinks and the odd chair movement; no recorded voices.'},
 )
 
 
