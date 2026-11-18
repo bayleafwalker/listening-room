@@ -13,6 +13,7 @@ import tempfile
 import time
 import urllib.parse
 
+import mpv_ipc
 from visual_scenes import SCENES
 
 MODES = ('ambience', 'video')
@@ -177,17 +178,12 @@ def source(value):
 
 def _ipc(command, mode='ambience', timeout=1):
     path = _runtime() / (_mode(mode) + '.sock')
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(timeout)
-        connection.connect(str(path))
-        connection.sendall((json.dumps({'command': command, 'request_id': 1}) + '\n').encode())
-        for line in connection.makefile('rb'):
-            message = json.loads(line)
-            if message.get('request_id') == 1:
-                if message.get('error') != 'success':
-                    raise AmbienceError('Video player: ' + str(message.get('error')))
-                return message.get('data')
-        raise AmbienceError('The video window closed')
+    try:
+        return mpv_ipc.call(path, command, timeout)
+    except mpv_ipc.Rejected as error:
+        raise AmbienceError('Video player: ' + str(error)) from None
+    except mpv_ipc.Closed:
+        raise AmbienceError('The video window closed') from None
 
 
 def state(mode='ambience'):

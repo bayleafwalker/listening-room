@@ -4,6 +4,7 @@ import concurrent.futures
 import fcntl
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import threading
 from room_session import Controller, SessionError
 from session_client import MAX_MESSAGE, socket_path
 
+LOG = logging.getLogger('listening-room-session')
 MPRIS_NAME = 'org.mpris.MediaPlayer2.ListeningRoom'
 MPRIS_PATH = '/org/mpris/MediaPlayer2'
 ROOT_INTERFACE = 'org.mpris.MediaPlayer2'
@@ -318,6 +320,44 @@ def make_server(path, service):
     return server, descriptor
 
 
+def refresh_loop(controller, stopping, interval=1):
+    """Refresh and poll the audio policy until `stopping` is set.
+
+    Nothing an iteration raises ends the loop: the error is recorded in
+    errors['refresh'], logged once per distinct error, and the next iteration
+    runs as usual. A later clean iteration clears the error it recorded.
+    """
+    logged = set()
+    recorded = None
+    while not stopping.is_set():
+        try:
+            controller.refresh()
+        except Exception as error:
+            recorded = '%s: %s' % (type(error).__name__, error)
+            with controller.lock:
+                controller.errors['refresh'] = recorded
+            if recorded not in logged:
+                if len(logged) >= 50:
+                    logged.clear()
+                logged.add(recorded)
+                LOG.error('room refresh failed: %s', recorded, exc_info=True)
+        else:
+            if recorded is not None:
+                with controller.lock:
+                    if controller.errors.get('refresh') == recorded:
+                        del controller.errors['refresh']
+                recorded = None
+        try:
+            controller.poll_policy()
+        except Exception as error:
+            controller.policy_status = {'error': str(error)}
+            message = 'audio policy poll failed: %s: %s' % (type(error).__name__, error)
+            if message not in logged:
+                logged.add(message)
+                LOG.error(message, exc_info=True)
+        stopping.wait(interval)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Local Listening Room session controller')
     parser.add_argument('--socket')
@@ -332,15 +372,7 @@ def main():
     stopping = threading.Event()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    def refresh():
-        while not stopping.is_set():
-            controller.refresh()
-            try:
-                controller.poll_policy()
-            except Exception as error:
-                controller.policy_status = {'error': str(error)}
-            stopping.wait(1)
-    threading.Thread(target=refresh, name='room-refresh', daemon=True).start()
+    threading.Thread(target=refresh_loop, args=(controller, stopping), name='room-refresh', daemon=True).start()
     def stop(*_):
         stopping.set()
         if loop is not None:

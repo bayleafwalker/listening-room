@@ -16,6 +16,7 @@ import urllib.parse
 import uuid
 
 import atmosphere_catalogue
+import mpv_ipc
 
 UNIT = 'listening-hub-overlay.service'
 _mix_generation = 0
@@ -127,20 +128,13 @@ def _run(args, check=True):
 
 def _ipc(command, socket_path=None):
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(1)
-            connection.connect(str(socket_path or _runtime()))
-            connection.sendall((json.dumps({'command': command, 'request_id': 1}) + '\n').encode())
-            with connection.makefile('rb') as response:
-                for line in response:
-                    message = json.loads(line)
-                    if message.get('request_id') == 1:
-                        if message.get('error') != 'success':
-                            raise LayerError('Audio layer player rejected the command')
-                        return message.get('data')
+        return mpv_ipc.call(socket_path or _runtime(), command, 1)
+    except mpv_ipc.Rejected:
+        raise LayerError('Audio layer player rejected the command') from None
+    except mpv_ipc.Closed:
+        raise LayerError('Audio layer player closed') from None
     except (OSError, ValueError) as error:
         raise LayerError('Audio layer player is unavailable') from error
-    raise LayerError('Audio layer player closed')
 
 
 def _volume(value):

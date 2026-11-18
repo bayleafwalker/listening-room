@@ -21,6 +21,7 @@ import time
 import listening_hub as hub
 import ambience
 import audio_layers
+import mpv_ipc
 import room_catalogue
 import station_engine
 import metadata_store
@@ -71,12 +72,20 @@ class Backend:
     """Small adapter to existing owned players; never adopts a random MPRIS app."""
     def __init__(self):
         self.remote = None
+        self._radio_socket = None
 
     def layers(self):
-        music = hub.radio_info()
-        audio = hub.radio_audio_state()
-        music = dict(music or {}, **audio)
+        # One connection per player and one state.json read for the whole
+        # refresh; state.json is rewritten only when the radio audio changed.
+        with mpv_ipc.shared():
+            return self._layers()
+
+    def _layers(self):
         state = hub.state()
+        self._radio_socket = hub.radio_socket(state)
+        music = hub.radio_info(state)
+        audio = hub.radio_audio_state(current=state)
+        music = dict(music or {}, **audio)
         music.update(source_id=state.get('radio_source_id'), name=state.get('radio_name'),
                      url=state.get('radio_url') or state.get('radio_source_url'))
         music.setdefault('status', 'Stopped')
@@ -225,7 +234,8 @@ class Backend:
         return actual
 
     def atmosphere_details(self):
-        return audio_layers.media_details()
+        with mpv_ipc.shared():
+            return audio_layers.media_details()
 
     @staticmethod
     def _direct_source(selection):
@@ -280,12 +290,15 @@ class Backend:
         if self.remote:
             return {}
         details = {}
-        for key, prop in (('position', 'time-pos'), ('duration', 'duration'), ('seekable', 'seekable'),
-                          ('eof_reached', 'eof-reached')):
-            try:
-                details[key] = hub.ipc(['get_property', prop], timeout=.3)
-            except (OSError, ValueError, hub.HubError):
-                pass
+        # The socket the same refresh's layers() read, so no second state.json read.
+        path = self._radio_socket
+        with mpv_ipc.shared():
+            for key, prop in (('position', 'time-pos'), ('duration', 'duration'), ('seekable', 'seekable'),
+                              ('eof_reached', 'eof-reached')):
+                try:
+                    details[key] = hub.ipc(['get_property', prop], timeout=.3, socket_path=path)
+                except (OSError, ValueError, hub.HubError):
+                    pass
         return details
 
 
@@ -322,6 +335,7 @@ class Controller:
         self.ducked = None
         self.duck_manual = set()
         self.policy_status = {}
+        self._file_cache = {}
         self.media = {}
         self.callbacks = []
         self.lighting_timer = None
@@ -667,10 +681,29 @@ class Controller:
         return [v for v in values if isinstance(v, dict) and isinstance(v.get('id'), str)
                 and isinstance(v.get('name'), str) and isinstance(v.get('music'), dict)] if isinstance(values, list) else []
 
+    def _cached_file(self, name, load):
+        """`load()` for a saved file, re-reading only after the file changed.
+
+        The key is mtime, size and inode (saves replace the file atomically). A
+        file modified within the last two seconds is not trusted yet, because
+        mtime is coarse; it is read again until it has settled.
+        """
+        try:
+            info = (self.directory / name).stat()
+            key = (info.st_mtime_ns, info.st_size, info.st_ino)
+        except OSError:
+            key = None
+        cached = self._file_cache.get(name)
+        if cached and cached[0] == key and cached[1]:
+            return cached[2]
+        value = load()
+        self._file_cache[name] = (key, key is None or time.time_ns() - key[0] > 2_000_000_000, value)
+        return value
+
     def snapshot(self):
         with self.lock:
             return _copy({'active': self.active, 'last_session': self.last_session,
-                          'variants': self.variants(), 'layers': self.live, 'settings': self.settings,
+                          'variants': self._cached_file('room-variants.json', self.variants), 'layers': self.live, 'settings': self.settings,
                           'recent': self.recent, 'resume_offer': self.resume_offer,
                           'transition': self.transition, 'errors': self.errors,
                           'media': self.media, 'audio_policy': self.policy_status,
@@ -678,7 +711,7 @@ class Controller:
                           'now': self.clock(), 'timers': self._timers(),
                           'levels': {name: self._level_of(name, (self.live.get(name) or {}).get('volume'))
                                      for name in ('music', 'atmosphere')},
-                          'stations': self.stations(),
+                          'stations': self._cached_file('stations.json', self.stations),
                           'station_recent': self.station_history,
                           'station': ({'definition': self.program.station, 'upcoming': ([self.program.override] if self.program.override else []) + self.program.queue,
                                        'recent': self.program.recent,
@@ -1663,7 +1696,7 @@ class Controller:
     def poll_policy(self):
         try:
             import audio_devices
-            state = audio_devices.poll_policy()
+            state = audio_devices.poll_policy(detect_calls=bool(self.settings.get('duck_on_call')))
         except (ImportError, OSError, ValueError) as error:
             self.policy_status = {'error': str(error)}
             return

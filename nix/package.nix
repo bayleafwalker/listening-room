@@ -121,6 +121,7 @@ stdenvNoCC.mkDerivation {
     python3 tests/test_listening_metadata_cli.py
     python3 tests/test_listening_provider_auth.py
     python3 tests/test_listening_room_volume.py
+    python3 tests/test_listening_controller_cost.py
     python3 tests/test_listening_next_model.py
     python3 tests/test_listening_next_glance.py
     python3 tests/test_listening_render_cache.py

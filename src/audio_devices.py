@@ -86,9 +86,9 @@ def configure(preferred_output=Ellipsis, pause_on_disconnect=None, duck_on_call=
         return result
 
 
-def outputs():
+def outputs(with_default=True):
     sinks = _list('sinks')
-    default = _run(['pactl', 'get-default-sink']).strip()
+    default = _run(['pactl', 'get-default-sink']).strip() if with_default else None
     result = []
     for sink in sinks:
         name = sink.get('name')
@@ -200,15 +200,41 @@ def status():
     return result
 
 
-def poll_policy():
-    """Read policy state. The controller owns pausing/ducking and restoration."""
+def poll_policy(detect_calls=False):
+    """Read policy state. The controller owns pausing/ducking and restoration.
+
+    Asks PipeWire only for what an enabled policy needs: output presence for
+    pause-on-disconnect, call streams for ducking (`detect_calls` adds that for
+    a caller whose own settings enable it). Each stream list is read once. With
+    both policies off nothing is run.
+    """
     global _previous_output
-    result = status()
+    result = dict(settings(), available=False, outputs=[], owned_streams=[], call_active=False,
+                  preferred_available=False, error=None,
+                  call_detection='Only applications declaring a Communication or Phone stream role')
     preferred = result['preferred_output']
-    result['disconnected'] = bool(result['available'] and preferred and not result['preferred_available'])
+    watch_output = bool(result['pause_on_disconnect'] and preferred)
+    watch_calls = bool(result['duck_on_call'] or detect_calls)
+    if not (watch_output or watch_calls):
+        _previous_output = None
+        result.update(disconnected=False, disconnect=False, reconnected=False, duck=False)
+        return result
+    try:
+        if watch_output:
+            result['outputs'] = outputs(with_default=False)
+            result['preferred_available'] = any(x['name'] == preferred for x in result['outputs'])
+        if watch_calls:
+            # Active call playback OR capture can declare the communication role.
+            result['call_active'] = _call_active(_list('source-outputs')) or _call_active(_list('sink-inputs'))
+        result['available'] = True
+        if not watch_output:
+            result['preferred_available'] = not preferred
+    except DeviceError as error:
+        result['error'] = str(error)
+    result['disconnected'] = bool(result['available'] and watch_output and not result['preferred_available'])
     result['disconnect'] = result['disconnected'] and result['pause_on_disconnect']
     result['reconnected'] = bool(_previous_output == (preferred, False) and result['preferred_available'])
-    _previous_output = (preferred, result['preferred_available'])
+    _previous_output = (preferred, result['preferred_available']) if watch_output else None
     result['duck'] = result['duck_on_call'] and result['call_active']
     return result
 

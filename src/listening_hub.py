@@ -19,6 +19,8 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+import mpv_ipc
+
 STATE = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'listening-hub'
 RUNTIME = Path(os.environ['XDG_RUNTIME_DIR']) / 'listening-hub' if os.environ.get('XDG_RUNTIME_DIR') else None
 SOCKET = RUNTIME / 'radio.sock' if RUNTIME else None
@@ -110,8 +112,8 @@ def radio_unit():
     return unit if re.fullmatch(r'listening-hub-radio(?:-[0-9a-f]{12})?\.service', str(unit)) else 'listening-hub-radio.service'
 
 
-def radio_socket():
-    name = state().get('radio_socket')
+def radio_socket(current=None):
+    name = (state() if current is None else current).get('radio_socket')
     if RUNTIME and isinstance(name, str) and re.fullmatch(r'radio-[0-9a-f]{12}\.sock', name):
         return RUNTIME / name
     return SOCKET
@@ -120,22 +122,25 @@ def radio_socket():
 def ipc(command, timeout=2, socket_path=None):
     if SOCKET is None:
         raise HubError('XDG_RUNTIME_DIR is required for radio playback')
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(timeout)
-        s.connect(str(socket_path or radio_socket()))
-        s.sendall((json.dumps({'command': command, 'request_id': 1}) + '\n').encode())
-        f = s.makefile('rb')
-        for line in f:
-            message = json.loads(line)
-            if message.get('request_id') == 1:
-                if message.get('error') != 'success':
-                    raise HubError('mpv: ' + clean(message.get('error')))
-                return message.get('data')
-        raise HubError('mpv closed its connection')
+    try:
+        return mpv_ipc.call(socket_path or radio_socket(), command, timeout)
+    except mpv_ipc.Rejected as error:
+        raise HubError('mpv: ' + clean(str(error))) from None
+    except mpv_ipc.Closed:
+        raise HubError('mpv closed its connection') from None
 
-def radio_audio_state(observe=True):
-    """Persist only the owned radio player's real volume and mute state."""
-    saved = state().get('radio_audio', {})
+def radio_audio_state(observe=True, current=None):
+    """Persist only the owned radio player's real volume and mute state.
+
+    `current` is an already-read state.json; state.json is rewritten only when
+    the observed audio differs from what it holds.
+    """
+    # Without a state snapshot each read resolves the player's socket itself.
+    where = {} if current is None else {'socket_path': radio_socket(current)}
+    if current is None:
+        current = state()
+    stored = current.get('radio_audio')
+    saved = current.get('radio_audio', {})
     saved = dict(saved) if isinstance(saved, dict) else {}
     volume = saved.get('volume')
     if isinstance(volume, bool) or not isinstance(volume, (int, float)) or not math.isfinite(volume) or not 0 <= volume <= 100:
@@ -145,26 +150,29 @@ def radio_audio_state(observe=True):
     if observe:
         for key, prop in (('volume', 'volume'), ('muted', 'mute')):
             try:
-                value = ipc(['get_property', prop])
+                value = ipc(['get_property', prop], **where)
                 if key == 'volume' and not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value) and 0 <= value <= 100:
                     saved[key] = value
                 elif key == 'muted' and isinstance(value, bool):
                     saved[key] = value
             except (OSError, ValueError, HubError, AttributeError):
                 pass
-        if saved:
+        if saved and saved != stored:
             update_state(radio_audio=saved)
     return saved
 
 
-def radio_info():
+def radio_info(current=None):
+    where = {} if current is None else {'socket_path': radio_socket(current)}
+    if current is None:
+        current = state()
     try:
-        pause = ipc(['get_property', 'pause'])
-        idle = ipc(['get_property', 'idle-active'])
+        pause = ipc(['get_property', 'pause'], **where)
+        idle = ipc(['get_property', 'idle-active'], **where)
         if idle:
             return None
-        station = clean(state().get('radio_name')) or 'Radio'
-        title = clean(ipc(['get_property', 'media-title']))
+        station = clean(current.get('radio_name')) or 'Radio'
+        title = clean(ipc(['get_property', 'media-title'], **where))
         return {'id': 'radio', 'status': 'Paused' if pause else 'Playing', 'title': title if title and title != station else '', 'artist': station}
     except (OSError, ValueError, HubError):
         return None
