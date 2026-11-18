@@ -1,0 +1,3612 @@
+#!/usr/bin/env python3
+"""Native listening room. All playback and network work runs off the GTK thread."""
+import concurrent.futures
+import json
+import os
+import random
+import re
+import sys
+
+import gi
+gi.require_version('Gtk', '4.0')
+from gi.repository import Gtk, Gdk, GLib, Gio
+
+import listening_hub as hub
+import ambience
+import room_catalogue
+import audio_layers
+import session_client
+import room_discovery
+from room_experience import RoomExperience
+from connections_ui import ConnectionsPanel
+from twitch_ui import TwitchPanel
+from world_radio_ui import WorldRadioPanel
+
+CSS = b'''
+window { background: #172331; color: #e7edf3; }
+.room-header { background: #1d2d3e; padding: 10px 22px; border-bottom: 1px solid #405267; }
+.room-title { font-size: 22px; font-weight: 700; }
+.muted { color: #aebdcc; }
+.current { background: #273a4b; border-left: 4px solid #d8bd7e; padding: 9px 14px; }
+.current-title { font-size: 16px; font-weight: 700; }
+.room-preview { background: #10202e; border-radius: 7px; }
+.room-hero-title { font-size: 24px; font-weight: 700; }
+.room-rail row { padding: 8px 9px; border-radius: 5px; }
+.room-rail row:selected { background: #435566; color: #ffffff; }
+.section-title { font-size: 16px; font-weight: 700; }
+.source-row { padding: 8px 4px; border-bottom: 1px solid #344656; }
+.source-name { font-weight: 600; }
+.twitch-list { background: #172331; }
+.twitch-list row { padding: 3px 2px; border-bottom: 1px solid #344656; }
+.twitch-list row:selected { background: #435566; color: #ffffff; }
+.status-line { padding: 7px 12px; background: #213345; color: #ccdae7; }
+.error { color: #ffb9ad; }
+button.suggested-action { background: #d8bd7e; color: #1d2b38; font-weight: 700; }
+button:focus-visible, entry:focus-visible, dropdown:focus-visible, scale:focus-visible { outline: 2px solid #e5cb90; outline-offset: 2px; }
+'''
+
+
+def label(text='', cls=None, xalign=0):
+    w = Gtk.Label(label=text, xalign=xalign)
+    if cls:
+        w.add_css_class(cls)
+    return w
+
+
+def button(text, callback, tooltip=None):
+    b = Gtk.Button(label=text)
+    b.connect('clicked', callback)
+    if tooltip:
+        b.set_tooltip_text(tooltip)
+    return b
+
+
+class StationPanel(Gtk.Box):
+    """Saved station intent; selection and editing never initiate playback."""
+    def __init__(self, app):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.app = app
+        self.stations = []
+        self.fingerprint = None
+        self.append(label('Your stations', 'section-title'))
+        row = Gtk.Box(spacing=8)
+        self.selector = Gtk.DropDown.new_from_strings(['Save a source as a station'])
+        self.selector.set_hexpand(True)
+        row.append(self.selector)
+        self.start = button('Tune in', lambda _: self.tune())
+        self.start.set_sensitive(False)
+        row.append(self.start)
+        self.remove_station = button('Remove station', lambda _: self.delete_station())
+        self.remove_station.set_sensitive(False)
+        row.append(self.remove_station)
+        self.append(row)
+        self.note = label('Saved stations remember their source. Browsing does not start playback.', 'muted')
+        self.append(self.note)
+        options = Gtk.Expander(label='Station preferences and upcoming')
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.station_name = Gtk.Entry()
+        self.station_name.set_placeholder_text('Station name')
+        body.append(self.station_name)
+        body.append(label('Preferences guide future tracks. Likely instrumental uses model scores when available; estimates can be wrong. Strict instrumental requires an exact-recording human review and can leave no music.', 'muted'))
+        self.preferences = {}
+        for key, title, choices in [
+            ('energy', 'Energy', ['Any', 'Low', 'High']),
+            ('familiarity', 'Familiarity', ['Any', 'Familiar', 'New']),
+            ('speech', 'Speech', ['Any', 'Less speech', 'Speech welcome', 'Likely instrumental', 'Strict instrumental']),
+            ('stay_close', 'Range', ['Any', 'Stay close', 'Explore'])]:
+            line = Gtk.Box(spacing=8)
+            caption = label(title)
+            caption.set_size_request(100, -1)
+            line.append(caption)
+            choice = Gtk.DropDown.new_from_strings(choices)
+            choice.set_hexpand(True)
+            line.append(choice)
+            body.append(line)
+            self.preferences[key] = (choice, choices)
+        generation_row = Gtk.Box(spacing=8)
+        generation_row.append(label('Library programming'))
+        self.generation = Gtk.DropDown.new_from_strings(['Selected collection', 'AudioMuse mix from track'])
+        generation_row.append(self.generation)
+        body.append(generation_row)
+        self.generation_note = label('AudioMuse needs a Jellyfin track and a configured AudioMuse connection.', 'muted')
+        body.append(self.generation_note)
+        arc_row = Gtk.Box(spacing=8)
+        arc_row.append(label('Energy over time'))
+        self.arc = Gtk.DropDown.new_from_strings(['Keep steady', 'Wind down', 'Rise'])
+        arc_row.append(self.arc)
+        body.append(arc_row)
+        body.append(label('The target changes every three tracks; energy uses available genre hints and may not be audible.', 'muted'))
+        feedback = Gtk.Box(spacing=8)
+        self.more = button('More like this', lambda _: self.app.experience.command('station.feedback', {'rating': 'more'}))
+        self.less = button('Less like this', lambda _: self.app.experience.command('station.feedback', {'rating': 'less'}))
+        self.hold = Gtk.CheckButton(label='Hold mood')
+        self.hold.connect('toggled', self.hold_changed)
+        feedback.append(self.more); feedback.append(self.less); feedback.append(self.hold)
+        body.append(feedback)
+        body.append(button('Reset station memory', lambda _: self.reset_memory()))
+        body.append(label('Feedback changes later tracks. Hold mood pauses the energy arc.', 'muted'))
+        self.hold_updating = False
+        policy = Gtk.Box(spacing=8)
+        policy.append(label('When the library ends'))
+        self.end_policy = Gtk.DropDown.new_from_strings(['Stop', 'Repeat'])
+        policy.append(self.end_policy)
+        policy.append(button('Save preferences', lambda _: self.save_preferences()))
+        body.append(policy)
+        body.append(label('Approved fallback sources', 'section-title'))
+        body.append(label('If the primary source cannot start, try these sources in order.', 'muted'))
+        self.fallback_source = Gtk.DropDown.new_from_strings(['Save another station to add its source'])
+        self.fallback_source.set_hexpand(True)
+        self.fallback_choices = []
+        fallback_row = Gtk.Box(spacing=8)
+        fallback_row.append(self.fallback_source)
+        fallback_row.append(button('Add fallback', lambda _: self.add_fallback()))
+        fallback_row.append(button('Remove last', lambda _: self.remove_fallback()))
+        body.append(fallback_row)
+        self.fallback_note = label('No fallbacks approved.', 'muted')
+        body.append(self.fallback_note)
+        body.append(label('Repeat is available for library stations when next tuned in.', 'muted'))
+        self.upcoming = label('Tune in to a library station to see upcoming tracks.', 'muted')
+        body.append(self.upcoming)
+        options.set_child(body)
+        self.append(options)
+        self.selector.connect('notify::selected', lambda *_: self.load_preferences())
+
+    def delete_station(self):
+        station = self.selected()
+        if station:
+            self.app.experience.command('station.delete', {'id': station['id']})
+
+    def reset_memory(self):
+        station = self.selected()
+        if station:
+            self.app.experience.command('station.reset_memory', {'id': station['id']})
+        else:
+            self.app.set_message('Choose a saved station first.', True)
+
+    def hold_changed(self, widget):
+        if not self.hold_updating:
+            self.app.experience.command('station.hold', {'hold': widget.get_active()})
+
+    def add_fallback(self):
+        index = self.fallback_source.get_selected()
+        if index >= len(self.fallback_choices) or not self.selected():
+            self.app.set_message('Choose a station and a different saved source first.', True)
+            return
+        source = self.fallback_choices[index]
+        if source not in self.pending_fallbacks:
+            self.pending_fallbacks.append(dict(source))
+        self.show_fallbacks()
+
+    def remove_fallback(self):
+        if self.pending_fallbacks:
+            self.pending_fallbacks.pop()
+        self.show_fallbacks()
+
+    def show_fallbacks(self):
+        self.fallback_note.set_text(' → '.join(x.get('name') or x.get('source_id') or (x.get('reference') or {}).get('name') or 'Source' for x in self.pending_fallbacks) or 'No fallbacks approved.')
+
+    def load_preferences(self):
+        station = self.selected() or {}
+        self.station_name.set_text(station.get('name', ''))
+        prefs = station.get('preferences') or {}
+        for key, (dropdown, choices) in self.preferences.items():
+            value = prefs.get(key, 'Any')
+            dropdown.set_selected(choices.index(value) if value in choices else 0)
+        self.end_policy.set_selected(1 if station.get('end_policy') == 'repeat' else 0)
+        self.arc.set_selected({'none': 0, 'wind_down': 1, 'rise': 2}.get(station.get('arc'), 0))
+        reference = ((station.get('sources') or [{}])[0].get('reference') or {})
+        can_generate = reference.get('provider') == 'jellyfin' and str(reference.get('type', '')).lower() in ('audio', 'track', 'song')
+        self.generation.set_sensitive(bool(can_generate))
+        self.generation.set_selected(1 if (station.get('generation') or {}).get('kind') == 'audiomuse' else 0)
+        self.pending_fallbacks = [dict(x) for x in station.get('fallbacks', [])]
+        self.fallback_choices = [x['sources'][0] for x in self.stations if x.get('id') != station.get('id') and x.get('sources')]
+        self.fallback_source.set_model(Gtk.StringList.new([x.get('name') or x.get('source_id') or (x.get('reference') or {}).get('name') or 'Source' for x in self.fallback_choices] or ['Save another station to add its source']))
+        self.show_fallbacks()
+
+    def save_preferences(self):
+        station = self.selected()
+        if not station:
+            self.app.set_message('Choose a saved station first.', True)
+            return
+        name = self.station_name.get_text().strip()
+        if not name:
+            self.app.set_message('Enter a name for this station.', True)
+            return
+        edited = dict(station)
+        edited['name'] = name
+        edited['preferences'] = {key: choices[dropdown.get_selected()] for key, (dropdown, choices) in self.preferences.items()}
+        edited['end_policy'] = 'repeat' if self.end_policy.get_selected() else 'stop'
+        edited['fallbacks'] = list(self.pending_fallbacks)
+        edited['arc'] = ['none', 'wind_down', 'rise'][self.arc.get_selected()]
+        edited['generation'] = {'kind': 'audiomuse' if self.generation.get_selected() == 1 else 'collection'}
+        self.app.experience.command('station.save', {'station': edited}, after=lambda _: self.app.set_message('Station preferences saved.'))
+
+    def save_reference(self, item):
+        station = {'name': item.get('name') or 'Library station', 'sources': [{'reference': item}],
+                   'preferences': {}, 'fallbacks': [], 'end_policy': 'stop'}
+        self.app.experience.command('station.save', {'station': station}, after=lambda _: self.app.set_message('Station saved.'))
+
+    def selected(self):
+        index = self.selector.get_selected()
+        return self.stations[index] if index < len(self.stations) else None
+
+    def save_source(self, item):
+        source = {'source_id': item.get('id'), 'url': item.get('url'), 'name': item.get('name')}
+        source = {key: value for key, value in source.items() if value}
+        station = {'name': item.get('name') or 'Station', 'sources': [source],
+                   'preferences': {}, 'fallbacks': [], 'end_policy': 'stop'}
+        self.app.experience.command('station.save', {'station': station},
+                                    after=lambda _: self.app.set_message('Station saved.'))
+
+    def tune(self):
+        station = self.selected()
+        if station:
+            self.app.experience.command('station.start', {'id': station['id']}, show_inside=True)
+
+    def render(self, snapshot):
+        stations = snapshot.get('stations') or []
+        fingerprint = json.dumps(stations, sort_keys=True, ensure_ascii=False)
+        if fingerprint != self.fingerprint:
+            old = self.selected()
+            self.stations = stations
+            self.selector.set_model(Gtk.StringList.new([x.get('name', 'Station') for x in stations]
+                                                       or ['Save a source as a station']))
+            if old:
+                self.selector.set_selected(next((i for i, x in enumerate(stations) if x.get('id') == old.get('id')), 0))
+            self.start.set_sensitive(bool(stations))
+            self.remove_station.set_sensitive(bool(stations))
+            self.fingerprint = fingerprint
+            self.load_preferences()
+        if hasattr(self.app, 'metadata_panel'):
+            self.app.metadata_panel.render(snapshot)
+        program = snapshot.get('station') or {}
+        self.hold_updating = True
+        self.hold.set_active(bool(program.get('hold')))
+        self.hold_updating = False
+        self.hold.set_sensitive(bool(program))
+        self.more.set_sensitive(bool(program.get('current')))
+        self.less.set_sensitive(bool(program.get('current')))
+        upcoming = program.get('upcoming') or []
+        self.upcoming.set_text(('Upcoming: ' + ', '.join(x.get('name') or 'Track' for x in upcoming)) if upcoming else 'No upcoming library tracks available.')
+        recent = snapshot.get('station_recent') or []
+        room_recent = snapshot.get('recent') or []
+        rooms = self.app.snapshot.get('rooms') or []
+        variants = snapshot.get('variants') or []
+        recent_fingerprint = json.dumps([recent, room_recent, rooms, variants], sort_keys=True, ensure_ascii=False)
+        if recent_fingerprint != getattr(self, 'recent_fingerprint', None):
+            self.recent_fingerprint = recent_fingerprint
+            box = self.app.recent_list
+            while box.get_first_child():
+                box.remove(box.get_first_child())
+            box.append(label('Recent listening', 'section-title'))
+            if not recent and not room_recent:
+                box.append(label('Stations and rooms you enter will appear here.', 'muted'))
+            for item in recent:
+                row = Gtk.Box(spacing=8)
+                title = label((item.get('station') or {}).get('name') or 'Station')
+                title.set_hexpand(True)
+                row.append(title)
+                replay = button('Replay', lambda _, identity=item.get('id'): self.app.experience.command('station.replay', {'id': identity}, show_inside=True))
+                replay.set_sensitive(bool(item.get('tracks')))
+                if not item.get('tracks'):
+                    replay.set_tooltip_text('This live source did not provide recorded track references to replay.')
+                row.append(replay)
+                box.append(row)
+            known = {item.get('id'): item for item in rooms}
+            saved = {item.get('id'): item for item in variants}
+            for identity in room_recent:
+                if identity in saved:
+                    item = saved[identity]
+                    row = Gtk.Box(spacing=8)
+                    title = label(item.get('name') or 'Saved room'); title.set_hexpand(True); row.append(title)
+                    row.append(button('Enter room', lambda _, key=identity: self.app.experience.command('enter', {'variant_id': key}, show_inside=True)))
+                    box.append(row)
+                elif identity in known:
+                    item = known[identity]
+                    row = Gtk.Box(spacing=8)
+                    title = label(item.get('name') or 'Room'); title.set_hexpand(True); row.append(title)
+                    row.append(button('Preview room', lambda _, key=identity: self.app.preview_room_action(None, GLib.Variant('s', key))))
+                    box.append(row)
+
+
+class MetadataPanel(Gtk.Expander):
+    """Explicit metadata and exact-recording review for the selected library track."""
+    def __init__(self, app):
+        super().__init__(label='Metadata')
+        self.app = app
+        self.record = None; self.jobs = []; self.pending = False; self.last_item = None
+        self.match_jobs = {}; self.candidates = []; self.candidate_fingerprint = None
+        self.worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='room-metadata')
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.set_child(body)
+        self.detail = label('Select a library track to inspect its metadata.', 'muted')
+        self.detail.set_wrap(True); self.detail.set_selectable(True)
+        body.append(self.detail)
+        actions = Gtk.Box(spacing=6)
+        self.enrich_buttons = []
+        for title, mode in [('Enrich', 'enrich'), ('Match', 'match'), ('Analyze', 'analyze')]:
+            control = button(title, lambda _, m=mode: self.enrich(m))
+            actions.append(control); self.enrich_buttons.append(control)
+        body.append(actions)
+        match_method = Gtk.Box(spacing=6)
+        match_method.append(label('Match using'))
+        self.match_method = Gtk.DropDown.new_from_strings(['MusicBrainz text search', 'AcoustID audio fingerprint'])
+        match_method.append(self.match_method)
+        body.append(match_method)
+        match_help = label('Match sends track details to MusicBrainz, or an audio fingerprint to AcoustID. AcoustID needs a configured application key and fingerprint tool.', 'muted')
+        match_help.set_wrap(True); body.append(match_help)
+        setup = Gtk.Expander(label='AcoustID setup')
+        setup_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        setup.set_child(setup_body)
+        note = label('Optional: register an AcoustID application to get a client key. MusicBrainz search works without it.', 'muted')
+        note.set_wrap(True); setup_body.append(note)
+        register = Gtk.LinkButton.new_with_label('https://acoustid.org/new-application', 'Register an AcoustID application')
+        setup_body.append(register)
+        self.acoustid_status = label('Checking setup…', 'muted'); setup_body.append(self.acoustid_status)
+        setup_body.append(label('Application client key'))
+        self.acoustid_key = Gtk.PasswordEntry()
+        setup_body.append(self.acoustid_key)
+        key_actions = Gtk.Box(spacing=6)
+        key_actions.append(button('Save key', lambda _: self.save_acoustid_key()))
+        key_actions.append(button('Remove saved key', lambda _: self.save_acoustid_key(clear=True)))
+        setup_body.append(key_actions)
+        body.append(setup)
+        bulk = Gtk.Box(spacing=6)
+        bulk.append(button('Enrich shown tracks', lambda _: self.enrich_shown()))
+        bulk.append(button('Enrich upcoming', lambda _: self.enrich_upcoming()))
+        body.append(bulk)
+        match_row = Gtk.Box(spacing=6)
+        self.candidate_choice = Gtk.DropDown.new_from_strings(['No identity candidates'])
+        self.candidate_choice.set_hexpand(True)
+        self.confirm_identity = button('Confirm identity', lambda _: self.confirm_match())
+        match_row.append(self.candidate_choice); match_row.append(self.confirm_identity)
+        body.append(match_row)
+        match_note = label('Identity candidates are suggestions. Confirming an identity is separate from reviewing the audio.', 'muted')
+        match_note.set_wrap(True); body.append(match_note)
+        self.progress = label('No metadata jobs.', 'muted'); self.progress.set_wrap(True)
+        body.append(self.progress)
+        self.cancel = button('Cancel current metadata job', lambda _: self.cancel_job())
+        body.append(self.cancel)
+        review = Gtk.Expander(label='Review this exact recording')
+        review_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        review.set_child(review_body)
+        explanation = label('Listen to the whole exact recording yourself before reviewing. The review applies only to the audio version checked by the controller; replacement audio needs a new review. Reviewing does not start playback.', 'muted')
+        explanation.set_wrap(True); review_body.append(explanation)
+        self.review_class = Gtk.DropDown.new_from_strings(['Instrumental (no vocals or speech)', 'Vocals', 'Spoken word', 'Unknown'])
+        review_body.append(self.review_class)
+        self.reviewer = Gtk.Entry(); self.reviewer.set_placeholder_text('Your name or review identifier')
+        review_body.append(self.reviewer)
+        self.ack = Gtk.CheckButton(label='I listened to the entire exact recording')
+        review_body.append(self.ack)
+        row = Gtk.Box(spacing=6)
+        self.review_button = button('Save review', lambda _: self.review())
+        self.revoke_button = button('Revoke review', lambda _: self.revoke())
+        row.append(self.review_button); row.append(self.revoke_button); review_body.append(row)
+        body.append(review)
+        self.render({})
+        self.timer = GLib.timeout_add_seconds(2, self.refresh)
+        self.refresh()
+
+    def close(self):
+        GLib.source_remove(self.timer)
+        self.worker.shutdown(wait=False, cancel_futures=True)
+
+    def refresh(self):
+        if self.pending or self.app.closed: return True
+        self.pending = True
+        item = self.selected()
+        def fetch():
+            record = session_client.request('metadata.lookup_reference', {'reference': item}, timeout=3).get('record') if item else None
+            return (record, session_client.request('metadata.jobs', {}, timeout=3), session_client.request('metadata.status', {}, timeout=3))
+        def done(f):
+            try: result, error = f.result(), None
+            except Exception as exc: result, error = None, str(exc)
+            def apply():
+                self.pending = False
+                if self.app.closed: return False
+                if error:
+                    self.record = None
+                    self.render(self.app.experience.snapshot)
+                    self.progress.set_text('Metadata unavailable: ' + error)
+                else:
+                    if item == self.selected(): self.record = result[0]
+                    self.jobs = result[1].get('jobs') or []
+                    self.acoustid_status.set_text('Client key configured.' if result[2].get('acoustid_ready') else 'No client key configured.')
+                    self.render(self.app.experience.snapshot)
+                return False
+            GLib.idle_add(apply)
+        self.worker.submit(fetch).add_done_callback(done)
+        return True
+
+    def save_acoustid_key(self, clear=False):
+        value = '' if clear else self.acoustid_key.get_text().strip()
+        if not clear and not value:
+            self.app.set_message('Enter the AcoustID application client key.', True); return
+        self.acoustid_key.set_text('')
+        self.app.experience.command('metadata.configure_acoustid', {'client_key': value}, after=lambda _: self.refresh())
+
+    def selected(self):
+        item = self.app.connections.selected
+        return dict(item) if item and item.get('provider') == 'jellyfin' and item.get('type') == 'Audio' else None
+
+    def enrich(self, mode):
+        item = self.selected()
+        if item:
+            def accepted(result):
+                if mode == 'match': self.match_jobs[item['id']] = result.get('job_id')
+                self.refresh()
+            params = {'reference': item}
+            if mode == 'match': params['method'] = 'acoustid' if self.match_method.get_selected() else 'musicbrainz'
+            self.app.experience.command('metadata.' + ('enrich' if mode == 'all' else mode), params, after=accepted)
+
+    def confirm_match(self):
+        item = self.selected()
+        index = self.candidate_choice.get_selected()
+        if item and index < len(self.candidates):
+            self.app.experience.command('metadata.confirm_identity', {'job_id': self.match_jobs[item['id']], 'provider_id': self.candidates[index]['provider_id']})
+
+
+    def enrich_shown(self):
+        items = [dict(x) for x in self.app.connections.library_items if x.get('provider') == 'jellyfin' and x.get('type') == 'Audio'][:100]
+        if not items:
+            self.app.set_message('Browse tracks first.', True); return
+        self.enqueue(items)
+
+    def enrich_upcoming(self):
+        station = self.app.experience.snapshot.get('station') or {}
+        items = [dict(x) for x in (station.get('upcoming') or []) if x.get('provider') == 'jellyfin' and x.get('type') == 'Audio'][:20]
+        if not items:
+            self.app.set_message('No upcoming Jellyfin tracks to enrich.', True); return
+        self.enqueue(items)
+
+    def enqueue(self, items):
+        total = len(items)
+        items = items[:20]
+        def submit():
+            accepted = 0
+            for item in items:
+                try: session_client.request('metadata.enrich', {'reference': item}, timeout=5); accepted += 1
+                except (ValueError, OSError): break
+            return accepted
+        self.app.run_task(submit, success=lambda n: self.app.set_message(f'Queued {n} of {total} tracks. Up to 20 can be queued at once.'), executor=self.worker)
+
+    def cancel_job(self):
+        if self.job: self.app.experience.command('metadata.cancel', {'job_id': self.job.get('job_id')})
+
+    def review(self):
+        item = self.selected()
+        reviewer = self.reviewer.get_text().strip()
+        if not item or not self.ack.get_active() or not reviewer:
+            self.app.set_message('Listen to the whole recording, confirm the review scope and enter your name.', True); return
+        if not self.record: return
+        self.app.experience.command('metadata.review', {'origin': self.record['origin'], 'item_id': self.record['item_id'], 'classification': ['instrumental', 'vocal', 'spoken', 'unknown'][self.review_class.get_selected()], 'reviewer': reviewer, 'acknowledged': True}, after=lambda _: self.ack.set_active(False))
+
+    def revoke(self):
+        item = self.selected()
+        if item and self.record: self.app.experience.command('metadata.revoke', {'origin': self.record['origin'], 'item_id': self.record['item_id']})
+
+    def render(self, snapshot):
+        item = self.selected()
+        identity = item.get('id') if item else None
+        if identity != self.last_item:
+            self.ack.set_active(False); self.last_item = identity; self.record = None
+            self.refresh()
+        record = self.record
+        match_id = self.match_jobs.get(identity)
+        match = next((j for j in self.jobs if j.get('job_id') == match_id and j.get('status') == 'completed'), None)
+        candidates = ((match or {}).get('result') or {}).get('candidates') or []
+        fingerprint = json.dumps(candidates, sort_keys=True)
+        if fingerprint != self.candidate_fingerprint:
+            self.candidate_fingerprint = fingerprint; self.candidates = candidates
+            self.candidate_choice.set_model(Gtk.StringList.new([str(c.get('title') or c.get('provider_id')) + ' (' + str(c.get('provider', 'unknown')) + ')' for c in candidates] or ['No identity candidates']))
+        self.confirm_identity.set_sensitive(bool(item and candidates))
+        for control in self.enrich_buttons: control.set_sensitive(bool(item))
+        self.review_button.set_sensitive(bool(item and record))
+        self.revoke_button.set_sensitive(bool(item and record and record.get('review')))
+        jobs = self.jobs
+        self.job = next((j for j in jobs if j.get('status') in ('queued', 'running')), None)
+        self.cancel.set_sensitive(bool(self.job))
+        self.progress.set_text((str(self.job.get('kind', 'Metadata')).capitalize() + ': ' + str(self.job.get('status')) + ' (' + str(sum(j.get('status') in ('queued', 'running') for j in jobs)) + ' pending)') if self.job else (str(jobs[-1].get('message') or jobs[-1].get('status')) if jobs else 'No metadata jobs.'))
+        if not item:
+            self.detail.set_text('Select a library track to inspect its metadata.'); return
+        lines = [item.get('name') or 'Track', item.get('artist') or 'Artist unknown']
+        station = snapshot.get('station') or {}
+        current = station.get('current') or {}
+        reasons = station.get('explanation') or []
+        if current.get('id') == item.get('id') and reasons:
+            lines.append('Why this selection: ' + '; '.join(str(x) for x in reasons))
+        else:
+            lines.append('Selection reasons are available for the current station track.')
+        if not record:
+            lines.append('No metadata for this recording yet. Choose Enrich, Match or Analyze.')
+        else:
+            lines.append(('Audio version: SHA256 ' + str(record['audio_sha256'])) if record.get('audio_sha256') else 'Audio version has not been fingerprinted yet.')
+            for obs in record.get('identities') or []:
+                lines.append('Identity: ' + str(obs.get('name') or obs.get('provider_id') or obs.get('value') or 'Unknown') + ' (source: ' + str(obs.get('provider', 'unknown')) + ', confidence: ' + str(obs.get('confidence', 'unknown')) + ', status: ' + str(obs.get('status', 'unconfirmed')) + ')')
+            if not record.get('identities'): lines.append('Recording identity not matched.')
+            for obs in record.get('features') or []:
+                name = str(obs.get('name', 'feature'))
+                source = str(obs.get('provider', 'unknown'))
+                if name in ('instrumental score', 'voice score'):
+                    scope = 'whole recording, audio version above' if record.get('audio_sha256') and obs.get('provider') == 'Essentia MTG' else 'audio version unknown'
+                    lines.append('Uncalibrated model score: ' + name + ' = ' + str(obs.get('value', 'unknown')) + ' (source: ' + source + '; ' + scope + '; not a probability or human review)')
+                else:
+                    lines.append('Estimate: ' + name + ' = ' + str(obs.get('value', 'unknown')) + ' (source: ' + source + ', confidence: ' + str(obs.get('confidence', 'unknown')) + ')')
+            for obs in record.get('unbound_features') or []:
+                lines.append('Uncalibrated estimate: ' + str(obs.get('name', 'feature')) + ' = ' + str(obs.get('value', 'unknown')) + ' (source: ' + str(obs.get('provider', 'unknown')) + '; audio version unknown)')
+            if not record.get('features') and not record.get('unbound_features'): lines.append('No audio estimates available.')
+            review = record.get('review')
+            lines.append(('Human review: ' + str(review.get('classification')) + ' by ' + str(review.get('reviewer')) + ' on ' + str(review.get('date'))) if review else 'No human review for this audio version.')
+            lines.append('Last checked: ' + str(record.get('updated_at', 'unknown')) + '. Review validity is checked again before use.')
+        self.detail.set_text('\n'.join(lines))
+
+
+class Room(Gtk.Application):
+    def __init__(self, mode='browse', preview_link=None):
+        self.initial_mode = mode
+        self.initial_link = preview_link
+        super().__init__(application_id='app.kotona.ListeningRoom', flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.snapshot = {}
+        self.poll_pending = False
+        self.closed = False
+        self.updating = False
+        self.scale_timers = {}
+        self.scale_editing = set()
+        self.player_ids = []
+        self.presets = []
+        self.scene_items = []
+        self.profile_items = []
+        self.sources_fingerprint = None
+        self.search_results = []
+        self.room_items = []
+        self.room_fingerprint = None
+        self.preview_room_id = None
+        self.room_launching = False
+
+    def do_command_line(self, command_line):
+        arguments = list(command_line.get_arguments())[1:]
+        try:
+            mode, link = launch_arguments(arguments)
+        except (ValueError, SystemExit):
+            return 1
+        if not hasattr(self, 'window'):
+            self.initial_mode, self.initial_link = mode, link
+        self.activate()
+        if hasattr(self, 'experience'):
+            self.experience.show(mode)
+            if link:
+                self.experience.show('browse')
+                self.connections.preview_url(link)
+                page = self.connections.get_parent()
+                self.notebook.set_current_page(self.notebook.page_num(page))
+        return 0
+
+    def do_activate(self):
+        if hasattr(self, 'window'):
+            self.window.present()
+            return
+        self.window = Gtk.ApplicationWindow(application=self, title='Listening room')
+        self.window.set_default_size(1060, 900)
+        self.window.set_size_request(760, 600)
+        self.window.connect('close-request', self.on_close)
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.session_colors = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.session_colors, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
+        self.room_colors = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.room_colors, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.window.set_child(outer)
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        header.add_css_class('room-header')
+        heading = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        heading.set_hexpand(True)
+        heading.append(label('Listening room', 'room-title'))
+        header.append(heading)
+        header.append(button('Refresh', lambda _: self.poll()))
+        outer.append(header)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        content.set_margin_top(14); content.set_margin_bottom(12)
+        content.set_margin_start(22); content.set_margin_end(22)
+        content.set_vexpand(True)
+        outer.append(content)
+
+        current = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        current.add_css_class('current')
+        player_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        now_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        now_box.set_hexpand(True)
+        self.now = label('Nothing playing', 'current-title')
+        self.now.set_ellipsize(3)
+        self.now.set_max_width_chars(48)
+        now_box.append(self.now)
+        self.now_detail = label('Choose a room or source to begin', 'muted')
+        self.now_detail.set_ellipsize(3)
+        now_box.append(self.now_detail)
+        player_line.append(now_box)
+        player_line.append(label('Player', 'muted'))
+        self.player = Gtk.DropDown.new_from_strings(['No active player'])
+        self.player.set_size_request(190, -1)
+        self.player.connect('notify::selected', self.choose_player)
+        player_line.append(self.player)
+        current.append(player_line)
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        for text, command in [('Previous', 'previous'), ('Play / pause', 'play-pause'), ('Next', 'next'), ('Stop', 'stop')]:
+            b = button(text, lambda _, cmd=command: self.transport(cmd))
+            setattr(self, 'transport_' + command.replace('-', '_'), b)
+            controls.append(b)
+        self.source_scale = self.volume_control(controls, 'Player volume', False)
+        current.append(controls)
+        self.mixer = Gtk.Expander(label='Mixer · Atmosphere and system volume')
+        mixer_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        mixer_line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.master_scale = self.volume_control(mixer_line, 'System volume', True)
+        mixer_body.append(mixer_line)
+        self.mixer.set_child(mixer_body)
+        current.append(self.mixer)
+        content.append(current)
+
+        notebook = Gtk.Notebook()
+        self.notebook = notebook
+        notebook.set_vexpand(True)
+        notebook.set_show_tabs(False)
+        navigation = Gtk.Box(spacing=8)
+        navigation.append(button('Listen', lambda _: self.show_browser(1)))
+        navigation.append(button('Room', lambda _: self.show_room()))
+        navigation.append(button('Recent', lambda _: self.show_browser(self.recent_page)))
+        advanced = Gtk.MenuButton(label='Settings & more')
+        menu = Gio.Menu()
+        for title, name in [('Connections', 'connections'), ('Views', 'views'),
+                            ('Scenes & settings', 'settings'), ('World radio', 'world'),
+                            ('Find & links', 'links')]:
+            menu.append(title, 'app.show-' + name)
+        advanced.set_menu_model(menu)
+        navigation.append(advanced)
+        content.append(navigation)
+        content.append(notebook)
+
+        # Room selection is a preview. Only Enter room starts anything.
+        rooms_page = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
+        rooms_page.set_margin_top(14)
+        self.rooms_rail = Gtk.ListBox()
+        self.rooms_rail.add_css_class('room-rail')
+        self.rooms_rail.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.rooms_rail.connect('row-selected', self.room_selected)
+        rail_scroll = Gtk.ScrolledWindow()
+        rail_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        rail_scroll.set_size_request(190, -1)
+        rail_scroll.set_child(self.rooms_rail)
+        rooms_page.append(rail_scroll)
+        room_pane = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
+        room_pane.set_hexpand(True)
+        rooms_page.append(room_pane)
+        hero_scroll = Gtk.ScrolledWindow()
+        hero_scroll.set_vexpand(True)
+        hero_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        hero_scroll.set_hexpand(True)
+        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=9)
+        hero_scroll.set_child(hero)
+        room_pane.append(hero_scroll)
+        self.room_picture = Gtk.Picture()
+        self.room_picture.add_css_class('room-preview')
+        self.room_picture.set_can_shrink(True)
+        self.room_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.room_picture.set_size_request(300, 180)
+        self.room_picture.set_hexpand(True)
+        self.room_picture.set_vexpand(True)
+        hero.append(self.room_picture)
+        self.room_name = label('Choose a room', 'room-hero-title')
+        self.room_name.set_wrap(True)
+        room_pane.prepend(self.room_name)
+        self.room_description = label('Preview a mood, then enter when you are ready.', 'muted')
+        self.room_description.set_wrap(True)
+        hero.append(self.room_description)
+        self.room_tone = label('', 'muted')
+        self.room_tone.set_wrap(True)
+        hero.append(self.room_tone)
+        self.room_plan = label('', 'muted')
+        self.room_plan.set_wrap(True)
+        hero.append(self.room_plan)
+        self.room_policy = label('', 'muted')
+        self.room_policy.set_wrap(True)
+        hero.append(self.room_policy)
+        self.include_view = Gtk.CheckButton(label='Include silent view on workspace 9')
+        self.include_view.set_active(True)
+        self.include_view.connect('toggled', lambda *_: self.update_room_preview())
+        view_options = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        view_options.append(self.include_view)
+        room_pane.append(view_options)
+        self.still_view = Gtk.CheckButton(label='Still artwork')
+        self.still_view.set_tooltip_text('Use the full artwork without animation. Applies when you next enter a room.')
+        self.still_view.connect('toggled', lambda *_: self.update_room_preview())
+        view_options.append(self.still_view)
+        room_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.enter_room_button = button('Enter room', lambda _: self.enter_room())
+        self.enter_room_button.add_css_class('suggested-action')
+        self.enter_room_button.set_sensitive(False)
+        room_actions.append(self.enter_room_button)
+        room_actions.append(button('Surprise me', lambda _: self.surprise_room()))
+        room_actions.append(button('Quiet', lambda _: self.quiet_room(), 'Pause room audio, the selected app and silent view'))
+        room_actions.append(button('Stop room', lambda _: self.stop_room(), 'Stop room music, atmosphere, vista and video'))
+        room_pane.append(room_actions)
+        notebook.append_page(rooms_page, Gtk.Label(label='Rooms'))
+
+        listen = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        listen.set_margin_top(14)
+        listen_scroll = Gtk.ScrolledWindow()
+        listen_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        listen_scroll.set_child(listen)
+        notebook.append_page(listen_scroll, Gtk.Label(label='Listen'))
+        discover = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.search = Gtk.SearchEntry()
+        self.search.set_placeholder_text('Search names, genres and moods')
+        self.search.set_hexpand(True)
+        self.search.connect('search-changed', lambda _: self.render_sources())
+        discover.append(self.search)
+        discover.append(button('Search world', lambda _: self.world_search()))
+        self.filter = Gtk.DropDown.new_from_strings(['All', 'Favorites', 'Focus', 'World', 'Nightcore', 'Electro swing', 'Atompunk', 'Finnish', 'Dark academia', 'Apps'])
+        self.filter.connect('notify::selected', lambda *_: self.render_sources())
+        discover.append(self.filter)
+        listen.append(discover)
+        destination_row = Gtk.Box(spacing=8)
+        destination_row.append(label('Send audio to', 'muted'))
+        self.destination = Gtk.DropDown.new_from_strings(['Main audio', 'Background audio'])
+        destination_row.append(self.destination)
+        listen.append(destination_row)
+        source_scroll = Gtk.ScrolledWindow()
+        source_scroll.set_min_content_height(240)
+        source_scroll.set_vexpand(True)
+        source_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.source_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        source_scroll.set_child(self.source_list)
+        listen.append(source_scroll)
+        channels_expander = Gtk.Expander(label='Live channels · Music and ASMR')
+        channels_expander.set_child(self.channels if hasattr(self, 'channels') else None)
+        listen.append(channels_expander)
+        self.channels_expander = channels_expander
+
+        views = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        views.set_margin_top(16)
+        views_scroll = Gtk.ScrolledWindow()
+        views_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        views_scroll.set_child(views)
+        notebook.append_page(views_scroll, Gtk.Label(label='Views'))
+        views.append(label('Silent vista', 'section-title'))
+        views.append(label('Opens on workspace 9. Move or pin the window whenever you like.', 'muted'))
+        vista_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.vista = Gtk.DropDown.new_from_strings(['Loading vistas…'])
+        self.vista.set_hexpand(True)
+        vista_row.append(self.vista)
+        vista_row.append(button('Open silent vista', lambda _: self.start_vista()))
+        views.append(vista_row)
+        vista_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        for text, action in [('Bring here', 'here'), ('Workspace 9', '9'), ('PiP', 'pip'), ('Pin / unpin', 'pin')]:
+            vista_controls.append(button(text, lambda _, a=action: self.ambience_action('place', a, 'ambience')))
+        vista_controls.append(button('Play / pause', lambda _: self.ambience_action('control', 'toggle', 'ambience')))
+        vista_controls.append(button('Close', lambda _: self.ambience_action('control', 'stop', 'ambience')))
+        views.append(vista_controls)
+        views.append(label('Open a video', 'section-title'))
+        self.video_url = Gtk.Entry()
+        self.video_url.set_placeholder_text('Paste a YouTube or video URL')
+        views.append(self.video_url)
+        video_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        video_row.append(button('Silent ambience', lambda _: self.start_url('ambience')))
+        video_row.append(button('Play video with sound', lambda _: self.start_url('video')))
+        video_row.append(button('Play YouTube audio', lambda _: self.start_audio_url(), 'Play one public video as audio in the hub'))
+        views.append(video_row)
+        video_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        video_controls.append(label('Video window', 'muted'))
+        for text, action in [('Bring here', 'here'), ('Workspace 9', '9'), ('PiP', 'pip'), ('Pin / unpin', 'pin')]:
+            video_controls.append(button(text, lambda _, a=action: self.ambience_action('place', a, 'video')))
+        video_controls.append(button('Play / pause', lambda _: self.ambience_action('control', 'toggle', 'video')))
+        video_controls.append(button('Close', lambda _: self.ambience_action('control', 'stop', 'video')))
+        views.append(video_controls)
+        video_audio = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        video_audio.append(label('Video volume', 'muted'))
+        self.video_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.video_scale.set_hexpand(True)
+        self.video_scale.set_draw_value(True)
+        self.video_scale.connect('value-changed', self.video_volume_changed)
+        video_audio.append(self.video_scale)
+        video_audio.append(button('Mute video', lambda _: self.ambience_action('control', 'mute', 'video')))
+        views.append(video_audio)
+        self.vista_status = label('Vistas and video are stopped', 'muted')
+        views.append(self.vista_status)
+
+        settings = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        settings.set_margin_top(16)
+        settings_scroll = Gtk.ScrolledWindow()
+        settings_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        settings_scroll.set_child(settings)
+        notebook.append_page(settings_scroll, Gtk.Label(label='Scenes & settings'))
+        settings.append(label('Scenes', 'section-title'))
+        settings.append(label('A scene remembers a radio station and, when available, its vista.', 'muted'))
+        scene_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.scene = Gtk.DropDown.new_from_strings(['Loading scenes…'])
+        self.scene.set_hexpand(True)
+        scene_row.append(self.scene)
+        scene_row.append(button('Start scene', lambda _: self.start_scene()))
+        settings.append(scene_row)
+        settings.append(label('Settings profiles', 'section-title'))
+        settings.append(label('Profiles remember favorites and the radio-start preference.', 'muted'))
+        profile_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.profile = Gtk.DropDown.new_from_strings(['Loading profiles…'])
+        self.profile.set_hexpand(True)
+        profile_row.append(self.profile)
+        profile_row.append(button('Apply profile', lambda _: self.apply_profile()))
+        profile_row.append(button('Restore default', lambda _: self.restore_profile()))
+        settings.append(profile_row)
+        save_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.save_name = Gtk.Entry()
+        self.save_name.set_placeholder_text('Name a profile or current scene')
+        self.save_name.set_hexpand(True)
+        save_row.append(self.save_name)
+        save_row.append(button('Save settings profile', lambda _: self.save_named('profile')))
+        save_row.append(button('Save current scene', lambda _: self.save_named('scene')))
+        settings.append(save_row)
+        self.pause_others = Gtk.CheckButton(label='Pause other players when radio starts')
+        self.pause_others.connect('toggled', self.pause_preference)
+        settings.append(self.pause_others)
+        self.world_radio = WorldRadioPanel(self)
+        self.world_radio_scroll = Gtk.ScrolledWindow()
+        self.world_radio_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.world_radio_scroll.set_child(self.world_radio)
+        notebook.append_page(self.world_radio_scroll, Gtk.Label(label='World Radio'))
+        self.channels = TwitchPanel(self, mixer_body)
+        channels_scroll = Gtk.ScrolledWindow()
+        channels_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.channels_expander.set_child(self.channels)
+        channels_scroll.set_child(button('Browse live channels in Listen', lambda _: self.show_channels()))
+        notebook.append_page(channels_scroll, Gtk.Label(label='Channels'))
+        self.message = label('Loading players and sources…', 'status-line')
+        outer.append(self.message)
+        for name, index, shortcut in [('rooms', 0, '<Primary>4'), ('listen', 1, '<Primary>1'), ('views', 2, '<Primary>2'), ('settings', 3, '<Primary>3'), ('world', 4, '<Primary>5'), ('channels', 5, '<Primary>6')]:
+            action = Gio.SimpleAction.new('show-' + name, None)
+            action.connect('activate', lambda _a, _p, page=index: self.show_browser(page))
+            self.add_action(action)
+            self.set_accels_for_action('app.show-' + name, [shortcut])
+        search_action = Gio.SimpleAction.new('find-source', None)
+        def focus_search(*_):
+            if hasattr(self, 'experience'): self.experience.show('browse')
+            if notebook.get_current_page() == 5:
+                self.channels.search.grab_focus()
+            elif notebook.get_current_page() == 4:
+                self.world_radio.focus_search()
+            else:
+                notebook.set_current_page(1)
+                self.search.grab_focus()
+        search_action.connect('activate', focus_search)
+        self.add_action(search_action)
+        self.set_accels_for_action('app.find-source', ['<Primary>f'])
+        url_action = Gio.SimpleAction.new('video-url', None)
+        url_action.connect('activate', lambda *_: (self.show_browser(2), self.video_url.grab_focus()))
+        self.add_action(url_action)
+        self.set_accels_for_action('app.video-url', ['<Primary>l'])
+        close_action = Gio.SimpleAction.new('close-window', None)
+        close_action.connect('activate', lambda *_: self.window.close())
+        self.add_action(close_action)
+        self.set_accels_for_action('app.close-window', ['<Primary>w'])
+        preview_action = Gio.SimpleAction.new('preview-room', GLib.VariantType.new('s'))
+        preview_action.connect('activate', self.preview_room_action)
+        self.add_action(preview_action)
+        self.experience = RoomExperience(self, content, notebook, current)
+        self.connections = ConnectionsPanel(self)
+        connection_scroll = Gtk.ScrolledWindow()
+        connection_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        connection_scroll.set_child(self.connections)
+        notebook.append_page(connection_scroll, Gtk.Label(label='Connections & library'))
+        self.connection_page = notebook.page_num(connection_scroll)
+        self.recent_page = notebook.get_n_pages()
+        self.recent_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.recent_list.set_margin_top(16)
+        recent_scroll = Gtk.ScrolledWindow()
+        recent_scroll.set_child(self.recent_list)
+        notebook.append_page(recent_scroll, Gtk.Label(label='Recent'))
+        for name, page in [('connections', self.connection_page), ('links', notebook.get_n_pages() - 3)]:
+            action = Gio.SimpleAction.new('show-' + name, None)
+            action.connect('activate', lambda _a, _p, index=page: self.show_browser(index))
+            self.add_action(action)
+        self.station_panel = StationPanel(self)
+        self.metadata_panel = MetadataPanel(self)
+        self.connections.library_list.connect('row-selected', lambda *_: self.metadata_panel.render(self.experience.snapshot))
+        listen.prepend(self.station_panel)
+        child = self.connections.get_first_child()
+        while child:
+            following = child.get_next_sibling()
+            if isinstance(child, Gtk.Expander) and child.get_label() in ('Jellyfin library', 'Speakers through Music Assistant'):
+                self.connections.remove(child)
+                if child.get_label() == 'Jellyfin library':
+                    self.library_expander = child
+                    child.get_child().append(self.metadata_panel)
+                else: self.remote_expander = child
+                child.set_expanded(False)
+                listen.append(child)
+            child = following
+        shortcuts = Gtk.Box(spacing=8)
+        shortcuts.append(button('Live channels', lambda _: self.show_channels()))
+        shortcuts.append(button('Jellyfin library', lambda _: self.show_library()))
+        shortcuts.append(button('Music Assistant', lambda _: self.show_remote_library()))
+        shortcuts.append(button('Listen from a link', lambda _: self.show_links()))
+        listen.insert_child_after(shortcuts, destination_row)
+        self.link_expander = Gtk.Expander(label='Listen from a link')
+        self.link_expander.set_child(self.experience.links)
+        listen.append(self.link_expander)
+        listen.append(button('Connect music services', lambda _: self.show_browser(self.connection_page)))
+        notebook.connect('switch-page', lambda _n, _p, _i: self.experience.browser_page_changed())
+        notebook.set_current_page(1)
+        self.experience.browser_page_changed()
+        self.window.present()
+        if self.initial_mode != 'browse': self.experience.show(self.initial_mode)
+        if self.initial_link:
+            self.connections.preview_url(self.initial_link)
+            notebook.set_current_page(notebook.page_num(connection_scroll))
+        self.poll()
+        GLib.timeout_add_seconds(2, self.periodic)
+
+    def on_close(self, *_):
+        self.closed = True
+        for timer in self.scale_timers.values():
+            GLib.source_remove(timer)
+        self.scale_timers.clear()
+        self.world_radio.close()
+        if hasattr(self, 'experience'): self.experience.close()
+        if hasattr(self, 'connections'): self.connections.close()
+        if hasattr(self, 'metadata_panel'): self.metadata_panel.close()
+        self.channels.close()
+        self.executor.shutdown(wait=False, cancel_futures=True)
+        return False
+
+    def run_task(self, func, success=None, message=None, executor=None):
+        if message:
+            self.set_message(message)
+        if self.closed: return
+        future = (executor or self.executor).submit(func)
+        def done(f):
+            try:
+                value = f.result()
+                GLib.idle_add(self.task_done, success, value, None)
+            except Exception as exc:
+                GLib.idle_add(self.task_done, success, None, str(exc) or type(exc).__name__)
+        future.add_done_callback(done)
+
+    def task_done(self, success, value, error):
+        if self.closed:
+            return False
+        if error:
+            self.scale_editing.clear()
+            self.set_message(error, True)
+        else:
+            if success:
+                success(value)
+            else:
+                self.set_message('Ready')
+            self.poll()
+        return False
+
+    def set_message(self, text, error=False):
+        self.message.set_text(text)
+        if error: self.message.add_css_class('error')
+        else: self.message.remove_css_class('error')
+
+    def periodic(self):
+        if self.closed: return False
+        self.poll()
+        return True
+
+    def poll(self):
+        if self.poll_pending or self.closed: return
+        self.poll_pending = True
+        def get():
+            snapshot = hub.inspect_state()
+            snapshot['rooms'] = room_catalogue.rooms()
+            snapshot['vista_presets'] = ambience.presets()
+            snapshot['ambience'] = ambience.state('ambience')
+            snapshot['video'] = ambience.state('video')
+            snapshot['overlay'] = audio_layers.state()
+            snapshot['overlay_settings'] = audio_layers.audio_settings()
+            return snapshot
+        def done(f):
+            try: GLib.idle_add(self.finish_poll, f.result(), None)
+            except Exception as exc: GLib.idle_add(self.finish_poll, None, str(exc))
+        self.executor.submit(get).add_done_callback(done)
+
+    def finish_poll(self, snapshot, error):
+        self.poll_pending = False
+        if self.closed: return False
+        if error:
+            self.set_message('Could not refresh: ' + error, True)
+            return False
+        self.snapshot = snapshot
+        self.render_state()
+        if self.message.get_text().startswith('Loading') or self.message.get_text().startswith('Could not refresh:'):
+            self.set_message('Ready')
+        return False
+
+    @staticmethod
+    def dropdown(dropdown, entries, current=0):
+        labels = entries or ['None available']
+        model = dropdown.get_model()
+        old = [model.get_string(i) for i in range(model.get_n_items())] if isinstance(model, Gtk.StringList) else []
+        if old != labels:
+            dropdown.set_model(Gtk.StringList.new(labels))
+        position = min(current, len(labels) - 1)
+        if dropdown.get_selected() != position:
+            dropdown.set_selected(position)
+
+    def render_state(self):
+        self.updating = True
+        s = self.snapshot
+        self.channels.update_layer(s.get('overlay'), s.get('overlay_settings') or {})
+        self.world_radio.update_snapshot()
+        self.render_rooms(s.get('rooms') or [])
+        pause_others = bool((s.get('preferences') or {}).get('pause_others_on_radio_start', False))
+        self.pause_others.set_active(pause_others)
+        self.room_policy.set_text('Other players pause when radio starts.' if pause_others else 'Other players keep playing when radio starts.')
+        players = s.get('players') or []
+        selected = s.get('selected') or {}
+        self.player_ids = [x.get('id') for x in players]
+        labels = [f"{self.player_label(x.get('id'))} — {x.get('status', '')}" for x in players]
+        self.dropdown(self.player, labels, self.player_ids.index(selected.get('id')) if selected.get('id') in self.player_ids else 0)
+        self.player.set_sensitive(bool(players))
+        title = ' — '.join(x for x in (selected.get('artist'), selected.get('title')) if x)
+        self.now.set_text(title or selected.get('id') or 'Nothing playing')
+        self.now_detail.set_text((selected.get('status') or 'Choose a source below to begin') + (f"  ·  {self.player_label(selected['id'])}" if selected.get('id') else ''))
+        has_player = bool(selected)
+        for name in ('play_pause', 'stop'):
+            getattr(self, 'transport_' + name).set_sensitive(has_player)
+        self.transport_next.set_sensitive(has_player and selected.get('id') != 'radio' and selected.get('can_next', True))
+        self.transport_previous.set_sensitive(has_player and selected.get('id') != 'radio' and selected.get('can_previous', True))
+        self.set_scale(self.source_scale, selected.get('volume'), False)
+        self.set_scale(self.master_scale, (s.get('system_volume') or {}).get('percent'), True)
+        self.master_mute.set_label('Unmute' if (s.get('system_volume') or {}).get('muted') else 'Mute')
+        self.presets = s.get('vista_presets') or []
+        self.dropdown(self.vista, [x.get('name', 'Vista') for x in self.presets], self.vista.get_selected())
+        self.profile_items = s.get('profiles') or []
+        self.scene_items = s.get('scenes') or []
+        self.dropdown(self.profile, [self.item_name(x) for x in self.profile_items], self.profile.get_selected())
+        self.dropdown(self.scene, [self.item_name(x) for x in self.scene_items], self.scene.get_selected())
+        self.set_scale(self.video_scale, (s.get('video') or {}).get('volume') if isinstance(s.get('video'), dict) else None, 'video')
+        self.vista_status.set_text('Vista: ' + self.activity(s.get('ambience')) + '    Video: ' + self.activity(s.get('video')))
+        self.updating = False
+        fingerprint = json.dumps([s.get('sources'), s.get('favorites')], sort_keys=True, ensure_ascii=False)
+        if fingerprint != self.sources_fingerprint:
+            self.sources_fingerprint = fingerprint
+            self.render_sources()
+
+    @staticmethod
+    def player_label(player_id):
+        name = str(player_id or '')
+        lower = name.lower()
+        if lower == 'radio': return 'Radio'
+        if lower == 'video': return 'Video window'
+        for key, display in [('vivaldi', 'Vivaldi'), ('firefox', 'Firefox'),
+                             ('feishin', 'Jellyfin Music'), ('jellyfin', 'Jellyfin'),
+                             ('kdeconnect', 'KDE Connect'), ('chromium', 'Chromium'),
+                             ('chrome', 'Chrome')]:
+            if key in lower:
+                # Instance suffix distinguishes simultaneous browser players.
+                suffix = name[len(key):] if lower.startswith(key) else ''
+                return display + suffix
+        return name or 'Player'
+
+    def render_rooms(self, rooms):
+        if hasattr(self, 'experience'):
+            rooms = room_discovery.eligible(rooms, self.experience.preference(), self.experience.recent())
+        fingerprint = json.dumps(rooms, sort_keys=True, ensure_ascii=False)
+        if fingerprint == self.room_fingerprint:
+            return
+        self.room_fingerprint = fingerprint
+        self.room_items = [r for r in rooms if isinstance(r, dict) and r.get('id')]
+        child = self.rooms_rail.get_first_child()
+        while child:
+            nxt = child.get_next_sibling()
+            self.rooms_rail.remove(child)
+            child = nxt
+        selected_index = next((i for i, item in enumerate(self.room_items) if item.get('last_entered')), 0) if self.preview_room_id is None else 0
+        for i, room in enumerate(self.room_items):
+            row = Gtk.ListBoxRow()
+            body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            title = label(room.get('name', 'Room'), 'source-name')
+            title.set_ellipsize(3)
+            title.set_max_width_chars(20)
+            body.append(title)
+            detail = label(room.get('subtitle', ''), 'muted')
+            detail.set_ellipsize(3)
+            detail.set_max_width_chars(22)
+            body.append(detail)
+            row.set_child(body)
+            self.rooms_rail.append(row)
+            if room['id'] == self.preview_room_id:
+                selected_index = i
+        if self.room_items:
+            self.rooms_rail.select_row(self.rooms_rail.get_row_at_index(selected_index))
+        else:
+            self.preview_room_id = None
+            self.update_room_preview()
+
+    def show_room(self):
+        if (self.experience.snapshot.get('active') or {}):
+            self.experience.show('inside')
+        else:
+            self.show_browser(0)
+
+    def show_links(self):
+        self.show_browser(1)
+        self.link_expander.set_expanded(True)
+        self.experience.link.grab_focus()
+
+    def show_library(self):
+        self.show_browser(1)
+        self.library_expander.set_expanded(True)
+        self.connections.library_query.grab_focus()
+
+    def show_remote_library(self):
+        self.show_browser(1)
+        self.remote_expander.set_expanded(True)
+        self.connections.remote_player.grab_focus()
+
+    def show_channels(self):
+        self.show_browser(1)
+        self.channels_expander.set_expanded(True)
+        self.channels.search.grab_focus()
+
+    def show_browser(self, page):
+        if hasattr(self, 'experience'): self.experience.show('browse')
+        self.notebook.set_current_page(page)
+
+    def room_selected(self, _box, row):
+        if row is None:
+            return
+        index = row.get_index()
+        if 0 <= index < len(self.room_items):
+            self.preview_room_id = self.room_items[index]['id']
+            self.update_room_preview()
+
+    def preview_room_action(self, _action, parameter):
+        if hasattr(self, 'experience'): self.experience.show('browse')
+        identity = parameter.get_string()
+        for index, room in enumerate(self.room_items):
+            if room['id'] == identity:
+                self.notebook.set_current_page(0)
+                self.rooms_rail.select_row(self.rooms_rail.get_row_at_index(index))
+                return
+        self.set_message('That room is unavailable.', True)
+
+    def update_room_preview(self):
+        room = next((x for x in self.room_items if x['id'] == self.preview_room_id), None)
+        view_ready = room is not None and (not self.include_view.get_active() or bool(room.get('view_id')))
+        if room and self.include_view.get_active() and self.still_view.get_active() and not room.get('still_available'):
+            view_ready = False
+        self.enter_room_button.set_sensitive(not self.room_launching and room is not None and room.get('available', True) and view_ready)
+        if not room:
+            self.room_name.set_text('No rooms available')
+            self.room_description.set_text('Refresh to try again.')
+            self.room_plan.set_text('')
+            self.room_picture.set_filename(None)
+            self.room_tone.set_text('')
+            return
+        self.room_name.set_text(room.get('name', 'Room'))
+        self.room_description.set_text(room.get('description') or room.get('subtitle') or '')
+        self.room_tone.set_text('Sound mood: ' + room['audio_tone'] if room.get('audio_tone') else '')
+        self.still_view.set_sensitive(self.include_view.get_active())
+        accent = room.get('accent', '')
+        if re.fullmatch(r'#[0-9a-fA-F]{6}', accent):
+            self.room_colors.load_from_data(('.room-hero-title { color: ' + accent + '; } button.suggested-action { background: ' + accent + '; color: #172331; }').encode())
+        else:
+            self.room_colors.load_from_data(b'')
+        sound = room.get('source_name') or 'Selected source'
+        view = room.get('view_name') or 'Silent view'
+        note = 'Sound: ' + sound
+        if self.include_view.get_active():
+            if room.get('view_id'):
+                note += '\nView: ' + view + ' · workspace 9'
+                if self.still_view.get_active():
+                    note += '\nStill artwork' if room.get('still_available') else '\nStill artwork unavailable. Turn off Still artwork to continue.'
+                elif room.get('motion'):
+                    note += '\n' + room['motion']
+            else:
+                note += '\nView unavailable. Uncheck the view option for sound only.'
+        else:
+            note += '\nSound only'
+        if room.get('source_kind') in ('web', 'discovery'):
+            note += '\nOpens in your browser; use its player to start listening.'
+        if not room.get('available', True):
+            note += '\nThis room is currently unavailable.'
+        self.room_plan.set_text(note)
+        poster = room.get('poster_path')
+        self.room_picture.set_filename(poster if isinstance(poster, str) and os.path.isfile(poster) else None)
+
+    def surprise_room(self):
+        if hasattr(self, 'experience'):
+            self.experience.surprise()
+            return
+        choices = [r for r in self.room_items if r['id'] != self.preview_room_id]
+        if not choices:
+            return
+        chosen = random.choice(choices)
+        index = self.room_items.index(chosen)
+        self.rooms_rail.select_row(self.rooms_rail.get_row_at_index(index))
+
+    def enter_room(self):
+        if hasattr(self, 'experience'):
+            self.experience.enter(self.preview_room_id, self.include_view.get_active(), self.still_view.get_active())
+            return
+        room_id = self.preview_room_id
+        include_view = self.include_view.get_active()
+        still = self.still_view.get_active()
+        if not room_id or self.room_launching:
+            return
+        self.room_launching = True
+        self.update_room_preview()
+        def finish_launch():
+            self.room_launching = False
+            if not self.closed:
+                self.update_room_preview()
+            return False
+        def launch():
+            try:
+                return room_catalogue.launch_room(room_id, with_view=include_view, still=still)
+            finally:
+                GLib.idle_add(finish_launch)
+        def complete(result):
+            self.show_room_result(result, 'Room started')
+        self.run_task(launch, success=complete, message='Entering room…')
+
+    def show_room_result(self, result, fallback):
+        if isinstance(result, dict):
+            message = result.get('message', fallback)
+            errors = result.get('errors') or []
+            if errors:
+                message += ' ' + '; '.join(str(error) for error in errors)
+            self.set_message(message, bool(errors))
+        else:
+            self.set_message(str(result or fallback))
+
+    def quiet_room(self):
+        if hasattr(self, 'experience'):
+            self.experience.command('quiet')
+            return
+        self.channels.cancel_layer_start()
+        player_id = self.visible_player_id()
+        self.run_task(lambda: room_catalogue.quiet_room(target_id=player_id),
+                      success=lambda result: self.show_room_result(result, 'Room quieted'),
+                      message='Quieting room…')
+
+    def stop_room(self):
+        if hasattr(self, 'experience'):
+            self.experience.command('stop')
+            return
+        self.channels.cancel_layer_start()
+        self.run_task(room_catalogue.stop_room,
+                      success=lambda result: self.show_room_result(result, 'Room stopped'),
+                      message='Stopping room…')
+
+    @staticmethod
+    def item_name(item):
+        return item.get('name', item.get('id', 'Unnamed')) if isinstance(item, dict) else str(item)
+
+    @staticmethod
+    def activity(value):
+        if not value: return 'stopped'
+        if isinstance(value, dict):
+            if not value.get('running', value.get('active', True)): return 'stopped'
+            return str(value.get('name') or value.get('title') or value.get('status') or 'open')
+        return str(value)
+
+    def render_sources(self):
+        child = self.source_list.get_first_child()
+        while child:
+            nxt = child.get_next_sibling(); self.source_list.remove(child); child = nxt
+        query = self.search.get_text().casefold().strip()
+        categories = ['All', 'Favorites', 'Focus', 'World', 'Nightcore', 'Electro swing', 'Atompunk', 'Finnish', 'Dark academia', 'Apps']
+        category = categories[min(self.filter.get_selected(), len(categories)-1)]
+        favs = {x.get('url') for x in self.snapshot.get('favorites', []) if isinstance(x, dict)}
+        items = self.search_results + (self.snapshot.get('sources') or [])
+        items = sorted(items, key=lambda x: (0 if isinstance(x, dict) and x.get('kind') == 'radio' and x.get('url') in favs else 1 if isinstance(x, dict) and x.get('kind') == 'radio' else 2))
+        section = None
+        seen = set()
+        count = 0
+        for item in items:
+            if not isinstance(item, dict): continue
+            key = item.get('url') or item.get('id')
+            if key in seen: continue
+            seen.add(key)
+            haystack = ' '.join(str(item.get(k, '')) for k in ('name', 'group', 'description')) + ' ' + ' '.join(item.get('tags') or [])
+            lower = haystack.casefold()
+            if query and query not in lower: continue
+            if category == 'Favorites' and item.get('url') not in favs: continue
+            if category not in ('All', 'Favorites') and category.casefold() not in lower: continue
+            group = ('Your favorites' if item.get('url') in favs else 'Explore radio') if item.get('kind') == 'radio' else 'Open elsewhere'
+            if group != section:
+                self.source_list.append(label(group, 'section-title'))
+                section = group
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            row.add_css_class('source-row')
+            body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            body.set_hexpand(True)
+            name = label(item.get('name', 'Unnamed source'), 'source-name')
+            name.set_ellipsize(3)
+            name.set_max_width_chars(55)
+            body.append(name)
+            detail = label(item.get('group', ''), 'muted')
+            body.append(detail)
+            row.append(body)
+            if item.get('kind') == 'radio':
+                is_fav = item.get('url') in favs
+                favorite = button('★' if is_fav else '☆', lambda _, x=item, saved=is_fav: self.favorite(x, saved), 'Remove from favorites' if is_fav else 'Save to favorites')
+                row.append(favorite)
+            if item.get('kind') == 'radio':
+                row.append(button('Tune in', lambda _, x=item: self.tune_source(x)))
+                row.append(button('Save station', lambda _, x=item: self.station_panel.save_source(x)))
+            else:
+                row.append(button('Open elsewhere', lambda _, x=item: self.open_source(x)))
+            if item.get('kind') == 'radio' and hub.valid_url(item.get('website')):
+                row.append(button('Website', lambda _, x=item: self.open_source(dict(x, kind='web', url=x['website'])), 'Open the station website if its direct stream is unavailable'))
+            self.source_list.append(row)
+            count += 1
+        if not count:
+            self.source_list.append(label('No sources match. Try another search or category.', 'muted'))
+
+    def world_search(self):
+        query = self.search.get_text().strip()
+        if not query:
+            self.set_message('Enter a station name, country:FI, tag:genre or language:name.', True)
+            return
+        self.search_world(query)
+
+    def search_world(self, query):
+        def complete(results):
+            self.search_results = results
+            self.search.set_text('')
+            self.filter.set_selected(0)
+            self.render_sources()
+            self.set_message(f'Found {len(results)} stations')
+        self.run_task(lambda: hub.search_radio(query), success=complete, message='Searching world radio…')
+
+    def pause_preference(self, checkbox):
+        if self.updating: return
+        value = checkbox.get_active()
+        self.run_task(lambda: hub.update_state(pause_others_on_radio_start=value), message='Updating preference…')
+
+    def save_named(self, kind):
+        name = self.save_name.get_text().strip()
+        if not name:
+            self.set_message('Enter a name first.', True)
+            return
+        action = hub.save_profile if kind == 'profile' else hub.save_scene
+        self.run_task(lambda: action(name), message='Saving ' + kind + '…')
+
+    def favorite(self, item, saved):
+        def change():
+            if saved:
+                hub.save_json(hub.STATE / 'favorites.json', [x for x in hub.favorites() if x['url'] != item.get('url')])
+            else:
+                hub.save_favorite(item)
+        self.run_task(change, message='Updating favorites…')
+
+    def open_source(self, item):
+        if hasattr(self, 'experience') and item.get('kind') == 'radio':
+            self.experience.command('music', {'item': item})
+            return
+        if item.get('kind') == 'search':
+            query = item.get('query', '')
+            self.search_world(query)
+        else:
+            self.run_task(lambda: hub.play(item), message='Opening ' + item.get('name', 'source') + '…')
+
+    def tune_source(self, item):
+        if self.destination.get_selected() == 1:
+            self.background_source(item)
+        else:
+            self.open_source(item)
+
+    def background_source(self, item):
+        self.experience.command('atmosphere', {'kind': 'radio', 'source_id': item.get('id'),
+                                               'url': item.get('url'), 'name': item.get('name')})
+
+    def play_online_item(self, item):
+        if item.get('provider') == 'music_assistant' and self.destination.get_selected() == 1:
+            self.set_message('Music Assistant plays on its selected remote speaker; choose Main audio for this source.', True)
+            return False
+        if item.get('provider') == 'jellyfin' and self.destination.get_selected() == 1:
+            self.experience.command('atmosphere', {'kind': 'radio', 'reference': item, 'name': item.get('name')})
+            return True
+        if item.get('provider') == 'link':
+            self.experience.command('link', {'url': item['url'], 'destination': item.get('route', 'music')}, show_inside=item.get('route', 'music') == 'music')
+        else:
+            self.experience.command('online', {'service': item.get('provider', 'jellyfin'), 'item': item}, show_inside=True)
+        return True
+
+    def choose_player(self, *_):
+        if self.updating: return
+        i = self.player.get_selected()
+        if i < len(self.player_ids):
+            player_id = self.player_ids[i]
+            self.run_task(lambda: hub.update_state(selected=player_id), message='Selecting player…')
+
+    def visible_player_id(self):
+        index = self.player.get_selected()
+        return self.player_ids[index] if index < len(self.player_ids) else None
+
+    def transport(self, command):
+        player_id = self.visible_player_id()
+        if player_id:
+            self.run_task(lambda: hub.transport(player_id, command), message='Sending control…')
+
+    def volume_control(self, parent, title, master):
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=5)
+        box.set_hexpand(True)
+        box.append(label(title, 'muted'))
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        scale.set_hexpand(True); scale.set_draw_value(True)
+        scale.connect('value-changed', self.volume_changed, master)
+        box.append(scale)
+        mute = button('Mute', lambda _: self.mute_player(master))
+        if master: self.master_mute = mute
+        box.append(mute)
+        parent.append(box)
+        return scale
+
+    def mute_player(self, master):
+        player_id = None if master else self.visible_player_id()
+        if not master and not player_id:
+            self.set_message('Select a player first.', True)
+            return
+        self.run_task(lambda: hub.mute(master=master, target_id=player_id), message='Changing mute…')
+
+    def set_scale(self, scale, value, master):
+        scale.set_sensitive(value is not None)
+        if value is not None and master not in self.scale_editing:
+            scale.set_value(float(value))
+
+    def volume_changed(self, scale, master):
+        if self.updating: return
+        player_id = None if master else self.visible_player_id()
+        if not master and not player_id:
+            return
+        value = round(scale.get_value())
+        self.scale_editing.add(master)
+        if master in self.scale_timers: GLib.source_remove(self.scale_timers[master])
+        def send():
+            self.scale_timers.pop(master, None)
+            def finish(_):
+                self.scale_editing.discard(master)
+                self.set_message('Volume changed')
+            self.run_task(lambda: hub.set_volume(value, master=master, target_id=player_id), success=finish, message='Changing volume…')
+            return False
+        self.scale_timers[master] = GLib.timeout_add(350, send)
+
+    def video_volume_changed(self, scale):
+        if self.updating: return
+        key = 'video'
+        self.scale_editing.add(key)
+        if key in self.scale_timers: GLib.source_remove(self.scale_timers[key])
+        def send():
+            self.scale_timers.pop(key, None)
+            value = round(scale.get_value())
+            def finish(_):
+                self.scale_editing.discard(key)
+                self.set_message('Video volume changed')
+            self.run_task(lambda: ambience.control('volume', 'video', value), success=finish, message='Changing video volume…')
+            return False
+        self.scale_timers[key] = GLib.timeout_add(350, send)
+
+    def start_vista(self):
+        i = self.vista.get_selected()
+        if i < len(self.presets):
+            preset = self.presets[i]
+            if self.experience.snapshot.get('active'):
+                self.experience.command('picture', {'action':'select','preset_id':preset['id'],'enabled':True,'still':False,'placement':'9'})
+            else:
+                self.run_task(lambda: ambience.start(preset, mode='ambience', placement='9'), message='Opening silent vista…')
+
+    def start_url(self, mode):
+        url = self.video_url.get_text().strip()
+        if not url:
+            self.set_message('Enter a YouTube or video URL first.', True); return
+        if mode == 'ambience':
+            self.experience.command('link', {'url':url,'destination':'picture'})
+            return
+        def start():
+            ambience.start(url, mode=mode, placement='9')
+            if mode == 'video':
+                hub.update_state(selected='video')
+        self.run_task(start, message='Opening video…')
+
+    def start_audio_url(self):
+        url = self.video_url.get_text().strip()
+        if not url:
+            self.set_message('Paste a public YouTube video URL first.', True)
+            return
+        self.experience.command('link', {'url':url,'destination':'music'})
+
+    def ambience_action(self, kind, action, mode):
+        if mode == 'ambience':
+            if kind == 'place': self.experience.command('picture', {'action':'place','placement':action})
+            else: self.experience.command('layer', {'layer':'picture','action':action})
+            return
+        self.run_task(lambda: getattr(ambience, kind)(action, mode), message='Updating ' + mode + '…')
+
+    def apply_profile(self):
+        i = self.profile.get_selected()
+        if i < len(self.profile_items):
+            item = self.profile_items[i]
+            self.run_task(lambda: hub.restore_profile(item.get('id') if isinstance(item, dict) else item), message='Applying settings profile…')
+
+    def restore_profile(self):
+        self.run_task(lambda: hub.restore_profile('default'), message='Restoring default settings…')
+
+    def start_scene(self):
+        i = self.scene.get_selected()
+        if i < len(self.scene_items):
+            item = self.scene_items[i]
+            self.run_task(lambda: hub.play_scene(item.get('id') if isinstance(item, dict) else item), message='Starting scene…')
+
+
+def launch_arguments(arguments):
+    import argparse
+    parser = argparse.ArgumentParser(description='Your desktop listening room')
+    parser.add_argument('--desk', action='store_true')
+    parser.add_argument('--inside', action='store_true')
+    parser.add_argument('--preview-link')
+    parser.add_argument('--ui', choices=('classic', 'next'), default='classic')
+    parser.add_argument('uri', nargs='?')
+    args = parser.parse_args(arguments)
+    link = args.preview_link
+    if args.uri:
+        import urllib.parse
+        uri = urllib.parse.urlsplit(args.uri)
+        if uri.scheme == 'listening-room' and uri.netloc == 'open':
+            link = urllib.parse.parse_qs(uri.query).get('url', [''])[0]
+        else:
+            link = args.uri
+    mode = 'desk' if args.desk else 'inside' if args.inside else 'browse'
+    return mode, link
+
+
+def ui_choice(arguments):
+    import argparse
+    chooser = argparse.ArgumentParser(add_help=False)
+    chooser.add_argument('--ui', choices=('classic', 'next'), default='classic')
+    return chooser.parse_known_args(arguments)[0].ui
+
+
+def main():
+    # Today's window stays the default; the libadwaita window is opt-in.
+    if ui_choice(sys.argv[1:]) == 'next':
+        import next_window
+        return next_window.run([sys.argv[0]])
+    return Room().run(sys.argv)
+
+if __name__ == '__main__':
+    sys.exit(main())
+"""The quiet room surface and permanent three-layer mixer for native GTK."""
+import concurrent.futures
+from pathlib import Path
+import re
+import urllib.parse
+
+from gi.repository import Gtk, Gdk, GLib
+import session_client
+import audio_layers
+import audio_devices
+import room_discovery
+
+
+def label(value='', css=None):
+    widget = Gtk.Label(label=value, xalign=0)
+    widget.set_wrap(True)
+    if css:
+        widget.add_css_class(css)
+    return widget
+
+
+def button(title, callback, tip=None):
+    widget = Gtk.Button(label=title)
+    widget.connect('clicked', lambda *_: callback())
+    if tip:
+        widget.set_tooltip_text(tip)
+    return widget
+
+
+def row(*children, spacing=8):
+    box = Gtk.Box(spacing=spacing)
+    for child in children:
+        box.append(child)
+    return box
+
+
+class RoomExperience:
+    def __init__(self, app, content, notebook, legacy_player):
+        self.app = app
+        self.closed = False
+        self.updating = False
+        self.snapshot = {}
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+        self.controls = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        self.interrupts = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.pending = False
+        self.timers = {}
+        self.pending_values = {}
+        self.was_active = None
+        self.mode = 'browse'
+        self.variant_items = []
+        self.output_items = []
+        self.displays = []
+        content.remove(legacy_player)
+        content.remove(notebook)
+        self.active_label = label('Choose a room to begin', 'session-caption')
+        self.active_label.set_hexpand(True)
+        self.return_button = button('Return to last room', lambda: self.command('return', show_inside=True))
+        self.return_button.set_sensitive(False)
+        self.browse_button = button('Browse', lambda: self.show('browse'))
+        self.inside_button = button('Inside', lambda: self.show('inside'))
+        self.desk_button = button('Desk', lambda: self.show('desk'))
+        content.append(row(self.active_label, self.return_button, self.desk_button))
+        self.saved = Gtk.DropDown.new_from_strings(['Save a room to keep its complete mix'])
+        self.saved.set_hexpand(True)
+        self.saved_button = button('Enter saved room', self.enter_saved)
+        self.saved_button.set_sensitive(False)
+        self.saved_row = row(label('My rooms'), self.saved, self.saved_button)
+        content.append(self.saved_row)
+        self.stack = Gtk.Stack()
+        self.stack.set_vexpand(True)
+        self.stack.set_hhomogeneous(False)
+        self.stack.set_vhomogeneous(False)
+        self.stack.add_named(notebook, 'browse')
+        self.inside = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.inside_title = label('Your listening room', 'inside-title')
+        self.inside.append(self.inside_title)
+        self.art = Gtk.Picture()
+        self.art.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.art.set_can_shrink(True)
+        self.art.set_size_request(250, 140)
+        self.art.set_vexpand(True)
+        self.inside.append(self.art)
+        self.mix_description = label('', 'muted')
+        self.inside.append(self.mix_description)
+        self.name = Gtk.Entry()
+        self.name.set_placeholder_text('Name this mix, for example Rainy reading')
+        self.name.set_hexpand(True)
+        self.save_button = button('Save this room', self.save)
+        self.inside.append(row(self.name, self.save_button))
+        self.resume_button = button('Resume interrupted room', lambda: self.command('resume'))
+        self.resume_button.set_visible(False)
+        self.previous_button = button('Previous', lambda: self.layer('music', 'previous'))
+        self.next_button = button('Next', lambda: self.layer('music', 'next'))
+        self.inside.append(row(self.previous_button, button('Play / pause', lambda: self.layer('music', 'toggle')), self.next_button,
+                               button('Quiet', lambda: self.command('quiet')), self.resume_button,
+                               button('Leave room', lambda: self.command('leave', {'fade_seconds': .8}, after=lambda _: self.show('browse')))))
+        session_options = Gtk.Expander(label='Session options')
+        actions = Gtk.FlowBox()
+        actions.set_selection_mode(Gtk.SelectionMode.NONE)
+        actions.set_max_children_per_line(3)
+        for child in [button('Quiet for 10 minutes', lambda: self.command('quiet', {'minutes': 10})),
+                      button('Wind down in 30 minutes', lambda: self.command('wind_down', {'minutes': 30})),
+                      button('Cancel wind down', lambda: self.command('wind_down', {'minutes': 0}))]:
+            actions.append(child)
+        session_options.set_child(actions)
+        self.inside.append(session_options)
+        self.stack.add_named(self.inside, 'inside')
+        self.desk = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.desk_title = label('Listening room', 'desk-title')
+        self.desk.append(self.desk_title)
+        self.desk_track = label('', 'muted')
+        self.desk.append(self.desk_track)
+        self.desk_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.desk_scale.set_draw_value(True)
+        self.desk_scale.connect('value-changed', lambda w: self.slider('music', 'volume', w.get_value()))
+        self.desk.append(self.desk_scale)
+        self.desk.append(row(button('Play / pause', lambda: self.layer('music', 'toggle')),
+                             button('Quiet', lambda: self.command('quiet')),
+                             button('Leave room', lambda: self.command('leave', {'fade_seconds': .8}, after=lambda _: self.show('browse')))))
+        self.stack.add_named(self.desk, 'desk')
+        content.append(self.stack)
+        self.mixer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
+        self.mixer.add_css_class('room-mixer')
+        self.layer_labels = {}
+        self.errors = {}
+        self.scales = {}
+        self.mute_buttons = {}
+        for kind, title in [('music', 'Main audio'), ('atmosphere', 'Background audio')]:
+            title_label = label(title, 'layer-title')
+            title_label.set_size_request(95, -1)
+            status = label('Stopped', 'muted')
+            status.set_hexpand(True)
+            status.set_ellipsize(3)
+            status.set_max_width_chars(28)
+            self.layer_labels[kind] = status
+            scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+            scale.set_size_request(130, -1)
+            scale.set_hexpand(True)
+            scale.set_draw_value(True)
+            scale.connect('value-changed', lambda widget, k=kind: self.slider(k, 'volume', widget.get_value()))
+            self.scales[kind] = scale
+            mute = button('Mute', lambda k=kind: self.layer(k, 'mute'))
+            self.mute_buttons[kind] = mute
+            controls = [title_label, status, button('▶ / Ⅱ', lambda k=kind: self.layer(k, 'toggle')), scale, mute]
+            if kind == 'atmosphere':
+                self.background_next = button('Next', lambda: self.layer('atmosphere', 'next'), 'Next background library track')
+                self.background_next.set_sensitive(False)
+                controls.append(self.background_next)
+            controls.extend([button('Stop', lambda k=kind: self.layer(k, 'stop')),
+                             button('Retry', lambda k=kind: self.layer(k, 'retry'))])
+            self.mixer.append(row(*controls))
+            error = label('', 'error')
+            error.set_visible(False)
+            self.errors[kind] = error
+            self.mixer.append(error)
+        picture_title = label('Picture', 'layer-title')
+        picture_title.set_size_request(95, -1)
+        self.picture_label = label('Closed', 'muted')
+        self.picture_label.set_hexpand(True)
+        self.motion = Gtk.CheckButton(label='Still')
+        self.motion.connect('toggled', lambda widget: self.command('picture', {'action': 'still', 'still': widget.get_active()}) if not self.updating else None)
+        self.placement = Gtk.DropDown.new_from_strings(['Workspace 9', 'Here', 'Pinned', 'Small picture'])
+        self.placement.connect('notify::selected', lambda widget, _: self.command('picture', {'action': 'place', 'placement': ['9', 'here', 'pin', 'pip'][widget.get_selected()]}) if not self.updating else None)
+        self.mixer.append(row(picture_title, self.picture_label, self.motion, self.placement,
+                              button('Retry picture', lambda: self.command('picture', {'action': 'retry'})),
+                              button('Close', lambda: self.layer('picture', 'stop'))))
+        self.errors['picture'] = label('', 'error')
+        self.errors['picture'].set_visible(False)
+        self.mixer.append(self.errors['picture'])
+        content.append(self.mixer)
+        self.options = Gtk.Expander(label='Atmosphere, output and room setup')
+        options = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.atmospheres = audio_layers.presets()
+        self.atmosphere = Gtk.DropDown.new_from_strings(['Choose a local atmosphere'] + [item['name'] for item in self.atmospheres])
+        self.atmosphere.set_hexpand(True)
+        options.append(row(self.atmosphere, button('Use atmosphere', self.select_atmosphere)))
+        self.openness = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.openness.set_value(100)
+        self.openness.set_hexpand(True)
+        self.openness.connect('value-changed', lambda widget: self.slider('atmosphere', 'window', widget.get_value()))
+        options.append(row(label('Window open'), self.openness))
+        self.output = Gtk.DropDown.new_from_strings(['System output'])
+        self.output.set_hexpand(True)
+        options.append(row(label('Output'), self.output, button('Use output', self.select_output),
+                           button('Test sound', self.test_output), button('Refresh outputs', self.refresh_outputs)))
+        self.disconnect = Gtk.CheckButton(label='Pause if the preferred output disconnects')
+        self.calls = Gtk.CheckButton(label='Lower room audio during calls')
+        self.reduced = Gtk.CheckButton(label='Prefer still artwork and reduced motion')
+        for widget, key in [(self.disconnect, 'pause_on_disconnect'), (self.calls, 'duck_on_call'), (self.reduced, 'reduced_motion')]:
+            widget.connect('toggled', lambda w, k=key: self.setting(k, w.get_active()) if not self.updating else None)
+            options.append(widget)
+        options.append(row(button('Dusk over 30 minutes', lambda: self.command('picture', {'action': 'sequence', 'minutes': 30})),
+                           button('Keep current lighting', lambda: self.command('picture', {'action': 'sequence', 'minutes': 0}))))
+        self.default_place = Gtk.DropDown.new_from_strings(['Workspace 9', 'Here', 'Pinned', 'Small picture'])
+        self.default_place.connect('notify::selected', lambda w, _: self.setting('placement', ['9', 'here', 'pin', 'pip'][w.get_selected()]) if not self.updating else None)
+        self.display = Gtk.DropDown.new_from_strings(['Follow placement'])
+        self.display.connect('notify::selected', lambda w, _: self.setting('display', self.displays[w.get_selected()-1]['name'] if w.get_selected() and w.get_selected() <= len(self.displays) else None) if not self.updating else None)
+        options.append(row(label('Picture default'), self.default_place, self.display))
+        self.options.set_child(options)
+        content.append(self.options)
+        self.other_players = Gtk.Expander(label='Other apps and system volume')
+        self.other_players.set_child(legacy_player)
+        content.append(self.other_players)
+        self.discovery = Gtk.DropDown.new_from_strings(['Any mood', 'Instrumental preferred', 'Spoken word welcome', 'Low energy', 'Familiar rooms', 'Explore new rooms'])
+        self.discovery.connect('notify::selected', lambda *_: self.filter_rooms())
+        self.discovery_note = label('Room descriptions are editorial; live programming varies.', 'muted')
+        rooms_page = notebook.get_nth_page(0)
+        # Keep discovery visible above the existing room rail without changing it.
+        rail_parent = rooms_page.get_first_child()
+        self.discovery.set_tooltip_text('Surprise me respects this preference and recent room history')
+        app.rooms_rail.set_header_func(None)
+        self.discovery_row = row(label('Find a room'), self.discovery)
+        # An extra browser page owns setup links and accepts explicit URL drops.
+        links = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.links = links
+        self.discovery_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.discovery_box.append(self.discovery_row)
+        self.discovery_box.append(self.discovery_note)
+        content.insert_child_after(self.discovery_box, self.saved_row)
+        self.link = Gtk.Entry()
+        self.link.set_placeholder_text('Paste a public radio, YouTube, Twitch or library link')
+        self.link.connect('changed', lambda *_: self.preview_link())
+        links.append(self.link)
+        self.link_note = label('Pasting and dropping links only previews them.', 'muted')
+        links.append(self.link_note)
+        self.link_music = button('Main audio', lambda: self.play_link('music'))
+        self.link_background = button('Background audio', lambda: self.play_link('atmosphere'))
+        self.link_picture = button('Send to Picture', lambda: self.play_link('picture'))
+        links.append(row(self.link_music, self.link_background, self.link_picture, button('Open elsewhere', self.open_original)))
+        self.link_music.set_sensitive(False); self.link_background.set_sensitive(False); self.link_picture.set_sensitive(False)
+        notebook.append_page(button('Open links in Listen', lambda: self.app.show_links()), Gtk.Label(label='Find & links'))
+        target = Gtk.DropTarget.new(str, Gdk.DragAction.COPY)
+        target.connect('drop', self.drop_link)
+        app.window.add_controller(target)
+        self.refresh_outputs()
+        self.refresh()
+        self.poll_timer = GLib.timeout_add(900, self.refresh)
+
+    def command(self, action, args=None, show_inside=False, after=None):
+        if self.closed:
+            return
+        def done(result):
+            if show_inside:
+                self.show('inside')
+            if after:
+                after(result)
+            self.refresh()
+        urgent = action in ('quiet', 'stop', 'leave') or (action == 'layer' and (args or {}).get('action') in ('stop', 'pause'))
+        self.app.run_task(lambda: session_client.request(action, args or {}, timeout=5), success=done,
+                          message={'enter': 'Entering room…', 'return': 'Returning to your room…', 'save': 'Saving room…'}.get(action), executor=self.interrupts if urgent else self.controls)
+
+    def enter(self, room_id, with_view=True, still=False):
+        still = still or bool((self.snapshot.get('settings') or {}).get('reduced_motion'))
+        self.command('enter', {'room_id': room_id, 'with_view': with_view, 'still': still}, show_inside=True)
+
+    def enter_saved(self):
+        index = self.saved.get_selected()
+        if index < len(self.variant_items):
+            self.command('enter', {'variant_id': self.variant_items[index]['id']}, show_inside=True)
+
+    def save(self):
+        name = self.name.get_text().strip()
+        if not name:
+            self.app.set_message('Give this room a name before saving.', True)
+            self.name.grab_focus()
+            return
+        pending = list(self.timers)
+        for key in pending:
+            GLib.source_remove(self.timers.pop(key))
+        values = [(layer, action, self.pending_values.pop((layer, action))) for layer, action in pending]
+        def save_mix():
+            for layer, action, value in values:
+                session_client.request('layer', {'layer': layer, 'action': action, 'value': value})
+            return session_client.request('save', {'name': name})
+        self.app.run_task(save_mix, success=lambda _: self.refresh(), message='Saving room…', executor=self.controls)
+
+    def layer(self, layer, action, value=None):
+        args = {'layer': layer, 'action': action}
+        if value is not None:
+            args['value'] = value
+        self.command('layer', args)
+
+    def slider(self, layer, action, value):
+        if self.updating or self.closed:
+            return
+        key = (layer, action)
+        self.pending_values[key] = value
+        if key in self.timers:
+            GLib.source_remove(self.timers[key])
+        def send():
+            self.timers.pop(key, None)
+            self.pending_values.pop(key, None)
+            self.layer(layer, action, round(value, 1))
+            return False
+        self.timers[key] = GLib.timeout_add(160, send)
+
+    def setting(self, key, value):
+        if key == 'reduced_motion' and value:
+            self.app.still_view.set_active(True)
+        self.command('settings', {'values': {key: value}})
+
+    def select_atmosphere(self):
+        index = self.atmosphere.get_selected()
+        if index and index <= len(self.atmospheres):
+            self.command('atmosphere', {'kind': 'local', 'id': self.atmospheres[index-1]['id']})
+
+    def refresh(self):
+        if self.closed:
+            return False
+        if self.pending:
+            return True
+        self.pending = True
+        future = self.executor.submit(session_client.request, 'inspect', {}, 3)
+        def done(f):
+            try:
+                value = f.result()
+                GLib.idle_add(self.render, value)
+            except Exception as error:
+                GLib.idle_add(self.failed, str(error))
+        future.add_done_callback(done)
+        return True
+
+    def failed(self, error):
+        self.pending = False
+        if not self.closed:
+            self.active_label.set_text('Room controller unavailable · ' + error)
+        return False
+
+    def render(self, snapshot):
+        self.pending = False
+        if self.closed:
+            return False
+        self.snapshot = snapshot
+        if hasattr(self.app, 'station_panel'):
+            self.app.station_panel.render(snapshot)
+        self.updating = True
+        active = snapshot.get('active') or {}
+        last = snapshot.get('last_session') or {}
+        settings = snapshot.get('settings') or {}
+        preferred = settings.get('preferred_output')
+        if preferred != getattr(self, 'last_output_pref', object()):
+            self.output.set_selected(next((i+1 for i,item in enumerate(self.output_items) if item['name'] == preferred), 0))
+            self.last_output_pref = preferred
+        name = active.get('name') or 'Listening room'
+        station = snapshot.get('station') or {}
+        track = (station.get('current') or {}).get('name')
+        playing = (station.get('definition') or {}).get('name') or name
+        if track: playing += ' · ' + track
+        self.active_label.set_text(('Currently playing: ' + playing) if active else ('Return available: ' + last['name'] if last.get('name') else 'Choose a room to begin'))
+        queue = (active.get('music') or {}).get('queue') or []
+        index = (active.get('music') or {}).get('queue_index', 0)
+        self.previous_button.set_sensitive(bool(queue) and index > 0)
+        self.next_button.set_sensitive(bool(queue) and index+1 < len(queue))
+        self.inside_title.set_text(name)
+        self.desk_title.set_text(name)
+        self.save_button.set_sensitive(bool(active) and (snapshot.get('transition') or {}).get('kind') != 'enter')
+        self.return_button.set_sensitive(bool(last))
+        self.inside_button.set_sensitive(bool(active))
+        self.desk_button.set_sensitive(bool(active))
+        poster = active.get('poster_path')
+        if poster and Path(poster).is_file():
+            self.art.set_filename(poster)
+        else:
+            self.art.set_filename(None)
+        self.theme(active)
+        layers = snapshot.get('layers') or {}
+        pieces = []
+        for kind in ('music', 'atmosphere'):
+            state = layers.get(kind) or {}
+            recipe = active.get(kind) or {}
+            title = state.get('name') or state.get('title') or recipe.get('name') or recipe.get('id') or recipe.get('source_id') or 'Not selected'
+            status = state.get('status', 'Stopped')
+            self.layer_labels[kind].set_text(title + ' · ' + status)
+            if status.lower() == 'playing':
+                pieces.append(title)
+            key = (kind, 'volume')
+            if key not in self.timers:
+                level = state.get('volume', recipe.get('volume', 20 if kind == 'atmosphere' else 50))
+                if isinstance(level, (int, float)):
+                    self.scales[kind].set_value(level)
+                    if kind == 'music': self.desk_scale.set_value(level)
+            self.mute_buttons[kind].set_label('Unmute' if state.get('muted', recipe.get('muted', False)) else 'Mute')
+        music_state = layers.get('music') or {}
+        self.desk_track.set_text(music_state.get('title') or (active.get('music') or {}).get('name') or '')
+        self.mix_description.set_text(' + '.join(pieces) or 'The room is quiet.')
+        picture = layers.get('picture') or {}
+        recipe = active.get('picture') or {}
+        self.picture_label.set_text((picture.get('name') or 'Open') if picture.get('status') not in ('Stopped', None) else 'Closed')
+        atmosphere_state = layers.get('atmosphere') or {}
+        self.background_next.set_sensitive(bool(atmosphere_state.get('can_next')))
+        self.openness.set_sensitive(atmosphere_state.get('kind') == 'local' and bool(atmosphere_state.get('outdoor')))
+        if not hasattr(self, 'applied_defaults'):
+            self.app.still_view.set_active(bool(settings.get('still') or settings.get('reduced_motion')))
+            self.applied_defaults = True
+        self.motion.set_active(bool(recipe.get('still', settings.get('reduced_motion', False))))
+        place = recipe.get('placement', settings.get('placement', '9'))
+        self.placement.set_selected(['9', 'here', 'pin', 'pip'].index(place) if place in ('9', 'here', 'pin', 'pip') else 0)
+        default_place = settings.get('placement', '9')
+        self.default_place.set_selected(['9', 'here', 'pin', 'pip'].index(default_place) if default_place in ('9', 'here', 'pin', 'pip') else 0)
+        if ('atmosphere', 'window') not in self.timers:
+            self.openness.set_value((active.get('atmosphere') or {}).get('window_open', 35))
+        self.disconnect.set_active(bool(settings.get('pause_on_disconnect', True)))
+        self.calls.set_active(bool(settings.get('duck_on_call', False)))
+        self.reduced.set_active(bool(settings.get('reduced_motion', False)))
+        self.resume_button.set_visible(bool(snapshot.get('resume_offer')))
+        variants = snapshot.get('variants') or []
+        if variants != self.variant_items:
+            self.variant_items = variants
+            self.saved.set_model(Gtk.StringList.new([item['name'] for item in variants] or ['Save a room to keep its complete mix']))
+            self.saved_button.set_sensitive(bool(variants))
+        extra_errors = [str(value) for key, value in (snapshot.get('errors') or {}).items() if key not in self.errors]
+        transition = snapshot.get('transition') or {}
+        if extra_errors: self.app.set_message('; '.join(extra_errors), True)
+        elif transition.get('kind') == 'enter': self.app.set_message('Entering ' + transition.get('name', 'room') + '…')
+        elif self.app.message.get_text().startswith(('Entering', 'Saving', 'Returning', 'Opening')):
+            self.app.set_message(('Current room: ' + name) if active else 'Choose a room to begin')
+        for kind, widget in self.errors.items():
+            error = (snapshot.get('errors') or {}).get(kind)
+            warning = (layers.get(kind) or {}).get('warning')
+            widget.set_text('; '.join(str(value) for value in (error, warning) if value))
+            widget.set_visible(bool(error or warning))
+        if not active and self.was_active and self.mode != 'browse':
+            self.show('browse')
+        marker = (active.get('id'), active.get('name'))
+        if active and marker != getattr(self, 'last_room_marker', None):
+            self.app.set_message('Current room: ' + name)
+        self.last_room_marker = marker
+        self.was_active = bool(active)
+        if hasattr(self.app, 'connections'):
+            self.app.connections.update_queue({'items': (active.get('music') or {}).get('queue') or [], 'index': (active.get('music') or {}).get('queue_index', 0)})
+        self.updating = False
+        return False
+
+    def theme(self, active):
+        accent = active.get('accent', '#c79b68')
+        if not re.fullmatch(r'#[0-9a-fA-F]{6}', str(accent)):
+            accent = '#c79b68'
+        # Use a restrained tint of the authored room's accent with readable text.
+        rgb = [int(accent[i:i+2], 16) for i in (1, 3, 5)]
+        base = '#'+''.join(f'{int(c*.075+17):02x}' for c in rgb)
+        panel = '#'+''.join(f'{int(c*.12+25):02x}' for c in rgb)
+        css = f'notebook > stack, notebook > header, viewport, list {{ background-color: {base}; color: #e7edf3; }} notebook > header {{ background-color: {panel}; }} notebook tab {{ color: #bdc9d2; }} notebook tab:checked {{ background-color: {base}; color: #ffffff; }} popover contents {{ background-color: {panel}; color: #e7edf3; }} button:disabled {{ opacity: .45; }} button, dropdown {{ background-image: none; background-color: {panel}; color: #e7edf3; border: 1px solid #53606b; }} entry, text {{ background-color: {base}; color: #e7edf3; }} scale highlight {{ background-color: {accent}; }} window {{ background: {base}; }} .room-mixer {{ background: {panel}; padding: 8px 10px; border-radius: 6px; }} .inside-title {{ color: {accent}; font-family: serif; font-size: 29px; }} .desk-title {{ color: {accent}; font-size: 22px; }} .layer-title {{ font-weight: 700; }} .session-caption {{ color: #d4dce3; }}'
+        self.app.session_colors.load_from_data(css.encode())
+
+    def browser_page_changed(self):
+        visible = self.mode == 'browse' and self.app.notebook.get_current_page() == 0
+        self.saved_row.set_visible(visible)
+        self.discovery_box.set_visible(visible)
+
+    def show(self, mode):
+        self.mode = mode
+        self.stack.set_visible_child_name(mode)
+        self.browser_page_changed()
+        self.options.set_visible(mode != 'desk')
+        self.mixer.set_visible(mode != 'desk')
+        self.other_players.set_visible(mode != 'desk')
+        if mode == 'desk':
+            self.app.window.set_size_request(500, 230)
+            self.app.window.set_default_size(640, 300)
+        else:
+            self.app.window.set_size_request(760, 650)
+            self.app.window.set_default_size(1060, 900)
+
+    def refresh_outputs(self):
+        def get():
+            import ambience
+            return audio_devices.outputs(), ambience.monitors()
+        def apply(value):
+            if self.closed: return
+            self.output_items, self.displays = value
+            self.output.set_model(Gtk.StringList.new(['System output'] + [item.get('description') or item.get('name', 'Output') for item in self.output_items]))
+            preferred = (self.snapshot.get('settings') or {}).get('preferred_output')
+            self.output.set_selected(next((i+1 for i,item in enumerate(self.output_items) if item['name'] == preferred), 0))
+            self.updating = True
+            self.display.set_model(Gtk.StringList.new(['Follow placement'] + [item.get('description') or item['name'] for item in self.displays]))
+            wanted = (self.snapshot.get('settings') or {}).get('display')
+            self.display.set_selected(next((i+1 for i,item in enumerate(self.displays) if item['name'] == wanted), 0))
+            self.updating = False
+        self.app.run_task(get, success=apply, executor=self.executor)
+
+    def selected_output(self):
+        index = self.output.get_selected()
+        return self.output_items[index-1]['name'] if index and index <= len(self.output_items) else None
+
+    def select_output(self):
+        name = self.selected_output()
+        self.command('settings', {'values': {'preferred_output': name}})
+        if name:
+            self.app.set_message('Preferred output saved; room audio follows this output.')
+
+    def test_output(self):
+        name = self.selected_output()
+        self.app.run_task(lambda: audio_devices.test_sound(name), executor=self.executor, message='Playing a quiet test sound…')
+
+    def preference(self):
+        return ['any', 'instrumental', 'speech', 'low-energy', 'familiar', 'explore'][self.discovery.get_selected()]
+
+    def recent(self):
+        recent = self.snapshot.get('recent') or []
+        return [item.get('room_id') or item.get('id') if isinstance(item, dict) else item for item in recent]
+
+    def filter_rooms(self):
+        self.app.room_fingerprint = None
+        self.app.render_rooms(self.app.snapshot.get('rooms') or [])
+
+    def surprise(self):
+        chosen, reason = room_discovery.choose(self.app.snapshot.get('rooms') or [], self.preference(), self.recent(), self.app.preview_room_id)
+        self.discovery_note.set_text(reason)
+        self.app.set_message(reason, not bool(chosen))
+        if chosen:
+            self.app.preview_room_action(None, GLib.Variant('s', chosen['id']))
+
+    def drop_link(self, _target, value, _x, _y):
+        self.link.set_text(value.strip())
+        self.show('browse')
+        self.app.show_links()
+        return True
+
+    def preview_link(self):
+        import online_services
+        try:
+            preview = online_services.preview_link(self.link.get_text().strip())
+            self.link_note.set_text(preview['name'] + '. Choose an available destination to start.')
+            actions = preview['actions']
+        except ValueError as error:
+            self.link_note.set_text(str(error))
+            actions = []
+        self.link_music.set_sensitive('music' in actions)
+        self.link_background.set_sensitive('atmosphere' in actions)
+        self.link_background.set_tooltip_text(None if 'atmosphere' in actions else 'This link cannot be used as background audio.')
+        self.link_picture.set_sensitive('picture' in actions)
+        self.link_picture.set_tooltip_text(None if 'picture' in actions else 'This link does not provide a picture.')
+
+    def play_link(self, destination):
+        url = self.link.get_text().strip()
+        self.command('link', {'url': url, 'destination': destination}, show_inside=destination == 'music')
+
+    def open_original(self):
+        import listening_hub as hub
+        url = self.link.get_text().strip()
+        if hub.valid_url(url):
+            self.app.run_task(lambda: hub.run(['xdg-open', url]), executor=self.executor)
+
+    def close(self):
+        self.closed = True
+        GLib.source_remove(self.poll_timer)
+        for timer in self.timers.values():
+            GLib.source_remove(timer)
+        self.timers.clear()
+        self.executor.shutdown(wait=False, cancel_futures=True)
+        self.controls.shutdown(wait=False, cancel_futures=True)
+        self.interrupts.shutdown(wait=False, cancel_futures=True)
+"""GTK connection setup and on-demand library/remote discovery.
+
+Constructing this panel never sends network requests or starts playback.
+All playback goes through the application's shared-session callback.
+"""
+import concurrent.futures
+import threading
+
+import gi
+gi.require_version('Gtk', '4.0')
+from gi.repository import Gtk, Gio, GLib, Gdk
+
+import online_services as online
+import provider_auth
+import twitch_credentials
+
+
+def text(value='', css='muted'):
+    label = Gtk.Label(label=value, xalign=0)
+    label.set_wrap(True)
+    if css:
+        label.add_css_class(css)
+    return label
+
+
+def button(title, callback):
+    item = Gtk.Button(label=title)
+    item.connect('clicked', lambda *_: callback())
+    return item
+
+
+def entry(placeholder='', value=''):
+    item = Gtk.Entry()
+    item.set_placeholder_text(placeholder)
+    item.set_text(value)
+    item.set_hexpand(True)
+    return item
+
+
+def clear(box):
+    child = box.get_first_child()
+    while child:
+        next_child = child.get_next_sibling()
+        box.remove(child)
+        child = next_child
+
+
+class ConnectionsPanel(Gtk.Box):
+    def __init__(self, app):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.app = app
+        self.closed = False
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix='room-connections')
+        self.cancel = threading.Event()
+        self.library_generation = 0
+        self.ma_generation = 0
+        self.art_generation = 0
+        self.library_items = []
+        self.selected = None
+        self.players = []
+        self.ma_items = []
+        self.scenes = []
+        self.settings_widgets = {}
+        self.set_margin_top(12)
+        self.set_margin_bottom(12)
+        self.set_margin_start(14)
+        self.set_margin_end(14)
+        self.append(text('Your music and connected rooms', 'section-title'))
+        self.append(text('Browse when you choose. Playback stays in the current listening session.'))
+
+        self._build_library()
+        self._build_link_input()
+        self._build_remote()
+        self._build_lighting()
+        self._build_remembered()
+        self._build_phone()
+        self._build_settings()
+        self._build_twitch_login()
+        self.twitch_validation_timer = GLib.timeout_add_seconds(3600, self._validate_twitch_session)
+        GLib.idle_add(self._validate_twitch_session_once)
+
+    def close(self):
+        self.closed = True
+        if self.twitch_login is not None:
+            self.twitch_login.cancel()
+        GLib.source_remove(self.twitch_validation_timer)
+        self.cancel.set()
+        self.executor.shutdown(wait=False, cancel_futures=True)
+
+    def _run(self, func, success, notice, message, valid=None):
+        if self.closed:
+            return
+        notice.set_text(message)
+        notice.remove_css_class('error')
+        future = self.executor.submit(func)
+        def complete(work):
+            try:
+                result, error = work.result(), None
+            except Exception as exc:
+                result, error = None, str(exc) if isinstance(exc, online.ConnectionError) else 'This operation failed. Check the connection and retry.'
+            def finish():
+                if self.closed or (valid is not None and not valid()):
+                    return False
+                if error:
+                    notice.set_text(error)
+                    notice.add_css_class('error')
+                else:
+                    success(result)
+                return False
+            GLib.idle_add(finish)
+        future.add_done_callback(complete)
+
+    def _section(self, title, expanded=False):
+        expander = Gtk.Expander(label=title)
+        expander.set_expanded(expanded)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        body.set_margin_top(8)
+        body.set_margin_bottom(10)
+        expander.set_child(body)
+        self.append(expander)
+        return body
+
+    def _build_library(self):
+        body = self._section('Jellyfin library', True)
+        row = Gtk.Box(spacing=8)
+        self.library_kind = Gtk.DropDown.new_from_strings(['Albums', 'Playlists', 'Recently added albums', 'Tracks'])
+        self.library_query = entry('Search your music library')
+        self.library_query.connect('activate', lambda *_: self.search_library())
+        row.append(self.library_kind)
+        row.append(self.library_query)
+        row.append(button('Browse', self.search_library))
+        body.append(row)
+        self.library_notice = text('Connect Jellyfin below, then browse albums, playlists or tracks.')
+        body.append(self.library_notice)
+        split = Gtk.Box(spacing=12)
+        self.artwork = Gtk.Picture()
+        self.artwork.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.artwork.set_size_request(130, 130)
+        self.artwork.set_visible(False)
+        split.append(self.artwork)
+        self.library_list = Gtk.ListBox()
+        self.library_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.library_list.connect('row-selected', self.select_library)
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_min_content_height(140)
+        scroller.set_max_content_height(240)
+        scroller.set_propagate_natural_height(True)
+        scroller.set_hexpand(True)
+        scroller.set_child(self.library_list)
+        split.append(scroller)
+        body.append(split)
+        self.library_preview = text('Select an item to see its actions.')
+        body.append(self.library_preview)
+        actions = Gtk.Box(spacing=8)
+        self.library_play = button('Play selected', self.play_library)
+        self.library_play.add_css_class('suggested-action')
+        self.library_tracks = button('Show tracks', self.show_tracks)
+        self.library_open = button('Open in Jellyfin', self.open_library)
+        self.library_station = button('Save station', self.save_library_station)
+        self.library_next = button('Play next', self.library_play_next)
+        for item in (self.library_play, self.library_tracks, self.library_open, self.library_station, self.library_next):
+            item.set_sensitive(False)
+            actions.append(item)
+        body.append(actions)
+        self.queue_label = text('Albums and playlists start at their first track. Lists are bounded to keep browsing responsive.')
+        body.append(self.queue_label)
+        self.queue_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        queue_expander = Gtk.Expander(label='Prepared library queue')
+        queue_expander.set_child(self.queue_list)
+        body.append(queue_expander)
+
+    def search_library(self):
+        self.library_generation += 1
+        generation = self.library_generation
+        kind = ['albums', 'playlists', 'recent', 'tracks'][self.library_kind.get_selected()]
+        query = self.library_query.get_text()
+        self._run(lambda: online.browse_jellyfin(query, kind, cancel_event=self.cancel),
+                  lambda rows: self._library_result(generation, rows), self.library_notice, 'Browsing Jellyfin…',
+                  valid=lambda: generation == self.library_generation)
+
+    def _library_result(self, generation, rows):
+        if generation != self.library_generation:
+            return
+        self.library_items = rows
+        self.selected = None
+        clear(self.library_list)
+        for item in rows:
+            row = Gtk.ListBoxRow()
+            row.item = item
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            box.set_margin_top(5)
+            box.set_margin_bottom(5)
+            box.append(text(item['name'], 'source-name'))
+            box.append(text(item.get('artist') or item.get('type', 'Music')))
+            row.set_child(box)
+            self.library_list.append(row)
+        for action in (self.library_play, self.library_tracks, self.library_open, self.library_station, self.library_next):
+            action.set_sensitive(False)
+        self.artwork.set_visible(False)
+        self.library_notice.set_text(str(len(rows)) + ' items shown.' if rows else 'No matching music found. Try another search or library view.')
+
+    def select_library(self, _list, row):
+        self.art_generation += 1
+        generation = self.art_generation
+        self.selected = row.item if row else None
+        self.library_play.set_sensitive(self.selected is not None)
+        self.library_open.set_sensitive(self.selected is not None)
+        self.library_station.set_sensitive(self.selected is not None)
+        self.library_next.set_sensitive(bool(self.selected and self.selected.get('type') == 'Audio'))
+        self.library_tracks.set_sensitive(bool(self.selected and self.selected.get('type') in ('MusicAlbum', 'Playlist')))
+        self.artwork.set_visible(False)
+        if not self.selected:
+            return
+        item = dict(self.selected)
+        self.library_preview.set_text(item['name'] + ('\n' + item['artist'] if item.get('artist') else ''))
+        def fetch_art():
+            try:
+                return online.artwork(item)
+            except online.ConnectionError:
+                return None
+        def show_art(path):
+            if path:
+                self.artwork.set_filename(path)
+                self.artwork.set_visible(True)
+            self.library_notice.set_text('Selected. Choose Play or Show tracks.' if path else 'Artwork unavailable. Playback remains available.')
+        self._run(fetch_art, show_art, self.library_notice, 'Selected. Loading artwork…', valid=lambda: generation == self.art_generation)
+
+    def save_library_station(self):
+        if self.selected:
+            self.app.station_panel.save_reference(dict(self.selected))
+
+    def library_play_next(self):
+        if self.selected and self.selected.get('type') == 'Audio':
+            self.app.experience.command('station.play_next', {'item': dict(self.selected)})
+
+    def play_library(self):
+        if self.selected:
+            self.app.play_online_item(dict(self.selected))
+            self.library_notice.set_text('Sent to the listening session. Playback status appears in Music.')
+
+    def show_tracks(self):
+        if not self.selected:
+            return
+        item = dict(self.selected)
+        self.library_generation += 1
+        generation = self.library_generation
+        self._run(lambda: online.jellyfin_queue(item, self.cancel), lambda rows: self._library_result(generation, rows),
+                  self.library_notice, 'Loading tracks…', valid=lambda: generation == self.library_generation)
+
+    def open_library(self):
+        if self.selected:
+            try:
+                Gio.AppInfo.launch_default_for_uri(online.jellyfin_link(self.selected), None)
+            except (online.ConnectionError, GLib.Error) as exc:
+                self.library_notice.set_text(str(exc))
+
+    def update_queue(self, queue=None):
+        queue = queue or online.library_queue()
+        fingerprint = str(queue)
+        if getattr(self, '_queue_fingerprint', None) == fingerprint:
+            return
+        self._queue_fingerprint = fingerprint
+        clear(self.queue_list)
+        rows = queue.get('items') or queue.get('queue') or []
+        index = queue.get('index', queue.get('queue_index', 0))
+        for number, item in enumerate(rows[:200]):
+            prefix = 'Playing: ' if number == index else ''
+            self.queue_list.append(text(prefix + item.get('name', 'Track')))
+        if not rows:
+            self.queue_list.append(text('Choose an album or playlist to prepare a queue.'))
+
+    def _build_link_input(self):
+        body = self._section('Send a link to this room')
+        row = Gtk.Box(spacing=8)
+        self.link_entry = entry('Paste a public video, channel or audio URL')
+        self.link_entry.connect('activate', lambda *_: self.preview_url(self.link_entry.get_text()))
+        row.append(self.link_entry)
+        row.append(button('Preview link', lambda: self.preview_url(self.link_entry.get_text())))
+        body.append(row)
+        self.link_notice = text('Paste or drop a link to preview it. Preview never starts playback.')
+        body.append(self.link_notice)
+        self.link_actions = Gtk.Box(spacing=8)
+        body.append(self.link_actions)
+        drop = Gtk.DropTarget.new(str, Gdk.DragAction.COPY)
+        drop.connect('drop', lambda _target, value, _x, _y: self.preview_url(value))
+        self.add_controller(drop)
+
+    def preview_url(self, value):
+        clear(self.link_actions)
+        try:
+            item = online.preview_link(value.strip())
+        except online.ConnectionError as error:
+            self.link_notice.set_text(str(error))
+            return False
+        self.link_entry.set_text(value)
+        self.link_notice.set_text(item['name'] + '\nChoose where to use this link.')
+        for action in item['actions']:
+            title = {'music': 'Play as Music', 'atmosphere': 'Play as Atmosphere', 'picture': 'Open silent Picture', 'original': 'Open original'}[action]
+            def dispatch(route=action, selected=dict(item)):
+                if route == 'original':
+                    Gio.AppInfo.launch_default_for_uri(selected.get('original') or selected['url'], None)
+                else:
+                    self.app.play_online_item(dict(selected, provider='link', route=route))
+            self.link_actions.append(button(title, dispatch))
+        return True
+
+    def _build_remote(self):
+        body = self._section('Speakers through Music Assistant')
+        body.append(text('Music Assistant controls its selected player. Sending music does not transfer the local atmosphere mix.'))
+        row = Gtk.Box(spacing=8)
+        self.remote_player = Gtk.DropDown.new_from_strings(['Load players first'])
+        self.remote_player.set_hexpand(True)
+        self.remote_target = Gtk.DropDown.new_from_strings(['Transfer destination'])
+        row.append(self.remote_player)
+        row.append(button('Load players', self.load_players))
+        body.append(row)
+        media_row = Gtk.Box(spacing=8)
+        self.remote_uri = entry('Supported media URL or Music Assistant URI')
+        media_row.append(self.remote_uri)
+        media_row.append(button('Play on selected speaker', self.play_remote))
+        body.append(media_row)
+        transfer_row = Gtk.Box(spacing=8)
+        transfer_row.append(self.remote_target)
+        transfer_row.append(button('Transfer selected queue', self.transfer_remote))
+        body.append(transfer_row)
+        self.remote_notice = text('Connect Music Assistant below, then load its available players.')
+        body.append(self.remote_notice)
+        body.append(text('Browse Music Assistant library or search its configured providers. For YouTube Music, configure its provider in Music Assistant first.'))
+        browse = Gtk.Box(spacing=8)
+        self.ma_kind = Gtk.DropDown.new_from_strings(['Playlists', 'Tracks', 'Albums'])
+        self.ma_query = entry('Music search')
+        browse.append(self.ma_kind)
+        browse.append(self.ma_query)
+        browse.append(button('Browse library', lambda: self.browse_ma(False)))
+        browse.append(button('Search providers', lambda: self.browse_ma(True)))
+        body.append(browse)
+        self.ma_provider = entry('Optional Music Assistant provider ID or domain')
+        body.append(self.ma_provider)
+        results = Gtk.Box(spacing=8)
+        self.ma_choice = Gtk.DropDown.new_from_strings(['Browse music first'])
+        self.ma_choice.set_hexpand(True)
+        results.append(self.ma_choice)
+        results.append(button('Play selected on speaker', self.play_ma_item))
+        results.append(button('Start radio mix on speaker', lambda: self.play_ma_item(True)))
+        body.append(results)
+
+
+    def browse_ma(self, search_all):
+        self.ma_generation += 1
+        generation = self.ma_generation
+        self.ma_items = []
+        self.ma_choice.set_model(Gtk.StringList.new(['Loading music…']))
+        kind = ['playlists', 'tracks', 'albums'][self.ma_kind.get_selected()]
+        query = self.ma_query.get_text()
+        provider = self.ma_provider.get_text().strip() or None
+        def show(rows):
+            self.ma_items = rows
+            self.ma_choice.set_model(Gtk.StringList.new([row['name'] + (' — ' + row['artist'] if row.get('artist') else '') for row in rows] or ['No music found']))
+            self.remote_notice.set_text(str(len(rows)) + ' items returned. Choose an available speaker to play.')
+        self._run(lambda: online.browse_music_assistant(query, kind, self.cancel, provider, search_all),
+                  show, self.remote_notice, 'Browsing Music Assistant…', valid=lambda: generation == self.ma_generation)
+
+    def play_ma_item(self, radio_mode=False):
+        index, player = self.ma_choice.get_selected(), self.remote_player.get_selected()
+        if index >= len(self.ma_items) or player >= len(self.players) or not self.players[player]['available']:
+            self.remote_notice.set_text('Choose music and an available speaker first.')
+            return
+        item = dict(self.ma_items[index], player_id=self.players[player]['id'])
+        if radio_mode:
+            item['radio_mode'] = True
+        if self.app.play_online_item(item) is not False:
+            self.remote_notice.set_text('Sent to the listening session. The selected speaker reports playback.')
+
+    def load_players(self):
+        def show(rows):
+            self.players = rows
+            labels = [row['name'] + ('' if row['available'] else ' (unavailable)') for row in rows] or ['No players found']
+            self.remote_player.set_model(Gtk.StringList.new(labels))
+            self.remote_target.set_model(Gtk.StringList.new(labels))
+            self.remote_notice.set_text(str(len(rows)) + ' players returned. Select a source and destination explicitly.')
+        self._run(lambda: online.ma_players(self.cancel), show, self.remote_notice, 'Loading players…')
+
+    def play_remote(self):
+        index = self.remote_player.get_selected()
+        if index >= len(self.players) or not self.players[index]['available']:
+            self.remote_notice.set_text('Choose an available speaker first.')
+            return
+        uri = self.remote_uri.get_text().strip()
+        if not uri:
+            self.remote_notice.set_text('Enter a media URL or URI first.')
+            return
+        player = self.players[index]
+        self.app.play_online_item({'provider': 'music_assistant', 'uri': uri, 'player_id': player['id'], 'name': player['name']})
+        self.remote_notice.set_text('Sent to the listening session. Music shows the selected speaker.')
+
+    def transfer_remote(self):
+        source, target = self.remote_player.get_selected(), self.remote_target.get_selected()
+        if source >= len(self.players) or target >= len(self.players) or source == target:
+            self.remote_notice.set_text('Choose two different players before transferring a queue.')
+            return
+        item = {'provider': 'music_assistant', 'action': 'transfer', 'source_player_id': self.players[source]['id'],
+                'player_id': self.players[target]['id'], 'name': self.players[target]['name']}
+        self.app.play_online_item(item)
+        self.remote_notice.set_text('Queue transfer requested. The destination player reports its playback state.')
+
+    def _build_lighting(self):
+        body = self._section('Room lighting through Home Assistant')
+        body.append(text('Link a scene explicitly. Entering that room can then apply it; leaving restores a captured lighting state.'))
+        row = Gtk.Box(spacing=8)
+        import room_catalogue
+        self.room_refs = [{'id': room['id'], 'name': room['name']} for room in room_catalogue.RECIPES]
+        self.lighting_room = Gtk.DropDown.new_from_strings([room['name'] for room in self.room_refs])
+        self.lighting_scene = Gtk.DropDown.new_from_strings(['Load scenes first'])
+        self.lighting_scene.set_hexpand(True)
+        row.append(self.lighting_room)
+        row.append(self.lighting_scene)
+        row.append(button('Load scenes', self.load_scenes))
+        body.append(row)
+        actions = Gtk.Box(spacing=8)
+        actions.append(button('Link scene to room', self.link_lighting))
+        actions.append(button('Remove room lighting link', self.unlink_lighting))
+        body.append(actions)
+        self.lighting_notice = text('No lighting is changed while browsing or testing connections.')
+        body.append(self.lighting_notice)
+
+    def load_scenes(self):
+        def show(rows):
+            self.scenes = rows
+            self.lighting_scene.set_model(Gtk.StringList.new([row['name'] for row in rows] or ['No scenes found']))
+            self.lighting_notice.set_text(str(len(rows)) + ' scenes returned. Linking does not activate a scene now.')
+        self._run(lambda: online.ha_scenes(self.cancel), show, self.lighting_notice, 'Loading lighting scenes…')
+
+    def link_lighting(self):
+        index = self.lighting_scene.get_selected()
+        room_index = self.lighting_room.get_selected()
+        if index >= len(self.scenes) or room_index >= len(self.room_refs):
+            self.lighting_notice.set_text('Choose a room and load its available lighting scenes first.')
+            return
+        scene, room = self.scenes[index], self.room_refs[room_index]
+        if not scene.get('entities'):
+            self.lighting_notice.set_text('This scene does not report its affected entities, so the previous lighting cannot be captured. Choose another scene.')
+            return
+        try:
+            online.set_room_scene(room['id'], scene['id'], scene['entities'])
+            self.lighting_notice.set_text(scene['name'] + ' will apply when entering ' + room['name'] + '.')
+        except online.ConnectionError as error:
+            self.lighting_notice.set_text(str(error))
+
+    def unlink_lighting(self):
+        room = self.room_refs[self.lighting_room.get_selected()]
+        online.set_room_scene(room['id'])
+        self.lighting_notice.set_text('Removed the lighting link for ' + room['name'] + '.')
+
+    def _build_remembered(self):
+        body = self._section('Remember what you heard')
+        row = Gtk.Box(spacing=8)
+        self.remember_note = entry('Optional note about this moment')
+        row.append(self.remember_note)
+        row.append(button('Remember playing', self.remember_playing))
+        row.append(button('Show remembered', self.show_remembered))
+        body.append(row)
+        self.remember_notice = text('Bookmarks stay local. Radio metadata is preserved as reported by the player.')
+        body.append(self.remember_notice)
+        self.remember_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        body.append(self.remember_list)
+        actions = Gtk.Box(spacing=8)
+        actions.append(button('Load ListenBrainz history', self.load_history))
+        actions.append(button('Load recommendations', self.load_recommendations))
+        body.append(actions)
+
+    def remember_playing(self):
+        try:
+            experience = getattr(self.app, 'experience', None)
+            session = getattr(experience, 'snapshot', {}) or {}
+            snapshot = session if session.get('active') else self.app.snapshot
+            online.bookmark(snapshot, self.remember_note.get_text())
+            self.remember_note.set_text('')
+            self.show_remembered()
+        except online.ConnectionError as error:
+            self.remember_notice.set_text(str(error))
+
+    def show_remembered(self):
+        self._show_remembered(online.remembered()[:20])
+        self.remember_notice.set_text('Latest local bookmarks. Metadata may describe a station rather than a track.')
+
+    def _show_remembered(self, rows):
+        clear(self.remember_list)
+        for item in rows:
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+            box.append(text(' — '.join(value for value in (item.get('artist'), item.get('title') or item.get('station')) if value), 'source-name'))
+            if item.get('note'):
+                box.append(text(item['note']))
+            links = online.discovery_links(item)
+            actions = Gtk.Box(spacing=8)
+            actions.append(button('Find in Jellyfin', lambda query=links['query']: self.find_library(query)))
+            actions.append(button('Open in YouTube Music', lambda url=links['youtube_music']: Gio.AppInfo.launch_default_for_uri(url, None)))
+            box.append(actions)
+            self.remember_list.append(box)
+        if not rows:
+            self.remember_list.append(text('Nothing remembered yet.'))
+
+    def find_library(self, query):
+        self.library_kind.set_selected(3)
+        self.library_query.set_text(query)
+        self.search_library()
+
+    def load_history(self):
+        def show(rows):
+            projected = [{'artist': str((row.get('track_metadata') or {}).get('artist_name', '')),
+                          'title': str((row.get('track_metadata') or {}).get('track_name', ''))} for row in rows if isinstance(row, dict)]
+            self._show_remembered(projected)
+            self.remember_notice.set_text('Recent ListenBrainz history. Loading history does not submit listens.')
+        self._run(online.listenbrainz_history, show, self.remember_notice, 'Loading listening history…')
+
+    def load_recommendations(self):
+        def show(rows):
+            clear(self.remember_list)
+            for item in rows:
+                # The recommendation API returns recording identities, not
+                # verified display titles; MusicBrainz supplies their details.
+                self.remember_list.append(button('Explore recommended recording', lambda url=item['url']: Gio.AppInfo.launch_default_for_uri(url, None)))
+            self.remember_notice.set_text(str(len(rows)) + ' recommendations. Open a recording to see its verified details.' if rows else 'No recommendations have been generated for this account yet.')
+        self._run(online.listenbrainz_recommendations, show, self.remember_notice, 'Loading recommendations…')
+
+    def _build_settings(self):
+        settings = online.config()
+        results = online.checks()
+        for service, spec in online.SERVICES.items():
+            body = self._section('Connect ' + spec['name'])
+            values = settings[service]
+            endpoint = entry('Server address', values['endpoint'])
+            endpoint.set_tooltip_text('Use the final HTTP or HTTPS server address, including any installation subpath.')
+            body.append(endpoint)
+            if service == 'audiomuse':
+                body.append(text('The health test checks the web service only. Generator worker readiness is separate. Previously generated playlists can be browsed in Jellyfin.'))
+            if service == 'jellyfin':
+                username = entry('Jellyfin username')
+                password = Gtk.PasswordEntry()
+                password.set_show_peek_icon(True)
+                body.append(username)
+                body.append(password)
+                body.append(button('Sign in to Jellyfin', lambda u=username, p=password: self.jellyfin_sign_in(u, p)))
+            token = Gtk.PasswordEntry()
+            token.set_tooltip_text('Access token. Leave blank to keep the saved token.')
+            body.append(text('Access token (leave blank to keep the saved token)'))
+            token.set_show_peek_icon(True)
+            body.append(token)
+            private_file = entry('Or use an existing private token file', values['token_file'])
+            body.append(private_file)
+            notice = text(results.get(service, {}).get('detail') or 'Not tested. Supported: ' + ', '.join(spec['capabilities']).replace('_', ' ') + '.')
+            body.append(notice)
+            actions = Gtk.Box(spacing=8)
+            actions.append(button('Save connection', lambda key=service: self.save_settings(key)))
+            actions.append(button('Test connection', lambda key=service: self.test_settings(key)))
+            body.append(actions)
+            self.settings_widgets[service] = {'endpoint': endpoint, 'token': token, 'token_file': private_file, 'notice': notice}
+            body.append(text('Tokens are stored privately, separately from room presets. Environment-provided service tokens take precedence.'))
+
+    def jellyfin_sign_in(self, username, password):
+        fields = self.settings_widgets['jellyfin']
+        if not self.save_settings('jellyfin'):
+            return
+        user, secret = username.get_text(), password.get_text()
+        password.set_text('')
+        def done(_result):
+            fields['token_file'].set_text(online.config()['jellyfin']['token_file'])
+            fields['notice'].set_text('Signed in. Test the connection to verify library access.')
+        self._run(lambda: online.jellyfin_login(user, secret, self.cancel), done,
+                  fields['notice'], 'Signing in to Jellyfin…')
+
+    def _build_twitch_login(self):
+        body = self._section('Connect Twitch')
+        body.append(text('A saved Twitch CLI login is reused automatically. To connect an app account, enter its Twitch client ID and authorize this device.'))
+        self.twitch_client = entry('Twitch application client ID')
+        body.append(self.twitch_client)
+        self.twitch_notice = text('No authorization has been started.')
+        body.append(self.twitch_notice)
+        row = Gtk.Box(spacing=8)
+        row.append(button('Begin Twitch sign-in', self.twitch_begin))
+        row.append(button('Finish Twitch sign-in', self.twitch_finish))
+        body.append(row)
+        self.twitch_login = None
+
+    def twitch_begin(self):
+        try:
+            login = provider_auth.TwitchDeviceLogin(self.twitch_client.get_text().strip())
+        except provider_auth.AuthError as error:
+            self.twitch_notice.set_text(str(error))
+            return
+        if self.twitch_login is not None:
+            self.twitch_login.cancel()
+        self.twitch_login = login
+        def begin():
+            try:
+                return login.begin()
+            except provider_auth.AuthError as error:
+                raise online.ConnectionError(str(error)) from None
+        def show(result):
+            self.twitch_notice.set_text('Enter code ' + result['code'] + ' on Twitch, then choose Finish Twitch sign-in.')
+            try:
+                Gio.AppInfo.launch_default_for_uri(result['url'], None)
+            except GLib.Error:
+                self.twitch_notice.set_text('Open https://www.twitch.tv/activate and enter code ' + result['code'] + ', then finish sign-in.')
+        self._run(begin, show, self.twitch_notice, 'Starting Twitch sign-in…', valid=lambda: self.twitch_login is login)
+
+    def twitch_finish(self):
+        login = self.twitch_login
+        if login is None:
+            self.twitch_notice.set_text('Begin Twitch sign-in first.')
+            return
+        def finish():
+            try:
+                return login.finish()
+            except provider_auth.AuthError as error:
+                raise online.ConnectionError(str(error)) from None
+        def show(result):
+            self.twitch_notice.set_text('Connected. Twitch discovery can now use this account.' if result.get('connected') else 'Waiting for Twitch approval. Approve in your browser, then choose Finish again.')
+            if result.get('connected'):
+                self.twitch_login = None
+                GLib.idle_add(self._validate_twitch_session_once)
+        self._run(finish, show, self.twitch_notice, 'Checking Twitch authorization…', valid=lambda: self.twitch_login is login)
+
+    def _validate_twitch_session_once(self):
+        self._validate_twitch_session()
+        return False
+
+    def _validate_twitch_session(self):
+        if self.closed:
+            return False
+        login = self.twitch_login
+        if login is not None:
+            return True
+        def check():
+            try:
+                return provider_auth.validate_saved_twitch()
+            except provider_auth.AuthError as error:
+                raise online.ConnectionError(str(error)) from None
+        def show(result):
+            if result['state'] == 'connected':
+                self.twitch_notice.set_text('Saved Twitch login validated.' if result.get('follows') else 'Saved Twitch login validated for discovery. Reconnect with follows permission to import followed channels.')
+            else:
+                self.twitch_notice.set_text('No saved Twitch login. Begin sign-in or use the Twitch CLI.')
+        self._run(check, show, self.twitch_notice, 'Checking saved Twitch login…',
+                  valid=lambda: self.twitch_login is login and login is None)
+        return True
+
+    def _build_phone(self):
+        body = self._section('Phone remote through KDE Connect')
+        body.append(text('Use KDE Connect media controls for playback. Add named room commands to a paired phone when you choose.'))
+        row = Gtk.Box(spacing=8)
+        self.phone_devices = []
+        self.phone_choice = Gtk.DropDown.new_from_strings(['Find paired phones first'])
+        self.phone_choice.set_hexpand(True)
+        row.append(self.phone_choice)
+        row.append(button('Find paired phones', self.load_phones))
+        row.append(button('Install room commands', self.install_phone))
+        body.append(row)
+        self.phone_notice = text('The phone must be paired and reachable. Existing unrelated remote commands are preserved.')
+        body.append(self.phone_notice)
+        body.append(text('For links, share from the phone to this desktop, then paste or drop the received URL into Send a link to this room.'))
+
+    def load_phones(self):
+        def show(rows):
+            self.phone_devices = rows
+            self.phone_choice.set_model(Gtk.StringList.new([item['name'] for item in rows] or ['No paired phones reachable']))
+            self.phone_notice.set_text(str(len(rows)) + ' paired devices are reachable. Choose one before installing commands.')
+        self._run(online.paired_devices, show, self.phone_notice, 'Finding paired phones…')
+
+    def install_phone(self):
+        index = self.phone_choice.get_selected()
+        if index >= len(self.phone_devices):
+            self.phone_notice.set_text('Find and select a paired phone first.')
+            return
+        device = self.phone_devices[index]
+        def show(result):
+            self.phone_notice.set_text(str(result['installed']) + ' room commands installed for ' + device['name'] +
+                                       ('. Open Run commands on the phone.' if result['notified'] else '. Reopen KDE Connect settings to reload them.'))
+        self._run(lambda: online.install_remote_commands(device['id']), show, self.phone_notice, 'Installing room commands…')
+
+    def save_settings(self, service):
+        fields = self.settings_widgets[service]
+        try:
+            online.save_connection(service, {'endpoint': fields['endpoint'].get_text(), 'token_file': fields['token_file'].get_text()})
+            secret = fields['token'].get_text()
+            if secret:
+                online.save_token(service, secret)
+                fields['token'].set_text('')
+                fields['token_file'].set_text(online.config()[service]['token_file'])
+            fields['notice'].remove_css_class('error')
+            fields['notice'].set_text('Saved. Test this connection to check its available capabilities.')
+            return True
+        except online.ConnectionError as error:
+            fields['notice'].set_text(str(error))
+            fields['notice'].add_css_class('error')
+            return False
+
+    def test_settings(self, service):
+        if not self.save_settings(service):
+            return
+        notice = self.settings_widgets[service]['notice']
+        def show(result):
+            states = ', '.join(key.replace('_', ' ') + ': ' + value for key, value in result['capabilities'].items())
+            notice.set_text(result['detail'] + '\n' + states)
+        self._run(lambda: online.test_connection(service, self.cancel), show, notice, 'Testing connection…')
+"""Twitch discovery and explicit routing into the listening room's lanes."""
+import concurrent.futures
+import threading
+import session_client
+import urllib.parse
+import re
+
+import gi
+gi.require_version('Gtk', '4.0')
+from gi.repository import Gtk, GLib
+
+import listening_hub as hub
+import ambience
+import audio_layers
+import twitch_channels as twitch
+import channel_browse as browse
+
+
+def text(value='', css='muted'):
+    widget=Gtk.Label(label=value, xalign=0)
+    widget.set_wrap(True)
+    if css:widget.add_css_class(css)
+    return widget
+
+
+def action(title, callback, tooltip=None):
+    widget=Gtk.Button(label=title)
+    widget.connect('clicked', callback)
+    if tooltip:widget.set_tooltip_text(tooltip)
+    return widget
+
+
+def names(value):
+    result=[]
+    for item in re.split(r'[\s,;]+', value.strip()):
+        if not item:continue
+        if '://' in item:
+            parsed=urllib.parse.urlsplit(item)
+            if parsed.scheme!='https' or parsed.hostname not in ('twitch.tv','www.twitch.tv') or parsed.query or parsed.fragment or parsed.username or parsed.port:
+                raise ValueError('Use Twitch channel names or public channel URLs')
+            item=parsed.path.strip('/')
+        if not twitch.LOGIN.fullmatch(item):
+            raise ValueError('Use Twitch channel names or public channel URLs')
+        if item.lower() not in result:result.append(item.lower())
+    return result
+
+
+class TwitchPanel(Gtk.Box):
+    def __init__(self, app, mixer):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.app=app
+        self.closed=False
+        self.network=concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        self.playback=concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.result={'channels':[], 'status':'unknown'}
+        self.results={}
+        self.requests={}
+        self.visible=[]
+        self.playing=None
+        self.selected=None
+        self.generation=0
+        self.starting=False
+        self.start_destination=None
+        self.cancel=None
+        self.updating=False
+        self.volume_timer=None
+        self.set_margin_top(14)
+        self.append(text('Twitch channels', 'section-title'))
+        top=Gtk.Box(spacing=8)
+        self.style=Gtk.DropDown.new_from_strings(['Music','ASMR'])
+        self.style.connect('notify::selected',self.style_changed)
+        top.append(self.style)
+        top.append(action('Refresh channels',lambda _:self.discover()))
+        self.append(top)
+        self.notice=text('Find channels to browse live streams or your saved pool.')
+        self.append(self.notice)
+        filters=Gtk.Box(spacing=8)
+        self.search=Gtk.SearchEntry();self.search.set_placeholder_text('Filter channels or titles')
+        self.search.set_hexpand(True);self.search.connect('search-changed',self.refresh_list)
+        filters.append(self.search)
+        self.filter=Gtk.DropDown.new_from_strings(['All','Saved'])
+        self.filter.connect('notify::selected',self.refresh_list);filters.append(self.filter)
+        self.append(filters)
+        self.match_count=text('', 'muted')
+        self.append(self.match_count)
+        scroll=Gtk.ScrolledWindow();scroll.set_policy(Gtk.PolicyType.NEVER,Gtk.PolicyType.AUTOMATIC)
+        scroll.set_min_content_height(160);scroll.set_max_content_height(240)
+        scroll.set_propagate_natural_height(True);scroll.set_vexpand(True)
+        self.channels=Gtk.ListBox();self.channels.add_css_class('twitch-list');self.channels.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.channels.connect('row-selected',self.choose_channel)
+        scroll.set_child(self.channels);self.append(scroll)
+        self.preview=text('Select a channel to preview its details.')
+        self.append(self.preview)
+        row=Gtk.Box(spacing=8)
+        row.append(action('Shuffle',lambda _:self.shuffle()))
+        row.append(text('Send to'))
+        self.route=Gtk.DropDown.new_from_strings(['Main audio','Background audio','Video with sound'])
+        row.append(self.route)
+        self.play_button=action('Tune in',lambda _:self.play())
+        self.play_button.add_css_class('suggested-action');self.play_button.set_sensitive(False)
+        row.append(self.play_button);self.append(row)
+        editor=Gtk.Expander(label='Manage channels and more')
+        body=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=8)
+        body.append(text('Channel names or Twitch URLs, separated by commas. Save to keep this style’s pool.'))
+        self.curated=Gtk.Entry();self.curated.set_placeholder_text('Channels for the selected style')
+        body.append(self.curated)
+        self.excluded=Gtk.Entry();self.excluded.set_placeholder_text('Excluded from every shuffle')
+        body.append(self.excluded)
+        controls=Gtk.FlowBox();controls.set_selection_mode(Gtk.SelectionMode.NONE);controls.set_max_children_per_line(3)
+        controls.append(action('Save pool',lambda _:self.save_pool()))
+        controls.append(action('Exclude selected from shuffle',lambda _:self.exclude_selected()))
+        controls.append(action('Open selected on Twitch',lambda _:self.open_selected()))
+        controls.append(action('Open category',lambda _:self.open_category()))
+        body.append(controls)
+        follows=Gtk.Box(spacing=8)
+        self.profile=Gtk.Entry();self.profile.set_text('example');self.profile.set_hexpand(True)
+        follows.append(self.profile)
+        follows.append(action('Review my follows',lambda _:self.import_follows()))
+        body.append(follows)
+        body.append(text('Follow imports are suggestions for you to classify. Nothing is added to a style automatically.'))
+        editor.set_child(body);self.append(editor)
+        mix=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=5)
+        self.layer_status=text('Atmosphere · stopped')
+        mix.append(self.layer_status)
+        levels=Gtk.Box(spacing=8)
+        levels.append(text('Atmosphere'))
+        self.volume=Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL,0,100,1)
+        self.volume.set_hexpand(True);self.volume.set_draw_value(True)
+        self.volume.connect('value-changed',self.volume_changed)
+        levels.append(self.volume)
+        self.mute=action('Mute',lambda _:self.layer_control('mute'))
+        levels.append(self.mute)
+        self.pause=action('Play / pause',lambda _:self.layer_control('toggle'))
+        levels.append(self.pause)
+        levels.append(action('Stop',lambda _:self.stop_layer()))
+        mix.append(levels);mixer.append(mix)
+        self.load_pool()
+
+    def key(self):return ('music','asmr')[min(self.style.get_selected(),1)]
+
+    def load_pool(self):
+        try:
+            self.curated.set_text(', '.join(twitch.curated_channels(self.key())))
+            self.excluded.set_text(', '.join(twitch.excluded_channels()))
+        except (OSError,ValueError) as error:self.notice.set_text(str(error))
+
+    def style_changed(self,*_):
+        self.generation+=1
+        self.selected=None
+        self.result=self.results.get(self.key(), {'channels':[],'status':'unknown'})
+        self.route.set_selected(1 if self.key()=='asmr' else 0)
+        self.load_pool()
+        self.notice.set_text(self.result.get('message') or ('Cached channels' if self.key() in self.results else 'Find channels to begin.'))
+        self.refresh_list()
+
+    def save_pool(self):
+        try:
+            twitch.save_preferences(self.key(),names(self.curated.get_text()),names(self.excluded.get_text()))
+            self.notice.set_text('Channel pool saved. Refresh to update live choices.')
+            self.refresh_list()
+        except (OSError,ValueError) as error:self.notice.set_text(str(error))
+
+    def discover(self):
+        try:curated=names(self.curated.get_text())
+        except ValueError as error:self.notice.set_text(str(error));return
+        self.generation+=1;generation=self.generation;style=self.key()
+        self.requests[style]=generation
+        self.notice.set_text('Finding channels…')
+        def complete(result):
+            if self.closed or self.requests.get(style)!=generation:return
+            self.results[style]=result
+            if style!=self.key():return
+            self.result=result
+            self.notice.set_text(result.get('message') or f"{len(result['channels'])} live choices in this style")
+            self.refresh_list()
+        self.app.run_task(lambda:twitch.discover(style,curated=curated),success=complete,executor=self.network)
+
+    def refresh_list(self,*_):
+        try:
+            saved=names(self.curated.get_text());excluded=names(self.excluded.get_text())
+        except ValueError:
+            saved=[];excluded=[]
+        query=self.search.get_text()
+        previous=self.selected['login'] if self.selected else None
+        self.visible=browse.project(self.result.get('channels',[]),query,self.filter.get_selected()==1,saved,excluded)
+        self.match_count.set_text(f"{len(self.visible)} of {len(self.result.get('channels', []))} channels")
+        self.channels.unselect_all()
+        while child:=self.channels.get_first_child():self.channels.remove(child)
+        selected_row=None
+        for channel in self.visible:
+            row=Gtk.ListBoxRow();row.channel=channel
+            content=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=2)
+            content.set_margin_top(5);content.set_margin_bottom(5);content.set_margin_start(8);content.set_margin_end(8)
+            heading=Gtk.Label(xalign=0);heading.add_css_class('source-name');heading.set_ellipsize(3)
+            display=channel.get('name') or channel['login']
+            if display.casefold()!=channel['login'].casefold():display+=' @'+channel['login']
+            heading.set_markup(browse.highlight(display,query))
+            heading.set_hexpand(True)
+            name_line=Gtk.Box(spacing=8);name_line.append(heading)
+            content.append(name_line)
+            status='Live' if channel.get('live') is True else ('Offline' if channel.get('live') is False else 'Live status unknown')
+            flags=[status]
+            if channel['saved']:flags.append('Saved')
+            if channel['excluded']:flags.append('Excluded from shuffle')
+            if self.playing==channel['login']:flags.append('Last started here')
+            status_label=text(' · '.join(flags));status_label.set_wrap(False);name_line.append(status_label)
+            detail=Gtk.Label(xalign=0);detail.add_css_class('muted');detail.set_ellipsize(3)
+            detail.set_markup(browse.highlight(channel.get('title') or channel['url'],query))
+            content.append(detail);row.set_child(content);self.channels.append(row)
+            if channel['login']==previous:selected_row=row
+        if selected_row:self.channels.select_row(selected_row)
+        else:self.choose_channel(self.channels,None)
+
+    def choose_channel(self, _box=None, row=None):
+        self.selected=row.channel if row else None
+        self.play_button.set_sensitive(bool(self.selected) and not self.starting)
+        if self.selected:
+            self.preview.set_text('Selected: '+self.selected['name']+'\n'+(self.selected.get('title') or self.selected['url']))
+        else:self.preview.set_text('Select a channel to preview its details.' if self.visible else 'No matching channels. Change the search or filter, or refresh.')
+
+    def shuffle(self):
+        try:excluded=names(self.excluded.get_text())
+        except ValueError as error:self.notice.set_text(str(error));return
+        last=hub.state().get('last_twitch_channel')
+        if last:excluded.append(last)
+        chosen=twitch.choose({'channels':self.visible},previous=self.selected['login'] if self.selected else None,excluded=excluded)
+        if not chosen:
+            self.notice.set_text('No alternative visible channel is available for shuffle.');return
+        for index,channel in enumerate(self.visible):
+            if channel['login']==chosen['login']:
+                self.channels.select_row(self.channels.get_row_at_index(index));break
+
+    def exclude_selected(self):
+        if not self.selected:return
+        try:
+            excluded=names(self.excluded.get_text())
+            excluded=list(dict.fromkeys(excluded+[self.selected['login']]))
+            twitch.save_preferences(self.key(),names(self.curated.get_text()),excluded)
+            self.excluded.set_text(', '.join(excluded));self.refresh_list();self.shuffle()
+        except (OSError,ValueError) as error:self.notice.set_text(str(error))
+
+    def open_selected(self):
+        if self.selected:self.app.open_source(dict(self.selected,kind='web'))
+
+    def open_category(self):
+        self.app.open_source({'kind':'web','url':'https://www.twitch.tv/directory/category/'+self.key(),'name':'Twitch '+self.key()})
+
+    def play(self):
+        if not self.selected or self.starting:return
+        channel=dict(self.selected);destination=self.route.get_selected()
+        self.starting=True;self.start_destination=destination
+        cancel=threading.Event();self.cancel=cancel;self.play_button.set_sensitive(False)
+        pending_volume=None
+        if destination==1 and self.volume_timer is not None:
+            GLib.source_remove(self.volume_timer);self.volume_timer=None
+            pending_volume=self.volume.get_value()
+        self.notice.set_text('Opening '+channel['name']+'…')
+        if destination==1:self.app.mixer.set_expanded(True)
+        def start():
+            try:
+                if destination==0:
+                    session_client.request('link', {'url': channel['url'], 'destination': 'music'})
+                elif destination==1:
+                    session_client.request('atmosphere', dict(kind='twitch', url=channel['url'], name=channel['name'], **({'volume': pending_volume} if pending_volume is not None else {})))
+                else:
+                    ambience.start(channel,mode='video',placement='9')
+                    hub.update_state(selected='video')
+                return {'cancelled':cancel.is_set()}
+            except audio_layers.LayerError:
+                if cancel.is_set():return {'cancelled':True}
+                raise
+            finally:GLib.idle_add(self.finish_start,cancel)
+        def complete(result):
+            if result['cancelled']:self.notice.set_text('Atmosphere stopped.');return
+            self.playing=channel['login'];self.refresh_list()
+            self.notice.set_text('Playing '+channel['name']+'. Its volume is retained when you switch channels.')
+            self.app.run_task(lambda:hub.update_state(last_twitch_channel=channel['login']))
+        self.app.run_task(start,success=complete,message='Opening Twitch channel…',executor=self.playback if destination==1 else None)
+
+    def finish_start(self,cancel):
+        if cancel is not self.cancel:return False
+        self.starting=False
+        self.start_destination=None
+        if not self.closed:self.play_button.set_sensitive(bool(self.selected))
+        return False
+
+    def update_layer(self, current, remembered):
+        self.updating=True
+        values=current or remembered
+        if self.volume_timer is None:self.volume.set_value(values.get('volume',20))
+        self.mute.set_label('Unmute' if values.get('muted') else 'Mute')
+        loading=self.starting and self.start_destination==1
+        self.pause.set_sensitive(bool(current) and not loading)
+        self.volume.set_sensitive(not loading)
+        self.mute.set_sensitive(not loading)
+        self.layer_status.set_text('Atmosphere · '+((current.get('title') or '')+' · '+current.get('status','') if current else 'stopped'))
+        self.updating=False
+
+    def volume_changed(self,scale):
+        if self.updating:return
+        if self.volume_timer is not None:GLib.source_remove(self.volume_timer)
+        value=scale.get_value()
+        def apply():
+            self.volume_timer=None
+            self.app.run_task(lambda:session_client.request('layer', {'layer':'atmosphere','action':'volume','value':value}),executor=self.playback)
+            return False
+        self.volume_timer=GLib.timeout_add(200,apply)
+
+    def layer_control(self,action):
+        self.app.run_task(lambda:session_client.request('layer', {'layer':'atmosphere','action':action}),executor=self.playback)
+
+    def cancel_layer_start(self):
+        if self.starting and self.start_destination==1 and self.cancel is not None:
+            self.cancel.set()
+            # Ordered after the start on this lane, covering cancellation as
+            # playback becomes ready as well as cancellation during loading.
+            self.layer_control('stop')
+            return True
+        return False
+
+    def stop_layer(self):
+        if not self.cancel_layer_start():self.layer_control('stop')
+
+    def import_follows(self):
+        profile=self.profile.get_text().strip();style=self.key()
+        def complete(result):
+            if result['status']!='follows':self.notice.set_text(result['message']);return
+            window=Gtk.Window(title='Review follows for '+style,transient_for=self.app.window,modal=True)
+            window.set_default_size(520,560)
+            body=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=8)
+            body.set_margin_top(14);body.set_margin_bottom(14);body.set_margin_start(14);body.set_margin_end(14)
+            body.append(text(result.get('message') or 'Select the channels that fit this style.'))
+            scroll=Gtk.ScrolledWindow();scroll.set_vexpand(True)
+            choices=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=4)
+            checks=[]
+            for item in result['channels']:
+                check=Gtk.CheckButton(label=item['name']+' ('+item['login']+')')
+                choices.append(check);checks.append((check,item['login']))
+            scroll.set_child(choices);body.append(scroll)
+            def add(_):
+                try:
+                    existing=twitch.curated_channels(style)
+                    twitch.save_preferences(style,list(dict.fromkeys(existing+[login for check,login in checks if check.get_active()])),twitch.excluded_channels())
+                    self.load_pool();self.notice.set_text('Selected follows added to '+style+'.');window.close()
+                except (OSError,ValueError) as error:self.notice.set_text(str(error))
+            body.append(action('Add selected to '+style,add));window.set_child(body);window.present()
+        self.app.run_task(lambda:twitch.import_following(profile),success=complete,executor=self.network,message='Reading Twitch follows…')
+
+    def close(self):
+        self.closed=True
+        if self.volume_timer is not None:GLib.source_remove(self.volume_timer)
+        self.network.shutdown(wait=False,cancel_futures=True)
+        self.playback.shutdown(wait=False,cancel_futures=True)
+#!/usr/bin/env python3
+"""Embeddable GTK4 discovery panel for the Radio Browser station directory.
+
+Searches run on a small, panel-owned executor. Construct with the ListeningRoom
+controller; playback and favorites are handed back to that controller.
+"""
+import concurrent.futures
+import random
+
+import gi
+gi.require_version('Gtk', '4.0')
+from gi.repository import Gtk, GLib, Gio, Pango
+
+import listening_hub as hub
+
+
+COUNTRIES = [
+    ('Anywhere', ''),
+    ('Finland · FI', 'FI'),
+    ('Japan · JP', 'JP'),
+    ('United States · US', 'US'),
+    ('United Kingdom · GB', 'GB'),
+    ('France · FR', 'FR'),
+    ('Germany · DE', 'DE'),
+    ('Brazil · BR', 'BR'),
+    ('Other ISO code…', None),
+]
+
+
+def _label(text='', css=None, xalign=0):
+    widget = Gtk.Label(label=text, xalign=xalign)
+    if css:
+        widget.add_css_class(css)
+    return widget
+
+
+class WorldRadioPanel(Gtk.Box):
+    """Country, language, genre and name search for World Radio.
+
+    ``controller`` is the ListeningRoom application/controller. It is expected
+    to expose ``open_source(item)``, ``favorite(item, saved)`` and a ``snapshot``
+    dict containing its current ``favorites`` list.
+    """
+
+    def __init__(self, controller):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.controller = controller
+        self.executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix='world-radio-search')
+        self.closed = False
+        self.request_id = 0
+        self.results = []
+        self.selected_item = None
+        self.favorite_buttons = []
+
+        self.set_margin_top(14)
+        self.set_margin_bottom(10)
+        self.set_margin_start(14)
+        self.set_margin_end(14)
+        self.set_vexpand(True)
+
+        heading = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        heading.append(_label('World radio', 'section-title'))
+        intro = _label('Find stations by place, language, genre or name. Search only runs when you ask.', 'muted')
+        intro.set_wrap(True)
+        heading.append(intro)
+        self.append(heading)
+
+        filters = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.append(filters)
+
+        place_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        place_row.append(_label('Country', 'muted'))
+        self.country = Gtk.DropDown.new_from_strings([entry[0] for entry in COUNTRIES])
+        self.country.set_selected(0)
+        self.country.connect('notify::selected', self._country_changed)
+        self.country.set_tooltip_text('Choose a country or search the full directory')
+        self.country.set_hexpand(True)
+        place_row.append(self.country)
+        self.country_code = Gtk.Entry()
+        self.country_code.set_placeholder_text('ISO code, e.g. CA')
+        self.country_code.set_max_length(2)
+        self.country_code.set_width_chars(12)
+        self.country_code.set_visible(False)
+        self.country_code.connect('activate', lambda *_: self.search())
+        place_row.append(self.country_code)
+        filters.append(place_row)
+
+        quick = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        quick.append(_label('Quick place:', 'muted'))
+        for title, code in [('Finland', 'FI'), ('Japan', 'JP'), ('Anywhere', '')]:
+            b = Gtk.Button(label=title)
+            b.connect('clicked', lambda _, value=code: self._quick_country(value))
+            quick.append(b)
+        filters.append(quick)
+
+        criteria = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.language = Gtk.Entry()
+        self.language.set_placeholder_text('Language, e.g. Finnish')
+        self.language.set_hexpand(True)
+        self.language.connect('activate', lambda *_: self.search())
+        self.genre = Gtk.Entry()
+        self.genre.set_placeholder_text('Genre, e.g. jazz')
+        self.genre.set_hexpand(True)
+        self.genre.connect('activate', lambda *_: self.search())
+        criteria.append(self.language)
+        criteria.append(self.genre)
+        filters.append(criteria)
+
+        name_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.name = Gtk.SearchEntry()
+        self.name.set_placeholder_text('Station name (optional)')
+        self.name.set_hexpand(True)
+        self.name.connect('search-changed', self._name_changed)
+        name_row.append(self.name)
+        self.search_button = Gtk.Button(label='Search stations')
+        self.search_button.add_css_class('suggested-action')
+        self.search_button.connect('clicked', lambda *_: self.search())
+        name_row.append(self.search_button)
+        self.surprise_button = Gtk.Button(label='Surprise me')
+        self.surprise_button.set_tooltip_text('Choose a station to preview; it will not start until you press Play')
+        self.surprise_button.connect('clicked', lambda *_: self.surprise())
+        name_row.append(self.surprise_button)
+        filters.append(name_row)
+
+        links = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        garden = Gtk.Button(label='Open Radio Garden')
+        garden.set_tooltip_text('Open the Radio Garden website')
+        garden.connect('clicked', lambda *_: self._open_uri('https://radio.garden/'))
+        links.append(garden)
+        links.append(_label('Directory lookup is on demand.', 'muted'))
+        filters.append(links)
+
+        self.status = _label('Choose filters and search to browse stations.', 'status-line', xalign=0)
+        self.status.set_wrap(True)
+        self.append(self.status)
+
+        self.preview = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.preview.set_visible(False)
+        self.preview.add_css_class('current')
+        self.preview_title = _label('', 'current-title')
+        self.preview_title.set_wrap(True)
+        self.preview.append(self.preview_title)
+        self.preview_details = _label('', 'muted')
+        self.preview_details.set_wrap(True)
+        self.preview.append(self.preview_details)
+        preview_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.preview_play = Gtk.Button(label='Play selected station')
+        self.preview_play.add_css_class('suggested-action')
+        self.preview_play.connect('clicked', lambda *_: self._play(self.selected_item))
+        preview_actions.append(self.preview_play)
+        self.preview.append(preview_actions)
+        self.append(self.preview)
+
+        self.result_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.results_scroll = Gtk.ScrolledWindow()
+        self.results_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.results_scroll.set_vexpand(True)
+        self.results_scroll.set_hexpand(True)
+        self.results_scroll.set_min_content_height(120)
+        self.results_scroll.set_child(self.result_list)
+        self.append(self.results_scroll)
+
+    def _country_changed(self, *_):
+        selected = self.country.get_selected()
+        self.country_code.set_visible(selected == len(COUNTRIES) - 1)
+        if selected == len(COUNTRIES) - 1:
+            self.country_code.grab_focus()
+
+    def _quick_country(self, code):
+        if not code:
+            self.country.set_selected(0)
+            self.country_code.set_text('')
+        else:
+            position = next((i for i, (_, value) in enumerate(COUNTRIES) if value == code), None)
+            if position is None:
+                self.country.set_selected(len(COUNTRIES) - 1)
+                self.country_code.set_text(code)
+            else:
+                self.country.set_selected(position)
+        # Quick place buttons only prefill the search criteria.
+
+    def _country_value(self):
+        selected = self.country.get_selected()
+        if selected == len(COUNTRIES) - 1:
+            return self.country_code.get_text().strip().upper()
+        return COUNTRIES[selected][1] if selected < len(COUNTRIES) else ''
+
+    def _name_changed(self, *_):
+        # SearchEntry emits this while typing; keep it a form, never a live query.
+        return
+
+    def _query_values(self):
+        return {
+            'name': self.name.get_text().strip(),
+            'country': self._country_value(),
+            'language': self.language.get_text().strip(),
+            'tag': self.genre.get_text().strip(),
+        }
+
+    def search(self, surprise=False):
+        if self.closed:
+            return
+        values = self._query_values()
+        query = values.pop('name')
+        # Even a rejected submission supersedes an earlier in-flight search.
+        self.request_id += 1
+        request_id = self.request_id
+        if not query and not any(values.values()):
+            if not surprise:
+                self.search_button.set_sensitive(True)
+                self.surprise_button.set_sensitive(True)
+                self.status.set_text('Pick a filter or enter a station name before searching.')
+                self.status.add_css_class('error')
+                return
+        self.search_button.set_sensitive(False)
+        self.surprise_button.set_sensitive(False)
+        self.status.remove_css_class('error')
+        self.status.set_text('Searching the station directory…')
+
+        def lookup():
+            return hub.search_radio(query, **values)
+
+        future = self.executor.submit(lookup)
+        future.add_done_callback(lambda completed: self._search_finished(request_id, completed, surprise))
+
+    def _search_finished(self, request_id, future, surprise):
+        try:
+            results, error = future.result(), None
+        except Exception as exc:
+            results, error = None, str(exc) or type(exc).__name__
+        GLib.idle_add(self._apply_search, request_id, results, error, surprise)
+
+    def _apply_search(self, request_id, results, error, surprise):
+        if self.closed or request_id != self.request_id:
+            return False
+        self.search_button.set_sensitive(True)
+        self.surprise_button.set_sensitive(True)
+        self._clear_results()
+        if error:
+            self.results = []
+            self._select(None)
+            self.status.set_text('Search failed: ' + error)
+            self.status.add_css_class('error')
+            return False
+        self.status.remove_css_class('error')
+        self.results = results or []
+        if not self.results:
+            self._select(None)
+            self.status.set_text('No stations found. Try another country, language, genre or name.')
+            self.result_list.append(_label('No stations matched these filters.', 'muted'))
+            return False
+        self.status.set_text(f'Found {len(self.results)} stations. Select one to preview, then press Play.')
+        for item in self.results:
+            self.result_list.append(self._result_row(item))
+        if surprise:
+            self._select(random.choice(self.results))
+        else:
+            self._select(None)
+        return False
+
+    def _clear_results(self):
+        self.favorite_buttons.clear()
+        child = self.result_list.get_first_child()
+        while child:
+            following = child.get_next_sibling()
+            self.result_list.remove(child)
+            child = following
+
+    def _result_row(self, item):
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        row.add_css_class('source-row')
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        body.set_hexpand(True)
+        name_button = Gtk.Button(label=item.get('name') or 'Unnamed station')
+        name_button.set_halign(Gtk.Align.START)
+        name_button.set_hexpand(True)
+        name_button.add_css_class('flat')
+        name_button.add_css_class('source-name')
+        name_button.get_child().set_ellipsize(Pango.EllipsizeMode.END)
+        name_button.set_tooltip_text(item.get('url') or '')
+        name_button.connect('clicked', lambda *_args, station=item: self._select(station))
+        body.append(name_button)
+        metadata = _label(self._station_metadata(item), 'muted')
+        metadata.set_ellipsize(Pango.EllipsizeMode.END)
+        body.append(metadata)
+        row.append(body)
+        play = Gtk.Button(label='Play')
+        play.connect('clicked', lambda *_args, station=item: self._play(station))
+        row.append(play)
+        saved = item.get('url') in self._favorite_urls()
+        favorite = Gtk.Button(label='★' if saved else '☆')
+        favorite.set_tooltip_text('Remove from favorites' if saved else 'Save to favorites')
+        def toggle_favorite(button, station=item):
+            self._favorite(station, station.get('url') in self._favorite_urls())
+        favorite.connect('clicked', toggle_favorite)
+        self.favorite_buttons.append((favorite, item.get('url')))
+        row.append(favorite)
+        website = item.get('website')
+        if hub.valid_url(website):
+            web = Gtk.Button(label='Website')
+            web.set_tooltip_text('Open the station website')
+            web.connect('clicked', lambda *_args, station=item: self._open_website(station))
+            row.append(web)
+        return row
+
+    @staticmethod
+    def _station_metadata(item):
+        pieces = []
+        country = item.get('country') or item.get('countrycode')
+        if country:
+            pieces.append(str(country))
+        language = item.get('language')
+        if language:
+            pieces.append(str(language))
+        tags = item.get('tags') or []
+        if isinstance(tags, str):
+            tags = [tag.strip() for tag in tags.split(',') if tag.strip()]
+        if tags:
+            pieces.append(' · '.join(str(tag) for tag in tags[:4]))
+        return '  ·  '.join(pieces) or 'Station details unavailable'
+
+    def _select(self, item):
+        self.selected_item = item
+        if not item:
+            self.preview.set_visible(False)
+            return
+        self.preview.set_visible(True)
+        self.preview_title.set_text(item.get('name') or 'Unnamed station')
+        self.preview_details.set_text(self._station_metadata(item))
+        self.preview_play.set_sensitive(True)
+
+    def surprise(self):
+        if self.results:
+            self._select(random.choice(self.results))
+            self.status.set_text('A station is selected for preview. Press Play when you want to listen.')
+            self.status.remove_css_class('error')
+            return
+        # Surprise browse is an explicit directory search, with no audio action.
+        self.search(surprise=True)
+
+    def _favorite_urls(self):
+        snapshot = getattr(self.controller, 'snapshot', {}) or {}
+        favorites = snapshot.get('favorites', []) if isinstance(snapshot, dict) else []
+        return {item.get('url') for item in favorites if isinstance(item, dict)}
+
+    def update_snapshot(self):
+        """Refresh favorite indicators after the controller updates its snapshot."""
+        if self.closed:
+            return
+        urls = self._favorite_urls()
+        for button, url in self.favorite_buttons:
+            saved = url in urls
+            button.set_label('★' if saved else '☆')
+            button.set_tooltip_text('Remove from favorites' if saved else 'Save to favorites')
+
+    def _favorite(self, item, saved):
+        if not item:
+            return
+        method = getattr(self.controller, 'favorite', None)
+        if method:
+            method(item, saved)
+        else:
+            action = (lambda: hub.save_json(
+                hub.STATE / 'favorites.json',
+                [entry for entry in hub.favorites() if entry.get('url') != item.get('url')])) if saved \
+                else (lambda: hub.save_favorite(item))
+            self._run_action(action)
+        self.status.set_text('Favorite update requested. The room snapshot will refresh shortly.')
+
+    def _play(self, item):
+        if item:
+            self.controller.open_source(item)
+
+    def _open_website(self, item):
+        website = item.get('website', '')
+        if not hub.valid_url(website):
+            return
+        self.controller.open_source(dict(item, kind='web', url=website))
+
+    def _run_action(self, action):
+        run_task = getattr(self.controller, 'run_task', None)
+        if run_task:
+            run_task(action, message='Updating favorites…')
+        else:
+            future = self.executor.submit(action)
+            future.add_done_callback(lambda f: GLib.idle_add(
+                self._action_finished, None if f.exception() is None else str(f.exception())))
+
+    def _action_finished(self, error):
+        if self.closed:
+            return False
+        self.status.set_text('Favorite updated.' if error is None else 'Could not update favorite: ' + error)
+        if error:
+            self.status.add_css_class('error')
+        return False
+
+    def _open_uri(self, uri):
+        try:
+            Gio.AppInfo.launch_default_for_uri(uri, None)
+        except GLib.Error as exc:
+            self.status.set_text('Could not open website: ' + str(exc))
+            self.status.add_css_class('error')
+
+    def focus_search(self):
+        """Focus the station name field for an optional global shortcut."""
+        self.name.grab_focus()
+
+    def close(self):
+        """Stop accepting results and release the panel's search workers."""
+        if self.closed:
+            return
+        self.closed = True
+        self.request_id += 1
+        self.executor.shutdown(wait=False, cancel_futures=True)
