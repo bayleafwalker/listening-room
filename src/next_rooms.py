@@ -286,8 +286,7 @@ class RoomsPage:
         if self.hero_kind == 'now':
             self.window.show_now()
         elif self.hero_kind == 'return':
-            self.window.go_to_now()
-            self.window.command('return')
+            self.window.start('return', {}, self.hero_title.get_text() or 'your room')
 
     def fill(self, playing):
         self.card_for = {}
@@ -409,6 +408,7 @@ class RoomsPage:
             return  # the same double-click reported twice
         self.activated = (entry.get('id'), time.monotonic())
         if rooms.is_active(entry, self.window.snapshot):
+            self.close_preview(animate=False)   # the first click of the double-click already opened it
             self.window.show_now()
         else:
             self.enter(entry)
@@ -417,16 +417,14 @@ class RoomsPage:
         window = self.window
         back = rooms.previous_room(window.snapshot, window.catalogue)
         self.close_preview(animate=False)
-        window.go_to_now()
         done = None
         if back:
             done = lambda _result: window.toast('Entered ' + entry['name'], 'Back to ' + back['name'],
                                                 lambda: self.go_back(back))
-        window.command('enter', rooms.enter_args(entry, scene_on), done=done)
+        window.start('enter', rooms.enter_args(entry, scene_on), entry['name'], entry.get('poster'), done=done)
 
     def go_back(self, back):
-        self.window.go_to_now()
-        self.window.command('enter', back['args'])
+        self.window.start('enter', back['args'], back['name'], back.get('poster'))
 
     def surprise(self):
         entry = rooms.surprise(self.entries, self.mood, self.window.snapshot, random)

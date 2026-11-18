@@ -260,15 +260,23 @@ class ListenPage(ServicesMixin, SourcesMixin):
         name_it(self.station_rename, 'Rename station', '')
         self.station_rename.connect('clicked', lambda *_: self.rename_dialog())
         identity.append(self.station_rename)
+        self.station_delete = Gtk.Button(label='Delete…')
+        self.station_delete.add_css_class('flat')
+        self.station_delete.set_halign(Gtk.Align.START)
+        name_it(self.station_delete, 'Delete station', '')
+        self.station_delete.connect('clicked', lambda *_: self.delete_dialog())
+        identity.append(self.station_delete)
         left.append(identity)
         actions = Gtk.Box(spacing=10)
         self.station_tune = Gtk.Button(label='Tune in')
         self.station_tune.add_css_class('suggested-action')
         self.station_tune.add_css_class('pill')
-        self.station_tune.connect('clicked', lambda *_: self.station and self.tune_station(self.station))
+        self.station_tune.connect('clicked', lambda b, *_: self.station and self.pressed(
+            b, lambda: self.tune_station(self.station)))
         self.station_ambience = Gtk.Button(label='Play as ambience')
         self.station_ambience.add_css_class('pill')
-        self.station_ambience.connect('clicked', lambda *_: self.station and self.station_ambience_action(self.station))
+        self.station_ambience.connect('clicked', lambda b, *_: self.station and self.pressed(
+            b, lambda: self.station_ambience_action(self.station)))
         actions.append(self.station_tune)
         actions.append(self.station_ambience)
         left.append(actions)
@@ -1151,7 +1159,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         open_button.connect('clicked', lambda *_: self.show_station(station))
         card.append(open_button)
         tune = Gtk.Button(label='Tune in', valign=Gtk.Align.CENTER)
-        tune.connect('clicked', lambda *_: self.tune_station(station))
+        tune.connect('clicked', lambda b, *_: self.pressed(b, lambda: self.tune_station(station)))
         card.append(tune)
         return card
 
@@ -1226,11 +1234,27 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if action:
             action_label, callback = action
             button = Gtk.Button(label=action_label, valign=Gtk.Align.CENTER)
-            button.connect('clicked', lambda *_: callback())
+            button.connect('clicked', lambda b, *_: self.pressed(b, callback))
             box.append(button)
         if menu:
             box.append(self.menu_button(entry.get('name') or 'this item', menu))
         return box
+
+    def pressed(self, button, callback):
+        """Run a primary action; the pressed control stays off while its command runs, so a second
+        click cannot send a duplicate."""
+        text = button.get_label()
+
+        def restore():
+            if button.get_root() is not None:
+                button.set_sensitive(True)
+                if text:
+                    button.set_label(text)
+        button.set_sensitive(False)
+        self.window.watch_next_command(restore)
+        callback()
+        if self.window.unwatch_command():   # nothing was sent (a dialog opened, or the action was refused)
+            restore()
 
     def menu_button(self, name, items):
         popover = Gtk.Popover()
@@ -1256,7 +1280,8 @@ class ListenPage(ServicesMixin, SourcesMixin):
             if not isinstance(station, dict):
                 continue
             menu = [('Play as ambience', lambda station=station: self.station_ambience_action(station)),
-                    ('Open station…', lambda station=station: self.show_station(station))]
+                    ('Open station…', lambda station=station: self.show_station(station)),
+                    ('Delete…', lambda station=station: self.delete_dialog(station))]
             url = next_station.first_source(station).get('url')
             if hub.valid_url(url or ''):
                 menu.append(('Open elsewhere', lambda url=url: self.open_external(url)))
@@ -1393,7 +1418,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if 'atmosphere' in (preview.get('actions') or []):
             entry['ambience'] = lambda url=preview.get('url') or preview.get('original') or '', name=preview.get('name') or 'Link': \
                 self.window.command('link', {'url': url, 'destination': 'atmosphere'},
-                                    done=(lambda _r: self.ambience_started(name)) if self.mode == 'ambience' else None)
+                                    done=lambda _r, undo=self.previous_ambience(): self.ambience_started(name, undo))
         return entry
 
     @staticmethod
@@ -1408,8 +1433,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
     # ---- actions -----------------------------------------------------------
 
     def tune_station(self, station):
-        self.window.go_to_now()
-        self.window.command('station.start', {'id': station.get('id')})
+        self.window.start('station.start', {'id': station.get('id')}, next_station.name(station))
 
     def station_ambience_action(self, station):
         first = next_station.first_source(station)
@@ -1425,24 +1449,21 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.send_ambience(args, next_station.name(station))
 
     def replay_history(self, row):
-        self.window.go_to_now()
-        self.window.command('station.replay', {'id': row.get('id')})
+        self.window.start('station.replay', {'id': row.get('id')}, row.get('name') or 'your station')
 
     def tune_history(self, row):
-        self.window.go_to_now()
-        self.window.command('station.start', {'id': row.get('station_id') or row.get('id')})
+        self.window.start('station.start', {'id': row.get('station_id') or row.get('id')},
+                          row.get('name') or 'your station')
 
     def tune_radio(self, item):
-        self.window.go_to_now()
-        self.window.command('music', {'item': item})
+        self.window.start('music', {'item': item}, item.get('name') or 'the station')
 
     def tune_library(self, item):
-        self.window.go_to_now()
-        self.window.command('online', {'service': 'jellyfin', 'item': item})
+        self.window.start('online', {'service': 'jellyfin', 'item': item}, item.get('name') or 'your library')
 
     def tune_channel(self, item):
-        self.window.go_to_now()
-        self.window.command('link', {'url': item.get('url'), 'destination': 'music'})
+        self.window.start('link', {'url': item.get('url'), 'destination': 'music'},
+                          item.get('name') or item.get('login') or 'the channel')
 
     def play_next(self, item):
         """A one-off track after the current one; the station's programming then resumes."""
@@ -1958,6 +1979,37 @@ class ListenPage(ServicesMixin, SourcesMixin):
         dialog.connect('response', answered)
         dialog.present(self.window)
 
+    def delete_dialog(self, station=None):
+        """Delete a saved station, after asking. Works for any station, however it was made."""
+        station = station if isinstance(station, dict) else self.station
+        if not isinstance(station, dict) or self.window.get_visible_dialog() is not None:
+            return
+        name = next_station.name(station)
+        playing = ((self.snapshot.get('station') or {}).get('definition') or {}).get('id') == station.get('id') \
+            and bool(self.snapshot.get('active'))
+        if playing:
+            self.window.toast('Stop or leave ' + name + ' before deleting it')
+            return
+        dialog = Adw.AlertDialog(heading='Delete ' + name + '?',
+                                 body='The station and what it learned are removed. Your music and sources are not touched.')
+        dialog.add_response('cancel', 'Cancel')
+        dialog.add_response('delete', 'Delete')
+        dialog.set_response_appearance('delete', Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_close_response('cancel')
+
+        def answered(_dialog, response):
+            if response != 'delete':
+                return
+
+            def deleted(_result):
+                self.window.toast('Deleted ' + name)
+                if self.station_id == station.get('id'):
+                    self.station = self.station_id = None
+                    self.show_index()
+            self.window.command('station.delete', {'id': station.get('id')}, done=deleted)
+        dialog.connect('response', answered)
+        dialog.present(self.window)
+
     def forget_dialog(self):
         station = self.station
         if not isinstance(station, dict) or self.window.get_visible_dialog() is not None:
@@ -2047,7 +2099,10 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if destination == 'original':
             self.open_external(url)
             return
-        if destination in ('music', 'atmosphere'):
+        if destination == 'music':
+            self.window.start('link', {'url': url, 'destination': 'music'}, next_links.host(url) or 'the link')
+            return
+        if destination == 'atmosphere':
             self.window.go_to_now()
         self.window.command('link', {'url': url, 'destination': destination},
                             done=(lambda _result: self.window.toast('Scene opened'))

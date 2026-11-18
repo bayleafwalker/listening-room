@@ -53,8 +53,9 @@ with env:
         window.open_mix()
         pump(.9)
         row = window.mix.rows['atmosphere']
-        check('1a ambience row has a plain Change… button like Music', isinstance(row.change, Gtk.Button)
-              and not isinstance(row.change, Gtk.MenuButton) and row.change.get_label() == 'Change…')
+        check('1a ambience row has a plain button like Music (Change…, or Choose ambience when empty)',
+              isinstance(row.change, Gtk.Button) and not isinstance(row.change, Gtk.MenuButton)
+              and row.change.get_label() in ('Change…', 'Choose ambience'), row.change.get_label())
         shot(window, '01-mix-ambience-change')
         mark = len(env.log)
         row.change.emit('clicked')
@@ -307,7 +308,8 @@ with env:
         shot(window, '11-twitch-preferences')
         prefs.force_close()
         pump(.4)
-        check('3d opening setup sent no playback command', not commands(mark), commands(mark))
+        check('3d opening setup sent no playback command', not [c for c in commands(mark) if not c[0].startswith('metadata.')],
+              commands(mark))
         env.twitch_connected = True
         page.refresh_twitch(force=True)
         pump(1.4)
@@ -342,13 +344,16 @@ with env:
         pump(1.0)
         set_scope(page, 'All') if False else None
         page.end_ambience()
-        pump(.4)
+        window.show_listen()
+        pump(.6)
         set_scope(page, 'Live channels')
         shown = visible_texts(page.index_body)
         check('3h with saved channels but no account the list says live status is unknown',
               'lofigirl' in shown and any('not connected' in t for t in shown), sorted(shown)[:30])
 
         # ------------------------------------------------------------------ YouTube
+        window.show_listen()
+        pump(.4)
         set_scope(page, 'YouTube')
         shown = visible_texts(page.index_body)
         check('4a the YouTube scope says how it works before any search', any('Nothing plays until' in t for t in shown))
@@ -373,10 +378,12 @@ with env:
         # Cancellable: a slow search is replaced by a newer one and its answer never shows.
         env.yt_delay = 2.0
         page.search.set_text('slow query')
+        pump(.25)   # the search entry reports the change after a short delay
         page.query_submitted()
         pump(.4)
         check('4f a slow search shows Searching and a Stop button',
-              'Searching YouTube…' in visible_texts(page.index_body) and buttons(page.index_body, 'Stop'))
+              'Searching YouTube…' in visible_texts(page.index_body) and buttons(page.index_body, 'Stop'),
+              (sorted(visible_texts(page.index_body)), page.searching, page.query, page.scope))
         buttons(page.index_body, 'Stop')[0].emit('clicked')
         pump(.5)
         check('4g Stop ends it without results', 'Searching YouTube…' not in visible_texts(page.index_body)
@@ -430,10 +437,119 @@ with env:
         gesture.emit('released', 1, 10., 10.)
         pump(.05)
         again = [c for c in window.rooms.stack.observe_controllers() if isinstance(c, Gtk.GestureClick)][0]
-        again.emit('pressed', 2, 12., 12.)
+        ok, spot = child.get_child().compute_point(window.rooms.stack, __import__('gi').repository.Graphene.Point().init(10., 10.))
+        again.emit('pressed', 2, spot.x, spot.y)
         pump(1.0)
         check('5c a quick second click, landing on the preview that replaced the card, enters once',
               len([c for c in commands(mark) if c[0] == 'enter']) == 1, commands(mark))
+        # ------------------------------------------------------------------ pending state
+        env.service.execute('leave', {})
+        settle(1.0)
+        window.show_rooms()
+        pump(.8)
+        env.start_delay = 2.0
+        mark = len(env.log)
+        child = window.cards.get_first_child()
+        entry = window.rooms.card_for[child]
+        window.rooms.open_preview(entry)
+        pump(.5)
+        window.rooms.press_enter()
+        pump(.12)
+        card = window.pending_card
+        check('6a Enter room shows Now at once with "Connecting to <room>…" and not the Rooms grid',
+              window.current_page() == 'now' and card.get_visible()
+              and ('Connecting to ' + entry['name'] + '…') in visible_texts(card), (window.current_page(), visible_texts(card)))
+        check('6b the play control is off and the room name is the target', not window.play.get_sensitive()
+              and window.room_name.get_text() == entry['name'])
+        shot(window, '16-pending-connecting')
+        window.rooms.enter(entry)
+        window.return_room()
+        pump(.2)
+        check('6c repeated presses send exactly one enter', len([c for c in commands(mark) if c[0] in ('enter', 'return')]) == 1,
+              commands(mark))
+        settle(2.5)
+        check('6d when the room is up the card clears and Now shows it', not card.get_visible() and window.current_page() == 'now'
+              and window.play.get_sensitive() and bool(window.snapshot.get('active')), (card.get_visible(), window.current_page()))
+        env.start_delay = 0
+        # Failure with the previous state intact.
+        previous = (window.snapshot.get('active') or {}).get('name')
+        env.start_error = '[Errno 111] Connection refused'
+        window.show_rooms()
+        pump(.6)
+        window.pending = None
+        window.start('station.start', {'id': 'does-not-exist'}, 'Missing station')
+        pump(1.2)
+        check('6e a failed start says so in plain words, in place, with Try again',
+              card.get_visible() and 'Couldn’t start Missing station' in visible_texts(card) and
+              any('did not answer' in t or 'not found' in t.lower() or 'Station' in t for t in visible_texts(card))
+              and env.buttons(card, 'Try again'), visible_texts(card))
+        check('6f the previous room is still active and shown', (window.snapshot.get('active') or {}).get('name') == previous)
+        shot(window, '17-pending-failed')
+        env.buttons(card, 'Back')[0].emit('clicked')
+        pump(.5)
+        check('6g Back dismisses the card', not card.get_visible())
+        env.start_error = None
+        # Listen: Tune in is disabled while its command runs.
+        env.service.execute('leave', {})
+        settle(1.0)
+        window.show_listen()
+        page.scopes.set_active(2)
+        pump(.6)
+        env.start_delay = 1.5
+        mark = len(env.log)
+        tune = env.buttons(page.index_body, 'Tune in')[0]
+        tune.emit('clicked')
+        tune.emit('clicked')
+        tune.emit('clicked')
+        pump(.3)
+        sent = [c for c in commands(mark) if c[0] == 'music']
+        check('6h three clicks on Tune in send one music command', len(sent) == 1, commands(mark))
+        check('6i Now shows "Connecting to …" for it', window.current_page() == 'now' and window.pending_card.get_visible())
+        settle(2.5)
+        check('6j and the control is usable again afterwards', tune.get_sensitive() or tune.get_root() is None)
+        env.start_delay = 0
+        # Ambience: the pressed button is off while it runs, the toast has Undo.
+        window.show_listen()
+        pump(.5)
+        toasts = []
+        original_toast = window.toast
+        window.toast = lambda title, label=None, undo=None: (toasts.append((title, label)), original_toast(title, label, undo))[1]
+        page.begin_ambience('now')
+        pump(.6)
+        mark = len(env.log)
+        sound = play_buttons(page.index_body)[0]
+        sound.emit('clicked')
+        off = not sound.get_sensitive()
+        pump(1.0)
+        check('6k the pressed ambience button is off while its command runs, and one command was sent',
+              off and len([c for c in commands(mark) if c[0] == 'layer']) == 1, (off, commands(mark)))
+        check('6l the ambience result toasts with Undo', any(t[0].startswith('Ambience: ') and t[1] == 'Undo' for t in toasts), toasts)
+        # Mini player: its play control is off, with a spinner, while the command runs.
+        window.show_now()
+        pump(.5)
+        window.mini_player.play_clicked()
+        check('6m the mini player play control is off while its command runs', not window.mini_player.play.get_sensitive())
+        settle(1.0)
+        check('6n and back on afterwards', window.mini_player.play.get_sensitive())
+
+        # ------------------------------------------------------------------ Mix truthfulness
+        env.service.execute('layer', {'layer': 'atmosphere', 'action': 'stop'})
+        settle(.8)
+        window.show_now()
+        window.open_mix()
+        pump(.9)
+        row = window.mix.rows['atmosphere']
+        check('7a with no ambience the row says "No ambience" with a primary Choose ambience',
+              row.subtitle.get_text() == 'No ambience' and row.change.get_label() == 'Choose ambience'
+              and row.change.has_css_class('suggested-action'), row.subtitle.get_text())
+        check('7b and hides the slider, Mute and options until a source exists',
+              not row.controls.get_visible() and not row.mute.get_visible() and not row.menu.get_visible())
+        shot(window, '18-mix-no-ambience')
+        env.service.execute('layer', {'layer': 'atmosphere', 'action': 'select', 'kind': 'local', 'source_id': 'rain-glass', 'name': 'Rain on glass'})
+        settle(.9)
+        check('7d with an ambience the controls come back and the button reads Change…',
+              row.controls.get_visible() and row.mute.get_visible() and row.change.get_label() == 'Change…'
+              and not row.change.has_css_class('suggested-action'))
     finally:
         failed = [name for name, ok in checks if not ok]
         print('\n%d checks, %d failed' % (len(checks), len(failed)))

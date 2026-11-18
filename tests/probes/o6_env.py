@@ -97,6 +97,9 @@ class Env:
         self.yt_delay = 0.
         self.log = []
         self.yt_queries = []
+        self.start_delay = 0.        # seconds a music start takes (a slow stream connect)
+        self.start_error = None      # a message the music start fails with
+        self.atmosphere_error = None
 
     # ---- setup -----------------------------------------------------------------------
 
@@ -129,7 +132,17 @@ class Env:
         env = self
 
         class ProbeBackend(FakeBackend):
+            def start_music(self, source, cancel):
+                deadline = time.monotonic() + env.start_delay
+                while time.monotonic() < deadline and not cancel.is_set():
+                    time.sleep(.02)
+                if env.start_error:
+                    raise ValueError(env.start_error)
+                return super().start_music(source, cancel)
+
             def start_atmosphere(self, selection, cancel):
+                if env.atmosphere_error and selection.get('kind') != 'none':
+                    raise ValueError(env.atmosphere_error)
                 super().start_atmosphere(selection, cancel)
                 import atmosphere_catalogue
                 sound = next((x for x in atmosphere_catalogue.SOUNDS if x['id'] == selection.get('source_id')), {})
@@ -323,7 +336,11 @@ class Env:
 
     def start_station_room(self):
         """A room is playing a radio station, so Now and the Mix exist."""
-        self.service.execute('station.save', {'station': RADIO_STATION})
+        deadline = time.monotonic() + 8
+        while self.controller.transition and time.monotonic() < deadline:
+            self.pump(.2)
+        if not any(s['name'] == 'Morning lift' for s in self.controller.stations()):
+            self.service.execute('station.save', {'station': RADIO_STATION})
         station = next(s for s in self.controller.stations() if s['name'] == 'Morning lift')
         self.service.execute('station.start', {'id': station['id']})
         self.settle(1.2)

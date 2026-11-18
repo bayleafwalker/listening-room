@@ -136,8 +136,16 @@ class LayerRow(Gtk.Box):
     def update(self, row):
         self.updating = True
         state = row['state']
-        self.subtitle.set_text(' · '.join(part for part in (row['source'], row['detail'], state) if part))
+        empty = self.layer == 'atmosphere' and row['closed'] and not row['failed']
+        self.subtitle.set_text('No ambience' if empty else
+                               ' · '.join(part for part in (row['source'], row['detail'], state) if part))
         self.subtitle.remove_css_class('error')
+        if self.layer == 'atmosphere':
+            # With nothing playing there is nothing to level, mute or stop: only the way to choose one.
+            self.change.set_label('Choose ambience' if empty else 'Change…')
+            (self.change.add_css_class if empty else self.change.remove_css_class)('suggested-action')
+            for widget in (self.controls, self.mute, self.menu):
+                widget.set_visible(not empty)
         if row['failed']:
             self.subtitle.add_css_class('error')
         self.next_item.set_visible(bool(row.get('can_next')))

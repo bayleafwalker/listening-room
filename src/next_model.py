@@ -216,3 +216,16 @@ def motion_allowed(snapshot, animations_enabled=True):
     picture = (snapshot.get('active') or {}).get('picture') or {}
     return bool(animations_enabled and not settings.get('reduced_motion')
                 and not settings.get('still') and not picture.get('still'))
+
+
+def plain_error(error):
+    """A controller or socket error in words a listener can act on."""
+    text = str(error or '').strip()
+    low = text.lower()
+    if not text:
+        return 'Something went wrong. Try again.'
+    if 'errno' in low or 'refused' in low or 'no such file' in low or 'broken pipe' in low or 'unreachable' in low:
+        return 'The room service did not answer. Try again in a moment.'
+    if 'timed out' in low or 'timeout' in low or 'took too long' in low:
+        return 'It took too long to connect.'
+    return text[:200]

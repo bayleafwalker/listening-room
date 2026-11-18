@@ -101,7 +101,7 @@ class MiniPlayer(Gtk.Overlay):
         bottom.append(self.play)
         self.return_button = Gtk.Button(label='Return', visible=False)
         self.return_button.add_css_class('mini-return')
-        self.return_button.connect('clicked', lambda *_: host.return_room())
+        self.return_button.connect('clicked', lambda *_: self.play_clicked())
         bottom.append(self.return_button)
         self.volume_box = Gtk.Box(spacing=10, hexpand=True)
         icon = Gtk.Image(icon_name='audio-volume-high-symbolic')
@@ -142,10 +142,24 @@ class MiniPlayer(Gtk.Overlay):
     # ---- behaviour ------------------------------------------------------
 
     def play_clicked(self):
+        """Play, pause or return; the control stays off, with a spinner, while its command runs."""
+        icon = self.play.get_icon_name()
+        self.play.set_sensitive(False)
+        self.return_button.set_sensitive(False)
+
+        def restore():
+            self.play.set_sensitive(True)
+            self.return_button.set_sensitive(True)
+            if self.play.get_icon_name() is None and icon:
+                self.play.set_icon_name(icon)
+        self.host.watch_next_command(restore)
+        self.play.set_child(Gtk.Spinner(spinning=True))
         if self.state == 'return':
             self.host.return_room()
         else:
             self.host.actions.toggle()
+        if self.host.unwatch_command():
+            restore()
 
     def volume_changed(self, scale):
         if self.updating:
@@ -319,19 +333,29 @@ class PopoverHost:
         if not self.closed:
             self.window.toast(title, undo_label, undo)
 
+    def watch_next_command(self, finish):
+        self._watch = finish
+
+    def unwatch_command(self):
+        watch, self._watch = getattr(self, '_watch', None), None
+        return watch
+
     def send(self, action, args=None, done=None, urgent=False, quiet=False):
         if self.closed:
             return
+        finish, self._watch = getattr(self, '_watch', None), None
         future = (self.urgent if urgent else self.executor).submit(self.request, action, args or {}, 5)
 
         def finished(f):
             try:
                 result = f.result()
             except Exception as error:
+                if finish:
+                    GLib.idle_add(lambda: finish() or False)
                 if not quiet:
-                    GLib.idle_add(lambda: self.toast(str(error) or type(error).__name__) or False)
+                    GLib.idle_add(lambda: self.toast(model.plain_error(error)) or False)
                 return
-            GLib.idle_add(lambda: self.succeeded(result, done) or False)
+            GLib.idle_add(lambda: (finish() if finish else None, self.succeeded(result, done)) and False)
         future.add_done_callback(finished)
 
     def succeeded(self, result, done):
