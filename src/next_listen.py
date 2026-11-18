@@ -19,17 +19,24 @@ gi.require_version('Adw', '1')
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
 import listening_hub as hub
+import channel_browse
 import next_links
 import next_model
+import next_new_station
 import next_station
 import session_client
+import youtube_search
 from next_listen_more import MORE_SCOPES, ServicesMixin
+from next_listen_sources import SourcesMixin
 from next_widgets import FocalPicture, show_texture, icon_button, label, name_it
 
 SCOPES = (('all', 'All'), ('stations', 'Your stations'), ('radio', 'Radio'),
-          ('library', 'Library'), ('channels', 'Live channels'), ('world', 'World radio'))
+          ('library', 'Library'), ('channels', 'Live channels'), ('world', 'World radio'), ('youtube', 'YouTube'))
+# Choosing an ambience: every source that can play behind the music, offline sounds first.
+AMBIENCE_SCOPES = (('sounds', 'Sounds'), ('radio', 'Radio'), ('library', 'Library'), ('channels', 'Live channels'),
+                   ('youtube', 'YouTube'), ('world', 'World radio'), ('stations', 'Your stations'))
 NETWORK_SCOPES = {'all': ('world',), 'world': ('world',), 'library': ('library',), 'channels': ('channels',),
-                  'speakers': ('speakers',)}
+                  'youtube': ('youtube',), 'speakers': ('speakers',)}
 DEBOUNCE_MS = 500
 SHELF_LIMIT = 6
 FULL_LIMIT = 20
@@ -37,6 +44,7 @@ REVIEW_PAGES = 50
 FAVORITES_REFRESH_S = 3.
 
 LISTEN_CSS = '''
+.next .ambience-banner { background: rgba(255,255,255,.07); border-radius: 12px; padding: 10px 14px; }
 .next .listen-title { font-size: 17px; font-weight: 600; color: #ffffff; }
 .next .listen-heading { font-size: 22px; font-weight: 600; color: #ffffff; }
 .next .section-note { font-size: 13px; color: rgba(255,255,255,.68); }
@@ -104,7 +112,7 @@ def _looks_like_url(value):
     return isinstance(value, str) and value.strip().lower().startswith(('http://', 'https://'))
 
 
-class ListenPage(ServicesMixin):
+class ListenPage(ServicesMixin, SourcesMixin):
     """Search first, then shelves; station detail and history are pushed pages."""
 
     def __init__(self, window):
@@ -120,6 +128,14 @@ class ListenPage(ServicesMixin):
         self.library_cancel = None
         self.channels = []
         self.channels_loaded = False
+        self.twitch = {'state': 'unknown', 'message': '', 'at': 0.}
+        self.twitch_loading = False
+        self.sounds = None             # offline sounds, read once off the GTK thread
+        self.sounds_state = 'idle'
+        self.world_cache = None        # the last World radio search, read once off the GTK thread
+        self.mode = 'music'            # 'ambience' while a source is being chosen for the Mix
+        self.mode_origin = 'now'
+        self.scope_list = SCOPES
         self.remote = {}
         self.init_services()
         self.searching = False
@@ -179,6 +195,7 @@ class ListenPage(ServicesMixin):
         self.search.update_property([Gtk.AccessibleProperty.LABEL], ['Search stations and links'])
         self.search.connect('search-changed', self.query_changed)
         self.search.connect('activate', self.query_submitted)
+        column.insert_child_after(self.build_ambience_banner(), None)
         column.append(self.search)
         self.scopes = Adw.ToggleGroup()
         self.scopes.add_css_class('listen-scopes')
@@ -187,9 +204,7 @@ class ListenPage(ServicesMixin):
             self.scopes.set_homogeneous(False)
         except AttributeError:
             pass
-        for key, title in SCOPES:
-            self.scopes.add(Adw.Toggle(label=title, name=key))
-        self.scopes.set_active(0)
+        self.fill_scopes()
         self.scopes.connect('notify::active', self.scope_changed)
         wrap = Adw.WrapBox(child_spacing=8, line_spacing=8)
         wrap.append(self.scopes)
@@ -530,6 +545,9 @@ class ListenPage(ServicesMixin):
         if keyval == Gdk.KEY_Escape and self.query:
             self.search.set_text('')
             return True
+        if keyval == Gdk.KEY_Escape and self.mode == 'ambience':
+            self.end_ambience(returned=True)
+            return True
         if self.editable_focus():
             return False
         codepoint = Gdk.keyval_to_unicode(keyval)
@@ -594,7 +612,7 @@ class ListenPage(ServicesMixin):
             index = self.more_scopes.get_active()
             return MORE_SCOPES[index][0] if 0 <= index < len(MORE_SCOPES) else None
         index = self.scopes.get_active()
-        return SCOPES[index][0] if 0 <= index < len(SCOPES) else None
+        return self.scope_list[index][0] if 0 <= index < len(self.scope_list) else None
 
     def query_changed(self, *_args):
         text = self.search.get_text().strip()
@@ -661,7 +679,7 @@ class ListenPage(ServicesMixin):
         self.searching = True
         query = self.query
         searches = {'world': self.search_world, 'library': self.search_library, 'channels': self.search_channels,
-                    'speakers': self.search_speakers}
+                    'youtube': self.search_youtube, 'speakers': self.search_speakers}
         for scope in scopes:
             future = self.executor.submit(searches[scope], query, event)
             future.add_done_callback(lambda done, name=scope: self.search_finished(request, name, query, done))
@@ -735,15 +753,31 @@ class ListenPage(ServicesMixin):
         if time.monotonic() - self.favorites_at < FAVORITES_REFRESH_S:
             return
         self.favorites_at = time.monotonic()
-        try:
-            self.favorites = {str(item.get('url')) for item in hub.favorites() if isinstance(item, dict)}
-        except (OSError, ValueError):
-            self.favorites = set()
+
+        def read():
+            try:
+                return {str(item.get('url')) for item in hub.favorites() if isinstance(item, dict)}
+            except (OSError, ValueError):
+                return set()
+
+        def done(future):
+            try:
+                found = future.result()
+            except Exception:
+                found = set()
+            GLib.idle_add(self.favorites_read, found)
+        self.executor.submit(read).add_done_callback(done)
+
+    def favorites_read(self, found):
+        if not self.closed and found != self.favorites:
+            self.favorites = found
+            self.refresh()
+        return False
 
     def ensure_static_loads(self):
         if not self.channels_loaded:
             self.channels_loaded = True
-            self.channels = self.load_channels()
+            self.refresh_twitch(force=True)
         if self.library_state == 'idle' and self.widget.get_mapped():
             self.library_state = 'loading' if self.library_configured() else 'unavailable'
             if self.library_state == 'loading':
@@ -797,22 +831,6 @@ class ListenPage(ServicesMixin):
         self.library_state = 'failed' if error else ('ready' if self.library else 'empty')
         self.refresh()
         return False
-
-    @staticmethod
-    def load_channels():
-        try:
-            import twitch_channels
-            excluded = {str(name).lower() for name in twitch_channels.excluded_channels()}
-            channels = []
-            for style in ('music', 'asmr'):
-                for login in twitch_channels.curated_channels(style):
-                    if login.lower() in excluded or any(item['login'] == login for item in channels):
-                        continue
-                    channels.append({'login': login, 'name': login,
-                                     'url': 'https://www.twitch.tv/' + login, 'live': None})
-            return channels
-        except (ImportError, OSError, ValueError):
-            return []
 
     # ---- now-playing bar ---------------------------------------------------
 
@@ -874,7 +892,8 @@ class ListenPage(ServicesMixin):
              for entry in history if isinstance(entry, dict)],
             [[item.get('id'), item.get('name'), item.get('group')] for item in self.window.radio],
             sorted(self.favorites), self.library_state, len(self.library),
-            [item.get('login') for item in self.channels],
+            [[item.get('login'), item.get('live')] for item in self.channels], self.twitch['state'],
+            self.mode, len(self.sounds or []), youtube_search.available(),
             self.query, self.scope, self.searching, self.services_signature(),
             {key: [value.get('query'), len(value.get('rows') or []), value.get('error')]
              for key, value in self.remote.items()},
@@ -921,9 +940,9 @@ class ListenPage(ServicesMixin):
                 'Library', library[:SHELF_LIMIT],
                 note={'loading': 'Loading the library…', 'failed': 'The library could not be read.',
                       'empty': 'No albums in the library yet.'}.get(self.library_state)))
-        channels = self.channel_entries()
+        channels = self.channel_rows()
         if channels:
-            self.index_body.append(self.section('Live channels', channels[:SHELF_LIMIT]))
+            self.index_body.append(self.section('Live channels', channels[:SHELF_LIMIT], note=self.twitch_footnote()))
         elsewhere = self.elsewhere_entries()
         if elsewhere:
             expander = Gtk.Expander(label='Open elsewhere')
@@ -953,10 +972,17 @@ class ListenPage(ServicesMixin):
             else:
                 rows = self.kind_entries()[:FULL_LIMIT]
                 self.index_body.append(self.section('Library', rows, note=None if rows else self.kind_note()))
+        elif scope == 'sounds':
+            rows = self.sound_entries()
+            self.index_body.append(self.section('Sounds', rows, note=None if rows else (
+                'Loading the offline sounds…' if self.sounds_state == 'loading' else 'No offline sounds are installed.')))
+        elif scope == 'youtube':
+            self.index_body.append(self.section('YouTube', [], note=self.youtube_note(),
+                                                trailing=self.youtube_trailing()))
         elif scope == 'channels':
-            rows = [self.channel_entry(item) for item in self.channels]
+            rows = self.channel_rows()
             self.index_body.append(self.section('Live channels', rows, note=(
-                'No live channels yet.' if not rows else None)))
+                self.twitch_footnote() or ('No live channels yet.' if not rows else None))))
         elif scope == 'world':
             rows = self.recent_world()
             self.index_body.append(self.section('World radio', rows, note=(
@@ -965,11 +991,34 @@ class ListenPage(ServicesMixin):
             self.render_shelves()
 
     def recent_world(self):
-        cached = hub.load_json(hub.STATE / 'search-cache.json', [])
-        if not isinstance(cached, list):
+        cached = self.world_cache
+        if cached is None:
+            self.world_cache = []
+            self.read_world_cache()
             return []
         return [self.world_entry(item) for item in cached[:FULL_LIMIT]
                 if isinstance(item, dict) and item.get('kind') == 'radio']
+
+    def read_world_cache(self):
+        """The last World radio search, read off the GTK thread."""
+        def read():
+            found = hub.load_json(hub.STATE / 'search-cache.json', [])
+            return found if isinstance(found, list) else []
+
+        def done(future):
+            try:
+                found = future.result()
+            except Exception:
+                found = []
+            GLib.idle_add(self.world_read, found)
+        self.executor.submit(read).add_done_callback(done)
+
+    def world_read(self, found):
+        if not self.closed and found != self.world_cache:
+            self.world_cache = found
+            self.index_sig = None
+            self.refresh()
+        return False
 
     def render_results(self):
         link = self.link_entry()
@@ -988,11 +1037,25 @@ class ListenPage(ServicesMixin):
             base = self.kind_entries() if scope == 'library' else self.library_entries()
             rows = self.merged(self.matching(base), [self.library_entries_for(remote)])
             groups.append(('Library', rows, note))
+        if scope == 'sounds':
+            groups.append(('Sounds', self.matching(self.sound_entries()), None))
         if scope in ('all', 'channels'):
             remote = self.remote_rows('channels')
             rows = self.merged(self.matching([self.channel_entry(item) for item in self.channels]),
                                [[self.channel_entry(item) for item in remote if isinstance(item, dict)]])
+            if scope == 'channels' and not rows and self.twitch['state'] in ('setup', 'attention'):
+                rows = [self.twitch_setup_entry()]
             groups.append(('Live channels', rows, None))
+        if scope == 'youtube':
+            remote = self.remote.get('youtube') or {}
+            fresh = remote.get('query') == self.query
+            rows = [self.youtube_entry(item) for item in remote.get('rows') or [] if isinstance(item, dict)] if fresh else []
+            if not youtube_search.available():
+                note = youtube_search.MISSING
+            else:
+                note = ('Searching YouTube…' if self.searching else
+                        'YouTube search did not finish. Try again.' if fresh and remote.get('error') else None)
+            groups.append(('YouTube', rows, note))
         if scope in ('all', 'world'):
             remote = self.remote.get('world') or {}
             fresh = remote.get('query') == self.query
@@ -1005,7 +1068,7 @@ class ListenPage(ServicesMixin):
             if not rows and not note:
                 continue
             trailing = self.link_button('Stop', self.cancel_search) \
-                if self.searching and title == 'World radio' else None
+                if self.searching and title in ('World radio', 'YouTube') else None
             self.index_body.append(self.section(title, rows, note=note, trailing=trailing))
             shown += len(rows)
         if not shown and not self.searching:
@@ -1124,6 +1187,8 @@ class ListenPage(ServicesMixin):
         if trailing is not None:
             head.append(trailing)
         box.append(head)
+        if self.mode == 'ambience':
+            rows = [entry for entry in rows if entry.get('ambience') or entry.get('kind') == 'setup']
         for entry in rows:
             box.append(self.row(entry))
         if not rows and note:
@@ -1154,12 +1219,15 @@ class ListenPage(ServicesMixin):
         text.append(detail)
         box.append(text)
         action = entry.get('action')
+        menu = entry.get('menu')
+        if self.mode == 'ambience' and entry.get('ambience'):
+            action = ('Play as ambience', entry['ambience'])
+            menu = [item for item in menu or [] if item[0] != 'Play as ambience']
         if action:
             action_label, callback = action
             button = Gtk.Button(label=action_label, valign=Gtk.Align.CENTER)
             button.connect('clicked', lambda *_: callback())
             box.append(button)
-        menu = entry.get('menu')
         if menu:
             box.append(self.menu_button(entry.get('name') or 'this item', menu))
         return box
@@ -1195,7 +1263,7 @@ class ListenPage(ServicesMixin):
             entries.append({'kind': 'station', 'name': next_station.name(station),
                             'detail': next_station.descriptor(station), 'keywords': next_station.origin(station),
                             'action': ('Tune in', lambda station=station: self.tune_station(station)),
-                            'menu': menu})
+                            'menu': menu, 'ambience': lambda station=station: self.station_ambience_action(station)})
         return entries
 
     def radio_entries(self):
@@ -1220,7 +1288,8 @@ class ListenPage(ServicesMixin):
         return {'kind': 'radio', 'name': item.get('name') or 'Radio station',
                 'detail': str(group) + ' · live', 'keywords': ' '.join(str(tag) for tag in item.get('tags') or []),
                 'item': item,
-                'action': ('Tune in', lambda item=item: self.tune_radio(item)), 'menu': menu}
+                'action': ('Tune in', lambda item=item: self.tune_radio(item)), 'menu': menu,
+                'ambience': lambda item=item: self.play_ambience(item)}
 
     def library_entries(self):
         entries = []
@@ -1243,7 +1312,8 @@ class ListenPage(ServicesMixin):
                             'detail': self.library_kind(item) + ' · Jellyfin',
                             'keywords': ' '.join([str(item.get('artist') or '')] + [str(x) for x in item.get('genres') or []]),
                             'item': item,
-                            'action': ('Tune in', lambda item=item: self.tune_library(item)), 'menu': menu})
+                            'action': ('Tune in', lambda item=item: self.tune_library(item)), 'menu': menu,
+                            'ambience': lambda item=item: self.play_ambience(item)})
         return entries
 
     @staticmethod
@@ -1272,7 +1342,8 @@ class ListenPage(ServicesMixin):
         detail = 'Live channel · Twitch' + (' · live' if item.get('live') else '')
         return {'kind': 'channel', 'name': item.get('name') or item.get('login') or 'Channel',
                 'detail': detail, 'keywords': item.get('title') or '',
-                'action': ('Tune in', lambda item=item: self.tune_channel(item)), 'menu': menu}
+                'action': ('Tune in', lambda item=item: self.tune_channel(item)), 'menu': menu,
+                'ambience': lambda item=item: self.play_ambience(item)}
 
     def elsewhere_entries(self):
         entries = []
@@ -1303,7 +1374,8 @@ class ListenPage(ServicesMixin):
             menu.append(('Open elsewhere', lambda url=item['website']: self.open_external(url)))
         return {'kind': 'radio', 'name': item.get('name') or 'Unnamed station', 'detail': detail,
                 'keywords': ' '.join(tags), 'item': item,
-                'action': ('Tune in', lambda item=item: self.tune_radio(item)), 'menu': menu}
+                'action': ('Tune in', lambda item=item: self.tune_radio(item)), 'menu': menu,
+                'ambience': lambda item=item: self.play_ambience(item)}
 
     def link_entry(self):
         if not _looks_like_url(self.query):
@@ -1315,9 +1387,14 @@ class ListenPage(ServicesMixin):
         for key, text in next_links.destinations(preview):
             menu.append((text, lambda key=key, preview=preview: self.choose_destination(
                 key, preview.get('url') or preview.get('original') or '')))
-        return {'kind': 'link', 'name': preview.get('name') or 'Link', 'detail': next_links.detail(preview),
-                'keywords': preview.get('url') or '', 'preview': preview,
-                'action': ('Open link…', lambda preview=preview: self.open_preview(preview)), 'menu': menu}
+        entry = {'kind': 'link', 'name': preview.get('name') or 'Link', 'detail': next_links.detail(preview),
+                 'keywords': preview.get('url') or '', 'preview': preview,
+                 'action': ('Open link…', lambda preview=preview: self.open_preview(preview)), 'menu': menu}
+        if 'atmosphere' in (preview.get('actions') or []):
+            entry['ambience'] = lambda url=preview.get('url') or preview.get('original') or '', name=preview.get('name') or 'Link': \
+                self.window.command('link', {'url': url, 'destination': 'atmosphere'},
+                                    done=(lambda _r: self.ambience_started(name)) if self.mode == 'ambience' else None)
+        return entry
 
     @staticmethod
     def preview(url):
@@ -1345,7 +1422,7 @@ class ListenPage(ServicesMixin):
         else:
             self.window.toast('This station has no source to play on its own')
             return
-        self.window.command('atmosphere', args)
+        self.send_ambience(args, next_station.name(station))
 
     def replay_history(self, row):
         self.window.go_to_now()
@@ -1373,15 +1450,20 @@ class ListenPage(ServicesMixin):
                             done=lambda _result: self.window.toast('Playing next: ' + (item.get('name') or 'track')))
 
     def play_ambience(self, item):
+        name = item.get('name') or 'Ambience'
         if item.get('reference') or item.get('provider') == 'jellyfin':
-            self.window.command('atmosphere', {'kind': 'radio', 'reference': item,
-                                               'name': item.get('name') or 'Library'})
+            self.send_ambience({'kind': 'radio', 'reference': item, 'name': item.get('name') or 'Library'},
+                               item.get('name') or 'Library')
         elif item.get('kind') == 'twitch' or next_links.host(item.get('url') or '').endswith('twitch.tv'):
-            self.window.command('atmosphere', {'kind': 'twitch', 'url': item.get('url'),
-                                               'name': item.get('name') or 'Twitch'})
+            self.send_ambience({'kind': 'twitch', 'url': item.get('url'), 'name': item.get('name') or 'Twitch'},
+                               item.get('name') or 'Twitch')
+        elif item.get('kind') == 'youtube' or next_links.host(item.get('url') or '') in (
+                'youtube.com', 'www.youtube.com', 'music.youtube.com', 'm.youtube.com', 'youtu.be'):
+            self.send_ambience({'kind': 'radio', 'source_id': 'youtube-video', 'url': item.get('url'), 'resolver': True,
+                                'name': item.get('name') or 'YouTube'}, item.get('name') or 'YouTube')
         else:
-            self.window.command('atmosphere', {'kind': 'radio', 'source_id': item.get('id'),
-                                               'url': item.get('url'), 'name': item.get('name') or 'Radio'})
+            self.send_ambience({'kind': 'radio', 'source_id': item.get('id'), 'url': item.get('url'),
+                                'name': item.get('name') or 'Radio'}, item.get('name') or 'Radio')
 
     def show_as_scene(self, url):
         self.window.command('link', {'url': url, 'destination': 'picture'},
@@ -1434,50 +1516,16 @@ class ListenPage(ServicesMixin):
 
     # ---- new station -------------------------------------------------------
 
-    def source_choices(self):
-        choices = []
-        for item in self.window.radio:
-            if isinstance(item, dict) and item.get('kind') == 'radio' and hub.valid_url(item.get('url') or ''):
-                choices.append((item.get('name') or 'Radio', item, item.get('group') or 'Radio'))
-        for item in self.library:
-            if isinstance(item, dict):
-                choices.append((item.get('name') or 'Library', item, 'Jellyfin'))
-        return choices
-
     def new_station(self):
         if self.window.get_visible_dialog() is not None:
             return
-        choices = self.source_choices()
-        if not choices:
-            dialog = Adw.AlertDialog(heading='New station', body='There is no source to save yet.')
-            dialog.add_response('close', 'Close')
-            dialog.present(self.window)
-            return
-        dialog = Adw.AlertDialog(heading='New station',
-                                 body='Choose one source. You can add fallbacks on its page.')
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        entry = Gtk.Entry(text=choices[0][0])
-        entry.update_property([Gtk.AccessibleProperty.LABEL], ['Station name'])
-        dropdown = Gtk.DropDown.new_from_strings(['%s — %s' % (name, where) for name, _item, where in choices])
-        box.append(entry)
-        box.append(dropdown)
-        dialog.set_extra_child(box)
-        dialog.add_response('cancel', 'Cancel')
-        dialog.add_response('save', 'Save')
-        dialog.set_response_appearance('save', Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_default_response('save')
-        dialog.set_close_response('cancel')
-
-        def answered(_dialog, response):
-            if response != 'save':
-                return
-            index = dropdown.get_selected()
-            item = choices[index][1] if 0 <= index < len(choices) else choices[0][1]
-            station = next_station.station_from_source(item)
-            station['name'] = entry.get_text().strip() or (item.get('name') or 'Station')
-            self.window.command('station.save', {'station': station}, done=self.new_station_saved)
-        dialog.connect('response', answered)
+        dialog = next_new_station.NewStationDialog(
+            self, lambda station: self.window.command('station.save', {'station': station}, done=self.new_station_saved))
         dialog.present(self.window)
+
+    def audiomuse_ready(self):
+        from next_listen_more import configured
+        return configured('audiomuse')
 
     def new_station_saved(self, result):
         station = (result or {}).get('station')

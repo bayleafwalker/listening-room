@@ -15,22 +15,27 @@ media keys (MPRIS) and the command line all agree.
 
 ## A short tour
 
-**Rooms.** Choose a room by mood. Previewing is silent; Enter room is the only
-thing that starts sound.
+**Rooms.** Choose a room by mood. One click previews it at once and silently;
+double-click or Enter, or Enter room in the preview, is the only thing that starts sound.
 
 ![Rooms, with the hero card for your last room](docs/screenshots/02-rooms.png)
 
 ![Previewing a room before entering](docs/screenshots/03-room-preview.png)
 
-**Listen.** Search first. Radio, library albums, pasted links and live channels
-sit on shelves; selecting one is inert, Tune in is the action.
+**Listen.** Search first. Radio, library albums, pasted links, live channels and
+YouTube results sit on shelves and scopes; selecting one is inert, Tune in is the
+action. New station makes a station from scratch: a name, a stream link or any
+search result to start from, and the mood choices.
 
 ![Listen, with shelves](docs/screenshots/04-listen.png)
 
 ![A station's detail page](docs/screenshots/05-station-detail.png)
 
 **Now.** The room's scene, what is playing, the room volume and a timer. The
-Mix sheet blends music, the room's sound bed and an optional layer.
+Mix sheet blends music, the room's sound bed and an optional layer. Change… on
+Music or Ambience opens Listen to choose a source; for Ambience every result's
+action is Play as ambience (offline sounds, radio, live channels, YouTube, the
+library), and choosing one returns you to the Mix.
 
 ![The Mix sheet](docs/screenshots/06-mix.png)
 
@@ -142,13 +147,13 @@ Everything works without an account. Each provider adds a little:
 | Provider | What it adds |
 |---|---|
 | Radio Browser, laut.fm, SomaFM, Yle | Radio stations in Listen, direct streams |
-| YouTube Music | Discovery links and audio from pasted links (through yt-dlp) |
+| YouTube | Search in Listen (no account, through yt-dlp), and audio from pasted links; Tune in, Play as ambience or Open elsewhere |
 | Jellyfin | Your albums and playlists on a Library shelf, track details |
 | Music Assistant | Play on your speakers; room output follows |
 | AudioMuse | Station mixes from your library's own sound |
 | Home Assistant | Room lighting that follows the room |
 | ListenBrainz | Listening history and recommendations, if you connect it |
-| Twitch | Live channel layers (Music and ASMR) and a review of channels you follow |
+| Twitch | Live channels as music or ambience (Music and ASMR) and a review of channels you follow. Saved channel names work without an account; seeing who is live needs a sign-in (Preferences > Connections > Twitch) |
 | MusicBrainz / Chromaprint | Recording metadata and optional review of tracks |
 | Voice/instrumental models (MTG) | Optional estimates of voice vs instrumental; weights are CC BY-NC-SA 4.0 |
 
@@ -160,13 +165,14 @@ Set them up under Menu > Preferences > Connections (all start as "Not set up"). 
 | Keys | Action |
 |---|---|
 | Space | Pause or resume the room |
+| Enter, double-click | Enter the focused room (one click or Space only previews) |
 | Ctrl+1, Ctrl+2, Ctrl+3 | Rooms, Listen, Now |
 | Ctrl+F | Search (or just start typing) |
 | Ctrl+L, Ctrl+V | Add a link |
 | Ctrl+M | Mini player |
 | Ctrl+, | Preferences |
 | Up, Down | Room volume in Now |
-| Esc | Close a sheet, then go back to browsing |
+| Esc | Close a sheet, then go back to browsing; leaves "choose an ambience" |
 | Ctrl+? | Show all shortcuts |
 
 ## Privacy

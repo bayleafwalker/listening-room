@@ -12,7 +12,7 @@ import time
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Adw, Gdk, GLib, Gtk
+from gi.repository import Adw, Gdk, GLib, Graphene, Gtk
 
 import next_model as model
 import next_rooms_model as rooms
@@ -56,7 +56,6 @@ CSS = '''
 .next .save-line-title { color: rgba(255,255,255,.72); }
 '''
 _css = None
-CLICK_MS = 300  # a single click waits this long for a second one (double-click enters)
 WIDE_PREVIEW = 740
 SAVE_WAIT_S = 8
 DETAILS_WIDTH = 380
@@ -80,7 +79,8 @@ class RoomsPage:
         self.key = None
         self.opened = None
         self.preview_widgets = None
-        self.click_timer = None
+        self.recent_click = None   # (entry, time, window point) of the last single click
+        self.activated = (None, 0.)
         self.opened_from = None
         self.card_for = {}
         self.serial = 0
@@ -88,6 +88,11 @@ class RoomsPage:
         install_css(Gdk.Display.get_default())
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=200)
         self.widget = self.stack
+        # The preview covers the card at once, so a quick second click lands on the preview:
+        # it still counts as the double-click that enters the room.
+        again = Gtk.GestureClick(button=1, propagation_phase=Gtk.PropagationPhase.CAPTURE)
+        again.connect('pressed', self.second_press)
+        self.stack.add_controller(again)
         self.stack.add_named(self.build_grid(), 'grid')
         self.stack.connect('map', lambda *_: self.load_scenes())
         self.load_scenes()
@@ -285,7 +290,6 @@ class RoomsPage:
             self.window.command('return')
 
     def fill(self, playing):
-        self.cancel_click()
         self.card_for = {}
         while self.cards.get_first_child():
             self.cards.remove(self.cards.get_first_child())
@@ -347,29 +351,38 @@ class RoomsPage:
             secondary.connect('pressed', lambda *_: more.popup())
             overlay.add_controller(secondary)
         click = Gtk.GestureClick(button=1)
-        click.connect('pressed', lambda _g, presses, *_: self.cancel_click() if presses > 1 else None)
-        click.connect('released', lambda _g, presses, *_, e=entry: self.single_click(e) if presses == 1 else None)
+        click.connect('released', lambda _g, presses, x, y, e=entry, o=overlay: self.single_click(e, o, x, y)
+                      if presses == 1 else None)
         overlay.add_controller(click)
         name_it(child, 'Room ' + entry['name'] + (', yours' if entry['yours'] else '') + (', playing' if playing else ''), '')
         return child
 
     # ---- activation -----------------------------------------------------------------------
 
-    def single_click(self, entry):
-        """One click previews, after waiting briefly in case it is the first half of a double-click."""
-        self.cancel_click()
-        delay = min(CLICK_MS, int(Gtk.Settings.get_default().get_property('gtk-double-click-time')))
-        self.click_timer = GLib.timeout_add(delay, lambda: self.preview_from_click(entry))
-
-    def preview_from_click(self, entry):
-        self.click_timer = None
+    def single_click(self, entry, source=None, x=0., y=0.):
+        """One click previews at once; a second click within the double-click time enters instead."""
+        point = None
+        if source is not None:
+            ok, found = source.compute_point(self.window, Graphene.Point().init(x, y))
+            point = (found.x, found.y) if ok else None
+        self.recent_click = (entry, time.monotonic(), point)
         self.open_preview(entry)
-        return False
 
-    def cancel_click(self):
-        if self.click_timer:
-            GLib.source_remove(self.click_timer)
-            self.click_timer = None
+    def second_press(self, gesture, _presses, x, y):
+        """A quick second press on the preview that a first click just opened: enter that room."""
+        recent, self.recent_click = self.recent_click, None
+        if recent is None or self.opened is None or recent[0]['id'] != self.opened['id']:
+            return
+        settings = Gtk.Settings.get_default()
+        if time.monotonic() - recent[1] > int(settings.get_property('gtk-double-click-time')) / 1000.:
+            return
+        if recent[2] is not None:
+            ok, here = self.stack.compute_point(self.window, Graphene.Point().init(x, y))
+            limit = int(settings.get_property('gtk-double-click-distance')) * 2
+            if ok and (abs(here.x - recent[2][0]) > limit or abs(here.y - recent[2][1]) > limit):
+                return
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self.activate(recent[0])
 
     def card_key(self, _controller, keyval, _code, state):
         """Space previews the focused card (Enter enters, by the grid's own activation); Menu opens its options."""
@@ -391,7 +404,10 @@ class RoomsPage:
         """Enter or double-click on a card: an explicit start, except for the room you are already in."""
         if entry is None:
             return
-        self.cancel_click()
+        last, stamp = self.activated
+        if last == entry.get('id') and time.monotonic() - stamp < .4:
+            return  # the same double-click reported twice
+        self.activated = (entry.get('id'), time.monotonic())
         if rooms.is_active(entry, self.window.snapshot):
             self.window.show_now()
         else:
@@ -422,7 +438,6 @@ class RoomsPage:
     # ---- preview ---------------------------------------------------------------------------
 
     def open_preview(self, entry):
-        self.cancel_click()
         if self.opened is not None:
             self.drop_preview()
         window = self.window

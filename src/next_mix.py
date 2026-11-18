@@ -32,9 +32,10 @@ class LayerRow(Gtk.Box):
         text.append(self.title)
         text.append(self.subtitle)
         top.append(text)
-        if layer == 'music':  # sources are chosen in Listen
+        if layer in ('music', 'atmosphere'):  # sources are chosen in Listen
             self.change = Gtk.Button(label='Change…')
             self.change.connect('clicked', lambda *_: choose_other(layer))
+            self.change.set_tooltip_text('Choose %s in Listen' % ('an ambience' if layer == 'atmosphere' else 'music'))
         else:
             self.choices = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6, margin_bottom=6,
                                    margin_start=6, margin_end=6)

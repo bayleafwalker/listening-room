@@ -5,6 +5,22 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Objective checks for the sounds (spectrum, event structure, distinctness, loop
+  seam, level, determinism): `tests/test_listening_atmosphere_character.py`.
+- Ambience in the Mix: Change… on the Ambience row opens Listen in an ambience
+  mode (offline sounds, radio, live channels, YouTube, library). Each result's
+  action is Play as ambience; choosing one replaces the layer and returns to the Mix.
+- New station from scratch: a name, a pasted stream link or any Listen search
+  result (radio, library, live channel, YouTube) as the start, and the mood
+  choices. Stations can be deleted from their page, after a confirmation.
+- YouTube in Listen: search through yt-dlp (no account or API key), with
+  Tune in, Play as ambience and Open elsewhere. A truthful line in Listen and
+  Preferences when yt-dlp is missing.
+- Twitch: a "Set up Twitch to see live channels" entry that opens Preferences,
+  and live channels (music and ASMR) listed once signed in.
+- `tests/probes/listening-o6-timing.py` times selection and audits GTK-thread work.
+
 ### Changed
 - The six offline sounds now sound like their names. Each is synthesized from the
   events that define it instead of a filtered noise bed: dense droplets and
@@ -22,10 +38,9 @@ All notable changes are recorded here. The format follows
 - Each room names the structure that must not move: grates, frames, posts,
   rocks, figures and horizons. No effect can move it, and the build checks it.
   The room videos change as a result.
-
-### Added
-- Objective checks for the sounds (spectrum, event structure, distinctness, loop
-  seam, level, determinism): `tests/test_listening_atmosphere_character.py`.
+- One click on a room card previews it immediately (the double-click wait is gone);
+  a quick second click, double-click or Enter still enters.
+- Favourites, the World radio cache and Twitch channels are read off the GTK thread.
 
 ## [2.3.1] - 2026-11-18
 

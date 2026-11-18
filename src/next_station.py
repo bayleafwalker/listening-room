@@ -378,3 +378,58 @@ def station_from_source(item):
             source['resolver'] = True
     return {'name': item.get('name') or 'Station', 'sources': [source], 'fallbacks': [],
             'preferences': {}, 'end_policy': 'stop', 'arc': 'none', 'generation': {'kind': 'collection'}}
+
+
+# ---- a station made from scratch ----------------------------------------------------
+
+LINK_PROBLEM = ('That link cannot be a station. Paste a direct stream (such as .mp3 or .m3u8), '
+                'a YouTube video or a Twitch channel.')
+
+
+def source_from_link(preview):
+    """The station source a validated link stands for, or None when it cannot play as music.
+
+    ``preview`` is what next_links.descriptor said about the link; only links that offer
+    "Play" qualify, so the rules are exactly the ones the link sheet already applies.
+    """
+    preview = preview if isinstance(preview, dict) else {}
+    if 'music' not in (preview.get('actions') or []) or not preview.get('url'):
+        return None
+    kind = preview.get('kind')
+    if kind == 'youtube':
+        return {'source_id': 'youtube-video', 'id': 'youtube-video', 'name': preview.get('name') or 'YouTube audio',
+                'url': preview['url'], 'kind': 'radio', 'resolver': True}
+    if kind == 'twitch':
+        return {'source_id': 'twitch-channel', 'id': 'twitch-channel', 'name': preview.get('name') or 'Twitch channel',
+                'url': preview['url'], 'kind': 'radio', 'resolver': True}
+    return {'source_id': 'custom-stream', 'id': 'custom-stream', 'name': preview.get('name') or 'Your stream',
+            'url': preview['url'], 'kind': 'radio'}
+
+
+def source_from_video(item):
+    """A YouTube search row as a station source (played through the resolver, like a pasted link)."""
+    return {'source_id': 'youtube-video', 'id': 'youtube-video', 'name': item.get('name') or 'YouTube audio',
+            'url': item.get('url'), 'kind': 'radio', 'resolver': True}
+
+
+def source_from_channel(item):
+    login = item.get('login') or item.get('name') or 'channel'
+    return {'source_id': 'twitch-channel', 'id': 'twitch-channel', 'name': item.get('name') or login,
+            'url': item.get('url') or 'https://www.twitch.tv/' + str(login), 'kind': 'radio', 'resolver': True}
+
+
+def is_library_source(source):
+    return bool((source or {}).get('reference'))
+
+
+def new_station(name, source, preferences=None, similar=False):
+    """A station with a name, one seed source and the chosen moods; nothing else is assumed."""
+    item = dict(source or {})
+    station = station_from_source(item)
+    station['name'] = ' '.join(str(name or '').split()) or (item.get('name') or 'Station')
+    allowed = {mood['key']: {value for _label, value in mood['choices']} for mood in MOODS}
+    station['preferences'] = {key: value for key, value in (preferences or {}).items()
+                              if value in allowed.get(key, ())}
+    if similar and is_library_source(station['sources'][0]):
+        station['generation'] = {'kind': 'audiomuse'}
+    return station

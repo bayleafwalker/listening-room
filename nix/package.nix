@@ -132,6 +132,7 @@ stdenvNoCC.mkDerivation {
     python3 tests/test_listening_listen_oracles.py
     python3 tests/test_listening_next_prefs.py
     python3 tests/test_listening_overlay_swap.py
+    python3 tests/test_listening_sources.py
     LISTENING_TEST_MPV=${mpv}/bin/mpv python3 tests/test_listening_station_eof.py
     python3 src/validate_vistas.py assets
     python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Gtk, Adw"

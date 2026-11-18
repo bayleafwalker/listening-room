@@ -394,20 +394,19 @@ class NextWindow(Adw.ApplicationWindow):
         self.sheet.set_open(True)
 
     def layer_options(self, layer):
-        """What Change… offers: offline sounds for Ambience, offline rooms and views for Scene."""
-        import atmosphere_catalogue
-        if layer == 'atmosphere':
-            return [(sound['name'], ('layer', {'layer': 'atmosphere', 'action': 'select', 'kind': 'local',
-                                               'source_id': sound['id'], 'name': sound['name']}))
-                    for sound in atmosphere_catalogue.presets() if sound['available']]
+        """What Change… offers on the Scene row: offline rooms and views. Music and Ambience open Listen."""
         return [(preset['name'], ('layer', {'layer': 'picture', 'action': 'select', 'preset_id': preset['id']}))
                 for preset in self.presets if preset.get('kind') == 'local' and preset.get('available', True)]
 
     def choose_other(self, layer):
-        """Music is chosen in Listen (provisional); Ambience and Scene on their own Mix rows."""
+        """Music and Ambience are chosen in Listen (Ambience in its own mode); Scene on its Mix row."""
         if layer == 'music':
             self.sheet.set_open(False)
             self.show_listen()
+        elif layer == 'atmosphere':
+            origin = 'mix' if self.sheet.get_open() else 'now'
+            self.sheet.set_open(False)
+            self.listen.begin_ambience(origin)
         else:
             self.sheet.set_open(True)
             GLib.timeout_add(300, lambda: self.mix.rows[layer].change.popup() or False)
@@ -562,14 +561,25 @@ class NextWindow(Adw.ApplicationWindow):
         dialog.add_response('close', 'Close')
         dialog.present(self)
 
-    def open_preferences(self):
+    def open_preferences(self, service=None):
+        """Preferences; with a service name, straight to Connections and that service's page."""
         import next_prefs
         existing = getattr(self, 'preferences', None)
         if existing is not None and not existing.closed and existing.get_root() is not None:
-            existing.present(self)
+            dialog = existing
+        else:
+            dialog = self.preferences = next_prefs.PreferencesDialog(self)
+        dialog.present(self)
+        if service:
+            dialog.show_connection(service)
+
+    def return_from_listen(self, origin):
+        """Back to where a Listen choice began: the Mix over Now, or Now itself."""
+        if not self.snapshot.get('active'):
             return
-        self.preferences = next_prefs.PreferencesDialog(self)
-        self.preferences.present(self)
+        self.show_now()
+        if origin == 'mix':
+            self.sheet.set_open(True)
 
     def open_track_details(self, reference):
         """Track details for one library reference; Listen's row menus call this."""

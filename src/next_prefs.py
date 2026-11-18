@@ -162,6 +162,13 @@ def twitch_state():
     return {'state': 'saved'} if saved.access_token else {'state': 'none'}
 
 
+def youtube_status():
+    """What YouTube search can do here, from whether yt-dlp is installed (no request is made)."""
+    import youtube_search
+    status = youtube_search.status()
+    return {'text': status['text'], 'tone': 'ok' if status['available'] else 'bad'}
+
+
 def output_choices(outputs, preferred):
     """Combo model, sink names and the selected index for the output row."""
     outputs = [item for item in outputs or [] if isinstance(item, dict) and isinstance(item.get('name'), str)]
@@ -432,7 +439,17 @@ class PreferencesDialog(Adw.PreferencesDialog):
         for row in connection_rows({}, {}, None):
             group.add(self.build_connection_row(row))
         page.add(group)
+        page.add(self.build_youtube())
         return page
+
+    def build_youtube(self):
+        """YouTube search needs no account, only yt-dlp; say which one is true on this system."""
+        status = youtube_status()
+        group = Adw.PreferencesGroup(title='YouTube')
+        self.youtube_row = Adw.ActionRow(title='Search and play', subtitle=status['text'], activatable=False)
+        self.youtube_row.add_prefix(_dot(status['tone']))
+        group.add(self.youtube_row)
+        return group
 
     def build_connection_row(self, row):
         """One connection: initials, name and truthful status, capability chips, one action."""
@@ -489,6 +506,12 @@ class PreferencesDialog(Adw.PreferencesDialog):
             for tone in ('ok', 'warn', 'bad', 'off'):
                 dot.remove_css_class(tone)
             dot.add_css_class(row['tone'])
+
+    def show_connection(self, service):
+        """Jump to a connection's own page (used by Listen's "set up" entries)."""
+        if service in NAMES:
+            self.set_visible_page(self.pages['connections'])
+            self.open_connection(service)
 
     def push_page(self, page, title):
         """A subpage with its own header.

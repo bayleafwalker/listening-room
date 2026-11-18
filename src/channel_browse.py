@@ -30,3 +30,36 @@ def project(channels, query='', saved_only=False, saved=(), excluded=()):
             continue
         result.append(dict(channel, saved=is_saved, excluded=login in excluded))
     return result
+
+
+# ---- what Twitch can show, and what it says about itself --------------------------
+
+SETUP_NOTE = 'Sign in once. The channels you follow and live music streams then appear here.'
+CURATED_NOTE = ('Twitch is not connected, so these channels may or may not be live. '
+                'Connect it in Preferences to see who is live.')
+
+
+def availability(connected, curated_count, problem=''):
+    """setup (nothing to show), curated (saved channels only), connected, or attention (discovery failed)."""
+    if connected:
+        return 'attention' if problem else 'connected'
+    return 'curated' if curated_count else 'setup'
+
+
+def twitch_note(state, message=''):
+    if state == 'attention':
+        return message or 'Twitch needs attention. Open Preferences to check the sign-in.'
+    if state == 'curated':
+        return CURATED_NOTE
+    return SETUP_NOTE
+
+
+def footnote(state, has_channels):
+    """The line under the channel list, or None."""
+    if state == 'curated':
+        return CURATED_NOTE
+    if state == 'connected' and not has_channels:
+        return 'Nobody is live in the music or ASMR categories right now.'
+    if state in ('unknown',):
+        return 'Looking for live channels…'
+    return None
