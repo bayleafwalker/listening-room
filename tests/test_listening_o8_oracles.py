@@ -17,6 +17,7 @@ counts as structure. Brightness-only effects (lights, glow, candle, shimmer) kee
 the unshifted painting the best match, and overlays (rain, mist, smoke wisps,
 procedural flame) do not favour a shift.
 """
+import io
 import os
 from pathlib import Path
 import shutil
@@ -171,7 +172,7 @@ class SceneOracles(unittest.TestCase):
                                     'flicker energy above 2 Hz')
 
     def test_reduced_motion_still_is_the_unaltered_painting(self):
-        from PIL import Image, ImageChops, ImageStat
+        from PIL import Image
         for identity, scene in SCENES.items():
             with self.subTest(identity):
                 still = ASSETS / (identity + '-still.jpg')
@@ -180,10 +181,12 @@ class SceneOracles(unittest.TestCase):
                 if plate.suffix.lower() in ('.jpg', '.jpeg'):
                     self.assertEqual(still.read_bytes(), plate.read_bytes(), 'still must be the plate itself')
                 else:
-                    with Image.open(still) as a, Image.open(plate) as b:
-                        self.assertEqual(a.size, b.size)
-                        difference = ImageStat.Stat(ImageChops.difference(a.convert('RGB'), b.convert('RGB'))).mean
-                        self.assertLess(max(difference), 2.0, 'still must be the plate, re-encoded only')
+                    # The renderer re-encodes a non-JPEG plate at quality 92 and
+                    # nothing else; the same encode must reproduce it exactly.
+                    encoded = io.BytesIO()
+                    with Image.open(plate) as source:
+                        source.convert('RGB').save(encoded, 'JPEG', quality=92)
+                    self.assertEqual(still.read_bytes(), encoded.getvalue(), 'still must be the plate, re-encoded only')
 
 
 if __name__ == '__main__':
