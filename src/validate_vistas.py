@@ -4,8 +4,40 @@ from pathlib import Path
 import subprocess
 import sys
 
-from PIL import Image, ImageChops, ImageDraw, ImageStat
+from PIL import Image, ImageChops, ImageDraw, ImageOps, ImageStat
+from motion_engine import rigid_mask
 from visual_scenes import SCENES
+
+# Rigid structure may change by less than this mean luma level per region.
+# The encode is lossless in luma, so a truly rigid pixel decodes identically.
+RIGID_LIMIT = .05
+
+
+def reference_plate(identity, scene, directory):
+    """The authored plate when packaging, else the delivered still."""
+    plate_path = Path(__file__).parent / 'artwork' / scene['plate']
+    return plate_path if plate_path.is_file() else directory / (identity + '-still.jpg')
+
+
+def rigid_stability(path, scene, plate_path, samples, size=(1440, 810)):
+    """Worst mean luma change against frame 0 inside each rigid region."""
+    with Image.open(plate_path) as plate:
+        base = ImageOps.pad(plate.convert('RGB'), size, method=Image.Resampling.LANCZOS, color=(0, 0, 0))
+    selection = '+'.join('eq(n\\,' + str(frame) + ')' for frame in samples)
+    blob = subprocess.check_output([
+        'ffmpeg', '-v', 'error', '-i', str(path), '-vf', 'select=' + selection,
+        '-fps_mode', 'passthrough', '-f', 'rawvideo', '-pix_fmt', 'gray', '-'])
+    length = size[0] * size[1]
+    frames = [Image.frombytes('L', size, blob[i:i+length]) for i in range(0, len(blob), length)]
+    assert len(frames) == len(samples), path.name + ': incomplete decoded luma samples'
+    result = {}
+    for region in scene.get('rigid', []):
+        mask = rigid_mask({'rigid': [region]}, base)
+        assert mask.getbbox(), path.name + ': empty rigid region ' + region['name']
+        result[region['name']] = round(max(
+            ImageStat.Stat(ImageChops.difference(frames[0], other), mask).mean[0]
+            for other in frames[1:]), 4)
+    return result
 
 
 def validate(directory):
@@ -66,8 +98,15 @@ def validate(directory):
         assert movement, identity + ': encoded animation is static'
         assert background < .01, identity + ': fixed background changes during the loop'
         assert seam < .25, identity + ': visible encoded loop-boundary change'
+        # Grates, bars, frames, furniture and horizons occlude motion and
+        # never move: each authored rigid region must decode unchanged.
+        assert scene.get('rigid'), identity + ': no rigid structure is declared'
+        rigid = rigid_stability(path, scene, reference_plate(identity, scene, directory), samples)
+        moved = {name: delta for name, delta in rigid.items() if delta >= RIGID_LIMIT}
+        assert not moved, identity + ': rigid structure changes during the loop: ' + json.dumps(moved)
         result = {'scene': identity, 'bytes': path.stat().st_size,
-                  'background_delta': round(background, 6), 'seam_delta': round(seam, 6)}
+                  'background_delta': round(background, 6), 'seam_delta': round(seam, 6),
+                  'rigid_delta': max(rigid.values())}
         results.append(result)
         print(json.dumps(result), flush=True)
     return results

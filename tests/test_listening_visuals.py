@@ -3,12 +3,26 @@ import sys
 import unittest
 from pathlib import Path
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageStat
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from render_vistas import prepare_scene, room_frame
+from motion_engine import rigid_mask
 from visual_scenes import SCENES
 import visual_scenes
+
+ARTWORK = Path(visual_scenes.__file__).parent / 'artwork'
+
+
+def vertical_shift(before, after, span=8):
+    """The row offset that best maps one frame onto the next (negative is up)."""
+    w, h = before.size
+    def cost(shift):
+        top, bottom = max(0, -shift), min(h, h - shift)
+        a = before.crop((0, top, w, bottom))
+        b = after.crop((0, top + shift, w, bottom + shift))
+        return sum(ImageStat.Stat(ImageChops.difference(a, b)).mean)
+    return min(range(-span, span + 1), key=cost)
 
 
 class RoomVisualsTest(unittest.TestCase):
@@ -148,6 +162,90 @@ class RoomVisualsTest(unittest.TestCase):
         for f in frames:
             self.assertEqual(f.getpixel((0,0)),plate.getpixel((0,0)))
             self.assertTrue(all(low >= minimum for (low, _), minimum in zip(f.getextrema(), (40,60,80))))
+
+    def test_every_room_declares_named_rigid_structure(self):
+        for identifier, scene in SCENES.items():
+            with self.subTest(scene=identifier):
+                self.assertTrue(scene.get('rigid'), 'each room names the structure that must not move')
+                with Image.open(ARTWORK / scene['plate']) as plate:
+                    base, _ = prepare_scene(plate, {'effects': []})
+                for region in scene['rigid']:
+                    self.assertTrue(region['name'])
+                    self.assertIsNotNone(rigid_mask({'rigid': [region]}, base).getbbox(), region['name'])
+
+    def test_rigid_structure_matches_the_still_in_every_frame(self):
+        # The source-level oracle: whatever burns, falls or drifts nearby, a
+        # rigid pixel is the plate's pixel in every frame of the loop.
+        for identifier, scene in SCENES.items():
+            with self.subTest(scene=identifier), Image.open(ARTWORK / scene['plate']) as plate:
+                prepared = prepare_scene(plate, scene, (720, 406))
+                base, mask = prepared[0], prepared.rigid
+                self.assertIsNotNone(mask)
+                for frame in (0, 37, 121, 250, 479):
+                    difference = ImageChops.difference(room_frame(prepared, frame), base)
+                    self.assertEqual(max(high for _, high in ImageStat.Stat(difference, mask).extrema), 0, frame)
+
+    def test_rigid_bars_occlude_a_living_fire(self):
+        plate = Image.new('RGB', (120, 120), (150, 90, 40))
+        for x in range(20, 120, 20):
+            for y in range(40, 120):
+                for dx in range(3):
+                    plate.putpixel((x + dx, y), (25, 20, 18))
+        scene = {'rigid': [{'name': 'bars', 'polygon': [[0, .3], [1, .3], [1, 1], [0, 1]], 'darker_than': 60}],
+                 'effects': [{'kind': 'fire', 'rect': [.05, .05, .95, .95], 'strength': 1, 'bed': .9,
+                              'seed': 4, 'sparks': 6, 'feather': .01}]}
+        prepared = prepare_scene(plate, scene, plate.size)
+        frames = [room_frame(prepared, n) for n in (0, 5, 90, 480)]
+        self.assertIsNone(ImageChops.difference(frames[0], frames[-1]).getbbox())
+        self.assertIsNotNone(ImageChops.difference(frames[0], frames[1]).getbbox())
+        for frame in frames:
+            for x in range(20, 120, 20):
+                self.assertIsNone(ImageChops.difference(frame.crop((x, 40, x + 3, 120)),
+                                                        plate.crop((x, 40, x + 3, 120))).getbbox())
+        # Between the bars the flame is warmer than the plate: red leads green.
+        r, g, b = ImageStat.Stat(frames[1].crop((5, 60, 18, 110))).mean
+        self.assertGreater(r, g)
+        self.assertGreater(g, b)
+
+    def test_fire_and_smoke_rise(self):
+        plate = Image.new('RGB', (96, 160), (40, 40, 44))
+        for kind, extra in (('fire', {'bed': 1, 'rise': 24}), ('smoke', {'cycles': 12, 'color': [230, 230, 230]})):
+            with self.subTest(kind=kind):
+                effect = dict(kind=kind, rect=[0, 0, 1, 1], strength=1, seed=11, feather=.01, **extra)
+                prepared = prepare_scene(plate, {'effects': [effect]}, plate.size)
+                shifts = [vertical_shift(room_frame(prepared, n).convert('L'), room_frame(prepared, n + 1).convert('L'))
+                          for n in (10, 100, 300)]
+                self.assertTrue(all(shift < 0 for shift in shifts), shifts)
+
+    def test_clouds_drift_as_one_layer_without_shear(self):
+        plate = Image.new('RGB', (200, 100))
+        for x in range(200):
+            for y in range(100):
+                plate.putpixel((x, y), (60 + 120 * (x // 6 % 2), 80, 140))
+        effect = {'kind': 'cloud', 'rect': [.1, .1, .9, .9], 'strength': 1, 'amplitude': 12,
+                  'feather': .01, 'seed': 3}
+        prepared = prepare_scene(plate, {'effects': [effect]}, plate.size)
+        moved = False
+        for frame in (24, 130, 333):
+            shot = room_frame(prepared, frame)
+            rows = {shot.crop((30, y, 170, y + 1)).tobytes() for y in range(25, 75)}
+            self.assertEqual(len(rows), 1, 'every row drifts by the same amount')
+            moved |= ImageChops.difference(shot.crop((30, 25, 170, 75)), plate.crop((30, 25, 170, 75))).getbbox() is not None
+        self.assertTrue(moved)
+
+    def test_candle_flickers_light_without_moving_the_glass(self):
+        plate = Image.new('RGB', (60, 60), (30, 24, 20))
+        for x in range(26, 34):
+            for y in range(20, 40):
+                plate.putpixel((x, y), (250, 200, 130))
+        prepared = prepare_scene(plate, {'effects': [{'kind': 'candle', 'rect': [.1, .1, .9, .9], 'strength': 1,
+                                                      'threshold': 120, 'seed': 5}]}, plate.size)
+        frames = [room_frame(prepared, n) for n in range(0, 481, 8)]
+        self.assertIsNone(ImageChops.difference(frames[0], frames[-1]).getbbox())
+        self.assertGreater(len({f.getpixel((30, 30)) for f in frames}), 4)
+        for frame in frames:
+            self.assertEqual(frame.getpixel((10, 10)), plate.getpixel((10, 10)))
+            self.assertEqual(frame.getpixel((24, 30)), plate.getpixel((24, 30)))
 
 
 if __name__ == '__main__':

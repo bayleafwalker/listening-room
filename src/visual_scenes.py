@@ -80,6 +80,6 @@ for _identity, _scene in SCENES.items():
     _path = Path(__file__).parent / 'scene_tuning' / (_identity.removeprefix('room-') + '.json')
     if _path.is_file():
         _tuning = json.loads(_path.read_text())
-        for _key in ('motion', 'effects'):
+        for _key in ('motion', 'effects', 'rigid'):
             if _key in _tuning:
                 _scene[_key] = _tuning[_key]

@@ -1,4 +1,19 @@
-"""Deterministic masked motion over immutable room artwork."""
+"""Deterministic masked motion over immutable room artwork.
+
+Effects come in four classes, chosen by what the painted subject does:
+
+- overlays draw new matter in front of the plate (rain, glints, mist, smoke
+  wisps, sparks);
+- light-only effects change brightness in place and never move a pixel
+  (electrical lights, glow, shimmer, candle, fire light spill);
+- procedural layers synthesise a subject the plate can only show frozen
+  (fire), confined to its zone and kept behind occluders;
+- displacement refracts painted detail, and only where the subject really
+  flows (water, cloud drift).
+
+A scene's ``rigid`` regions are pasted back from the plate after every effect,
+so grates, bars, frames and furniture occlude moving matter and never move.
+"""
 import math
 import random
 
@@ -7,6 +22,98 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 def bounds(rect, size):
     return tuple(round(v * size[i % 2]) for i, v in enumerate(rect))
+
+
+class PreparedScene(tuple):
+    """``(base, effects)``, plus the rigid occlusion mask and its box."""
+
+    def __new__(cls, base, effects, rigid=None):
+        prepared = super().__new__(cls, (base, effects))
+        prepared.rigid = rigid
+        prepared.rigid_box = rigid.getbbox() if rigid is not None else None
+        return prepared
+
+
+def _polygon_points(polygon, size, origin=(0, 0)):
+    if len(polygon) < 3 or any(len(p) != 2 or not (0 <= p[0] <= 1 and 0 <= p[1] <= 1) for p in polygon):
+        raise ValueError('Polygons need at least three points inside the scene')
+    return [(round(x*size[0])-origin[0], round(y*size[1])-origin[1]) for x, y in polygon]
+
+
+def rigid_mask(scene, base):
+    """Union of the scene's rigid regions at the base size, or None.
+
+    A region is a polygon, optionally narrowed to pixels darker than a luma
+    threshold (thin wrought iron in front of bright fire) and grown by a few
+    pixels so antialiased edges stay with the structure.
+    """
+    regions = scene.get('rigid') or []
+    if not regions:
+        return None
+    size = base.size
+    mask = Image.new('L', size)
+    luma = None
+    for region in regions:
+        layer = Image.new('L', size)
+        ImageDraw.Draw(layer).polygon(_polygon_points(region['polygon'], size), fill=255)
+        if 'darker_than' in region:
+            threshold = region['darker_than']
+            if not isinstance(threshold, int) or not 0 < threshold < 256:
+                raise ValueError('Rigid darker_than must be a luma level')
+            if luma is None:
+                luma = base.convert('L')
+            layer = ImageChops.multiply(layer, luma.point(lambda v: 255 if v < threshold else 0))
+        grow = region.get('grow', 0)
+        if not isinstance(grow, int) or not 0 <= grow <= 4:
+            raise ValueError('Rigid grow must be between zero and four pixels')
+        grow = round(grow * size[0] / 1440)
+        if grow:
+            layer = layer.filter(ImageFilter.MaxFilter(grow*2+1))
+        mask = ImageChops.lighter(mask, layer)
+    return mask
+
+
+def _noise(size, cell, rng, contrast=1.6):
+    """Smooth value noise that tiles exactly in both directions."""
+    w, h = size
+    gw, gh = max(2, round(w/cell[0])), max(2, round(h/cell[1]))
+    grid = Image.new('L', (gw, gh))
+    grid.putdata([rng.randrange(256) for _ in range(gw*gh)])
+    tiled = Image.new('L', (gw*3, gh*3))
+    for i in range(3):
+        for j in range(3):
+            tiled.paste(grid, (i*gw, j*gh))
+    # Resampling a periodic grid keeps its period in the central tile.
+    field = tiled.resize((w*3, h*3), Image.Resampling.BICUBIC).crop((w, h, 2*w, 2*h))
+    return field.point(lambda v: max(0, min(255, round(128 + (v-128)*contrast))))
+
+
+def _flicker(phase, offset, harmonics):
+    """A gain near one built from whole loop harmonics, so it always wraps."""
+    return 1 + sum(amount*math.sin(phase*cycles + offset*(i+1)*1.7)
+                   for i, (cycles, amount) in enumerate(harmonics))
+
+
+# Flame colour by intensity: transparent, ember red, orange, yellow, pale core.
+_FLAME_STOPS = ((0, (0, 0, 0)), (.18, (70, 10, 0)), (.38, (175, 48, 6)),
+                (.58, (240, 112, 22)), (.78, (255, 176, 64)), (.92, (255, 222, 140)),
+                (1, (255, 244, 205)))
+
+
+def _ramp(channel):
+    lut = []
+    for v in range(256):
+        t = v/255
+        for (a, ca), (b, cb) in zip(_FLAME_STOPS, _FLAME_STOPS[1:]):
+            if t <= b:
+                lut.append(round(ca[channel] + (cb[channel]-ca[channel])*(t-a)/(b-a)))
+                break
+    return lut
+
+
+_FLAME_LUT = [_ramp(c) for c in range(3)]
+_FIRE_FLICKER = ((7, .05), (17, .045), (29, .035), (43, .025))
+_CANDLE_FLICKER = ((5, .035), (13, .05), (31, .04), (47, .03))
 
 
 def _mask(effect, size, box):
@@ -29,8 +136,77 @@ def _mask(effect, size, box):
     return ImageChops.multiply(mask, soft)
 
 
+def _amplitude(effect, default):
+    amplitude = effect.get('amplitude', default)
+    if not isinstance(amplitude, (int, float)) or not math.isfinite(amplitude) or not 0 <= amplitude <= 30:
+        raise ValueError('Effect amplitude must be between zero and 30')
+    return amplitude
+
+
+def _union_mask(polygons, size, box, feather):
+    mask = Image.new('L', (box[2]-box[0], box[3]-box[1]))
+    for polygon in polygons:
+        mask = ImageChops.lighter(mask, _mask({'polygon': polygon, 'feather': feather}, size, box))
+    return mask
+
+
+def _prepare_fire(effect, base, size, rng):
+    box = effect['box']; w, h = box[2]-box[0], box[3]-box[1]
+    scale = size[0] / 1440
+    patch = base.crop(box)
+    threshold = effect.get('flame_threshold', 150)
+    # The painted flame says where the fire burns; the living flame grows
+    # from it, a little taller, and from the fuel bed along the zone floor.
+    painted = ImageChops.multiply(effect['mask'], patch.convert('L').point(
+        lambda v: max(0, min(255, (v-threshold)*3))))
+    envelope = painted
+    reach = max(1, round(effect.get('reach', .15) * h))
+    for step in range(1, 7):
+        lifted = Image.new('L', (w, h))
+        lifted.paste(painted, (0, -round(reach*step/6)))
+        envelope = ImageChops.lighter(envelope, lifted.point(lambda v, f=1-step/8: round(v*f)))
+    bed = effect.get('bed', .45)
+    if not 0 <= bed <= 1:
+        raise ValueError('Fire bed must be between zero and one')
+    zone = effect['mask'].getbbox() or (0, 0, w, h)
+    floor = Image.new('L', (w, h))
+    floor.paste(Image.linear_gradient('L').resize((w, zone[3]-zone[1])).point(
+        lambda v: round(255*bed*(v/255)**2.5)), (0, zone[1]))
+    envelope = ImageChops.lighter(envelope, ImageChops.multiply(floor, effect['mask']))
+    effect['envelope'] = ImageChops.multiply(
+        envelope.filter(ImageFilter.GaussianBlur(max(1, 2*scale))), effect['mask'])
+    tongue = effect.get('tongue', 9) * scale
+    effect['textures'] = (_noise((w, h), (tongue, tongue*4), rng, 2),
+                          _noise((w, h), (tongue*.5, tongue*2), rng, 2))
+    suppress = effect.get('suppress', .7)
+    if not 0 <= suppress <= 1:
+        raise ValueError('Fire suppress must be between zero and one')
+    # Suppression reaches fainter painted licks than the envelope does.
+    faint = ImageChops.multiply(effect['mask'], patch.convert('L').point(
+        lambda v: max(0, min(255, (v-threshold+35)*5))))
+    effect['suppress_mask'] = ImageChops.multiply(faint.filter(ImageFilter.MaxFilter(3)).filter(
+        ImageFilter.GaussianBlur(max(1, 1.5*scale))), effect['mask']).point(lambda v: round(v*suppress))
+    # Stand-in for the wall behind the painted flame: thin bright licks are
+    # eroded away and the rest is dimmed evenly, which keeps its hue.
+    erode = max(3, round(5*scale) | 1)
+    effect['suppressed'] = patch.filter(ImageFilter.MinFilter(erode)).filter(
+        ImageFilter.GaussianBlur(max(1, scale))).point(lambda v: round(v*.62))
+    effect['spill_mask'] = None
+    if effect.get('spill'):
+        spill = _union_mask(effect['spill'], size, box, effect.get('spill_feather', .12))
+        protected = Image.new('L', (w, h))
+        for polygon in effect.get('protect', []):
+            ImageDraw.Draw(protected).polygon(_polygon_points(polygon, size, box[:2]), fill=255)
+        effect['spill_mask'] = ImageChops.multiply(spill, ImageOps.invert(protected))
+    effect['sparks'] = [(zone[0] + rng.random()*(zone[2]-zone[0]), rng.choice((7, 9, 11, 13)),
+                         rng.random(), .5+.5*rng.random(), rng.random())
+                        for _ in range(effect.get('sparks', 0))]
+    effect['zone'] = zone
+
+
 def prepare_scene(plate, scene, size=(1440, 810)):
     base = ImageOps.pad(plate.convert('RGB'), size, method=Image.Resampling.LANCZOS, color=(0,0,0))
+    rigid = rigid_mask(scene, base)
     effects=[]
     for index, original in enumerate(scene['effects']):
         effect=dict(original)
@@ -40,38 +216,61 @@ def prepare_scene(plate, scene, size=(1440, 810)):
         box=bounds(rect,size); w,h=box[2]-box[0],box[3]-box[1]
         if min(w,h)<1: raise ValueError('Effect rectangle is too small')
         kind=effect['kind']
-        if kind not in ('rain','mist','glint','glow','water','steam','fire','electrical','cloud','smoke','shimmer'):
+        if kind not in ('rain','mist','glint','glow','water','steam','fire','candle','electrical','cloud','smoke','shimmer'):
             raise ValueError('Unknown room visual effect: '+kind)
         rng=random.Random(effect.get('seed',2409+index))
         effect.update(box=box,mask=_mask(effect,size,box))
-        if kind in ('cloud', 'smoke') and effect.get('protect'):
+        if kind in ('cloud', 'water', 'smoke'):
+            amplitude = _amplitude(effect, {'cloud': 4, 'water': 1.4, 'smoke': 5}[kind])
+        if kind in ('cloud', 'water'):
             # Expand foreground exclusion by the maximum source displacement:
-            # a protected tower or branch must not be sampled into the sky.
-            amplitude=effect.get('amplitude', 4 if kind == 'cloud' else 5)
-            if not isinstance(amplitude, (int, float)) or not math.isfinite(amplitude) or not 0 <= amplitude <= 30:
-                raise ValueError('Effect amplitude must be between zero and 30')
+            # a protected tower, post or rigid frame must not be sampled into
+            # the moving sky or water beside it.
             exclusion=Image.new('L',(w,h)); draw=ImageDraw.Draw(exclusion)
-            for polygon in effect['protect']:
+            for polygon in effect.get('protect', []):
                 draw.polygon([(round(x*size[0])-box[0],round(y*size[1])-box[1]) for x,y in polygon], fill=255)
-            radius=math.ceil(amplitude*size[0]/1440)
-            if radius:
+            if rigid is not None:
+                exclusion = ImageChops.lighter(exclusion, rigid.crop(box))
+            if kind == 'cloud' or 'amplitude' in effect:
+                amplitude *= size[0]/1440
+            radius=math.ceil(amplitude)
+            if radius and exclusion.getbbox():
                 exclusion=exclusion.filter(ImageFilter.MaxFilter(radius*2+1))
             effect['mask']=ImageChops.multiply(effect['mask'],ImageOps.invert(exclusion))
         count=effect.get('count',max(16,min(70,w*h//2500)))
         effect['particles']=[(rng.random(),rng.random(),rng.random(),rng.random()) for _ in range(count)]
         effect['phase_offset']=rng.random()*2*math.pi
+        if kind == 'cloud' and 'source_threshold' in effect:
+            # Drift only painted cloud and the sky just around it: isolated
+            # stars (one or two pixels) are opened away and stay fixed.
+            threshold = effect['source_threshold']
+            reach = math.ceil(amplitude) + max(1, round(min(w, h)*effect.get('feather', .08)))
+            clouds = base.crop(box).convert('L').point(lambda v: 255 if v > threshold else 0).filter(
+                ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
+            # A blur and a low threshold grow the cloud by about `reach`.
+            grown = clouds.filter(ImageFilter.GaussianBlur(reach/2)).point(lambda v: 255 if v > 6 else 0)
+            effect['mask'] = ImageChops.multiply(effect['mask'], grown.filter(ImageFilter.GaussianBlur(reach/3)))
         if kind in ('steam', 'smoke') and 'source_threshold' in effect:
             source = base.crop(box).convert('L')
             threshold = effect['source_threshold']
             effect['mask'] = ImageChops.multiply(
                 effect['mask'], source.point(lambda v: max(0, min(255, (v-threshold)*4))))
-        if kind == 'electrical':
+        if kind == 'smoke':
+            # Rising wisps: soft tiling density that scrolls up through the
+            # painted plume. Nothing is displaced, so the chimney and the
+            # branches behind the plume cannot smear into it.
+            wisp = effect.get('wisp', 26) * size[0]/1440
+            effect['textures'] = (_noise((w, h), (wisp, wisp*1.3), rng, 1.3),
+                                  _noise((w, h), (wisp*.6, wisp*.8), rng, 1.3))
+        if kind in ('electrical', 'candle'):
             # Restrict the animated tint to light already painted in the plate.
             # Different seeds give each sign/window group its own loop pattern.
             patch = base.crop(box).convert('L')
-            threshold = effect.get('threshold', 110)
+            threshold = effect.get('threshold', 110 if kind == 'electrical' else 150)
             effect['light_mask'] = ImageChops.multiply(
                 effect['mask'], patch.point(lambda v: max(0, min(255, (v-threshold)*4))))
+        if kind == 'fire':
+            _prepare_fire(effect, base, size, rng)
         # Spatially periodic bands avoid a visible texture seam when moving.
         if kind in ('mist','steam'):
             tile=Image.new('L',(w,h)); pixels=tile.load()
@@ -82,7 +281,49 @@ def prepare_scene(plate, scene, size=(1440, 810)):
                     pixels[x,y]=round(38*max(0,cloud)*envelope)
             effect['texture']=tile.filter(ImageFilter.GaussianBlur(max(1,h//12)))
         effects.append(effect)
-    return base,effects
+    return PreparedScene(base, effects, rigid)
+
+
+def _fire(shot, effect, unit, phase, strength):
+    """A living flame layer inside the firebox, its light, and a few sparks."""
+    x0, y0, x1, y1 = box = effect['box']; w, h = x1-x0, y1-y0
+    heat = _flicker(phase, effect['phase_offset'], _FIRE_FLICKER)
+    patch = shot.crop(box)
+    # Subdue the frozen painted flame so the moving one replaces it.
+    patch = Image.composite(effect['suppressed'], patch, effect['suppress_mask'])
+    if effect['spill_mask'] is not None:
+        gain = 1 + (heat-1)*effect.get('spill_gain', .8)
+        patch = Image.composite(patch.point(lambda v: min(255, round(v*gain))), patch, effect['spill_mask'])
+    rise = effect.get('rise', 9)
+    if not isinstance(rise, int) or rise < 1:
+        raise ValueError('Fire rise must be a positive whole number of cycles')
+    coarse, fine = effect['textures']
+    lean = round(1.5*math.sin(phase*3 + effect['phase_offset']) * shot.width/1440)
+    # Multiplying two rising fields gives separate tongues that merge,
+    # split and thin out as they climb, instead of one smooth sheet.
+    noise = ImageChops.multiply(ImageChops.offset(coarse, lean, -round(unit*rise*h)),
+                                ImageChops.offset(fine, -lean, -round(unit*(rise + rise//2 + 1)*h))
+                                ).point(lambda v: min(255, round(v*2.2)))
+    boost = effect.get('heat', 1.6) * heat
+    field = ImageChops.multiply(effect['envelope'], noise).point(lambda v: min(255, round(v*boost)))
+    flame = Image.merge('RGB', [field.point(lut) for lut in _FLAME_LUT])
+    patch = Image.composite(ImageChops.screen(patch, flame), patch,
+                            effect['mask'].point(lambda v: round(v*strength)))
+    sparks = Image.new('L', (w, h)); draw = ImageDraw.Draw(sparks)
+    zx0, zy0, zx1, zy1 = effect['zone']
+    for x, cycles, offset, light, sway in effect['sparks']:
+        life = (unit*cycles + offset) % 1
+        if life > .55:
+            continue
+        t = life / .55
+        sx = x + 4*math.sin(t*5 + sway*6.3) * shot.width/1440
+        sy = zy1 - (zy1-zy0)*(.25 + .7*t)
+        value = round(255*light*(1-t)**1.5)
+        draw.rectangle((round(sx), round(sy), round(sx)+1, round(sy)), fill=value)
+    sparks = ImageChops.multiply(sparks.filter(ImageFilter.GaussianBlur(.6)).point(lambda v: min(255, v*2)),
+                                 effect['mask'])
+    patch.paste((255, 196, 112), (0, 0, w, h), sparks)
+    shot.paste(patch, box[:2])
 
 
 def room_frame(prepared, frame, total_frames=480):
@@ -125,39 +366,36 @@ def room_frame(prepared, frame, total_frames=480):
                 alpha=ImageChops.add(a,b,scale=1.5)
             else:
                 alpha=ImageChops.offset(effect['texture'],round(2*math.sin(local_phase)),-round(unit*h*direction))
-        elif kind in ('cloud', 'smoke'):
-            # Refract painted detail within the authored mask. Cloud fields
-            # crossfade across their resets to maintain one-way drift.
-            amplitude=effect.get('amplitude', 4 if kind == 'cloud' else 5)
-            if not isinstance(amplitude, (int, float)) or not math.isfinite(amplitude) or not 0 <= amplitude <= 30:
-                raise ValueError('Effect amplitude must be between zero and 30')
-            amplitude *= base.width / 1440
-            patch=base.crop((x0,y0,x1,y1))
-            step=max(2,h//24)
-            def warped_field(offset=None):
-                mesh=[]
-                def displacement(pos):
-                    t=pos/max(1,h)
-                    envelope=math.sin(math.pi*t)
-                    if kind == 'cloud':
-                        return amplitude*envelope*offset, 0
-                    return (amplitude*envelope*math.sin(local_phase+t*6),
-                            amplitude*.7*envelope*math.sin(local_phase+t*4))
-                for y in range(0,h,step):
-                    end=min(h,y+step)
-                    ax,ay=displacement(y); bx,by=displacement(end)
-                    mesh.append(((0,y,w,end),(max(0,ax), max(0,y+ay),
-                        max(0,bx), min(h,end+by), min(w,w+bx), min(h,end+by),
-                        min(w,w+ax), max(0,y+ay))))
-                return patch.transform((w,h),Image.Transform.MESH,mesh,resample=Image.Resampling.BILINEAR)
-            if kind == 'cloud':
-                u=(unit*cycles)%1
-                first=warped_field(u-.5)
-                second=warped_field((u+.5)%1-.5)
-                warped=Image.blend(second,first,math.sin(math.pi*u)**2)
-            else:
-                warped=warped_field()
+        elif kind == 'cloud':
+            # Clouds drift one way as a whole. Two copies travel the same
+            # path half a cycle apart and crossfade at their resets, so the
+            # loop wraps without a jump and painted shapes never shear.
+            amplitude = _amplitude(effect, 4) * base.width / 1440
+            drift = effect.get('drift', 1)
+            if drift not in (-1, 1):
+                raise ValueError('Cloud drift must be -1 or 1')
+            u = (unit*cycles) % 1
+            def drifted(offset):
+                return base.transform((w, h), Image.Transform.AFFINE,
+                                      (1, 0, x0 - drift*offset*amplitude, 0, 1, y0),
+                                      resample=Image.Resampling.BILINEAR)
+            warped = Image.blend(drifted((u+.5) % 1 - .5), drifted(u-.5), math.sin(math.pi*u)**2)
             shot.paste(warped,(x0,y0),effect['mask'].point(lambda v:round(v*strength)))
+            continue
+        elif kind == 'smoke':
+            # Two soft density fields rise at different whole-loop speeds and
+            # multiply into wisps that thicken the painted plume as they pass.
+            amplitude = _amplitude(effect, 5) * base.width / 1440
+            first, second = effect['textures']
+            drift = effect.get('drift', 0)
+            if not isinstance(drift, int):
+                raise ValueError('Smoke drift must be a whole number of widths per loop')
+            sway = round(amplitude * .3 * math.sin(local_phase))
+            a = ImageChops.offset(first, round(unit*drift*w) + sway, -round(unit*cycles*h))
+            b = ImageChops.offset(second, round(unit*drift*w) - sway, -round(unit*(cycles+1)*h))
+            density = ImageChops.multiply(a, b).point(lambda v: max(0, min(255, (v-18)*3)))
+            alpha = ImageChops.multiply(density, effect['mask']).point(lambda v: round(v*strength*.55))
+            shot.paste(tuple(effect.get('color', (204, 206, 195))), (x0, y0, x1, y1), alpha)
             continue
         elif kind=='shimmer':
             # A traveling highlight only strengthens existing bright details.
@@ -174,23 +412,15 @@ def room_frame(prepared, frame, total_frames=480):
             bright=patch.point(lambda v:min(255,round(v*1.45)))
             shot.paste(bright,(x0,y0),alpha)
             continue
-        elif kind=='fire':
-            # Refract only the painted flame, using a deforming mesh. The
-            # stationary authored mask excludes grate bars and stonework.
-            patch=base.crop((x0,y0,x1,y1))
-            mesh=[]
-            step=max(2,h//16)
-            def displacement(y):
-                height=1-y/max(1,h)
-                return (w*.10*height*math.sin(local_phase*3+y/h*5)
-                        +w*.045*height*math.sin(local_phase*7-y/h*8+.7))
-            for y in range(0,h,step):
-                end=min(h,y+step)
-                a,b=displacement(y),displacement(end)
-                mesh.append(((0,y,w,end),(max(0,a),y,max(0,b),end,
-                    min(w,w+b),end,min(w,w+a),y)))
-            warped=patch.transform((w,h),Image.Transform.MESH,mesh,resample=Image.Resampling.BILINEAR)
-            shot.paste(warped,(x0,y0),effect['mask'].point(lambda v:round(v*strength)))
+        elif kind == 'fire':
+            _fire(shot, effect, unit, phase, strength)
+            continue
+        elif kind == 'candle':
+            # An enclosed flame: only its painted light flickers, quickly and
+            # shallowly, so cut glass and holder stay exactly where they are.
+            gain = 1 + (_flicker(phase, effect['phase_offset'], _CANDLE_FLICKER)-1)*effect.get('depth', 1.5)
+            patch = shot.crop(effect['box']).point(lambda v: min(255, round(v*gain)))
+            shot.paste(patch, (x0, y0), effect['light_mask'].point(lambda v: round(v*strength)))
             continue
         elif kind=='electrical':
             # Bounded, irregular but fully periodic harmonic changes. The
@@ -239,4 +469,9 @@ def room_frame(prepared, frame, total_frames=480):
         alpha=ImageChops.multiply(alpha,effect['mask']).point(lambda v:round(v*strength))
         color=effect.get('color',(255,187,103) if kind=='glow' else (183,204,214))
         shot.paste(tuple(color),(x0,y0,x1,y1),alpha)
+    rigid = getattr(prepared, 'rigid', None)
+    if rigid is not None and prepared.rigid_box:
+        # Occlusion last: rigid structure is the plate itself in every frame.
+        box = prepared.rigid_box
+        shot.paste(base.crop(box), box[:2], rigid.crop(box))
     return shot

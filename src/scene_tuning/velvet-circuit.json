@@ -1,5 +1,5 @@
 {
-  "motion": "A warm highlight travels over the gramophone horn while the crystal candle and lamps glow softly.",
+  "motion": "A warm highlight travels over the gramophone horn while the candle flickers in its crystal holder and the lamps glow softly.",
   "effects": [
     {
       "kind": "electrical",
@@ -214,7 +214,7 @@
       ]
     },
     {
-      "kind": "electrical",
+      "kind": "candle",
       "rect": [
         0.286,
         0.735,
@@ -251,58 +251,10 @@
           0.77
         ]
       ],
-      "threshold": 155,
-      "strength": 0.22,
+      "threshold": 150,
+      "strength": 0.55,
+      "depth": 1.5,
       "seed": 7464,
-      "cycles": 2,
-      "feather": 0.02,
-      "color": [
-        255,
-        196,
-        110
-      ]
-    },
-    {
-      "kind": "fire",
-      "rect": [
-        0.291,
-        0.742,
-        0.305,
-        0.763
-      ],
-      "polygon": [
-        [
-          0.291,
-          0.762
-        ],
-        [
-          0.292,
-          0.753
-        ],
-        [
-          0.294,
-          0.746
-        ],
-        [
-          0.297,
-          0.743
-        ],
-        [
-          0.3,
-          0.747
-        ],
-        [
-          0.303,
-          0.754
-        ],
-        [
-          0.305,
-          0.761
-        ]
-      ],
-      "strength": 0.65,
-      "seed": 7463,
-      "cycles": 3,
       "feather": 0.02
     },
     {
@@ -384,6 +336,113 @@
       "cycles": 2,
       "threshold": 110,
       "feather": 0.02
+    }
+  ],
+  "rigid": [
+    {
+      "name": "side table top",
+      "polygon": [
+        [
+          0.260417,
+          0.782716
+        ],
+        [
+          0.329861,
+          0.782716
+        ],
+        [
+          0.329861,
+          0.804938
+        ],
+        [
+          0.260417,
+          0.804938
+        ]
+      ]
+    },
+    {
+      "name": "table lamp stem",
+      "polygon": [
+        [
+          0.222222,
+          0.644444
+        ],
+        [
+          0.251389,
+          0.644444
+        ],
+        [
+          0.251389,
+          0.775309
+        ],
+        [
+          0.222222,
+          0.775309
+        ]
+      ]
+    },
+    {
+      "name": "small lamp stem",
+      "polygon": [
+        [
+          0.505556,
+          0.471605
+        ],
+        [
+          0.522222,
+          0.471605
+        ],
+        [
+          0.522222,
+          0.524691
+        ],
+        [
+          0.505556,
+          0.524691
+        ]
+      ]
+    },
+    {
+      "name": "gramophone neck and tone arm",
+      "polygon": [
+        [
+          0.8625,
+          0.283951
+        ],
+        [
+          0.918056,
+          0.283951
+        ],
+        [
+          0.918056,
+          0.520988
+        ],
+        [
+          0.8625,
+          0.520988
+        ]
+      ]
+    },
+    {
+      "name": "wall sconce bracket",
+      "polygon": [
+        [
+          0.918056,
+          0.237037
+        ],
+        [
+          0.968056,
+          0.237037
+        ],
+        [
+          0.968056,
+          0.269136
+        ],
+        [
+          0.918056,
+          0.269136
+        ]
+      ]
     }
   ]
 }
