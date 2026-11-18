@@ -1,0 +1,247 @@
+{
+  "sources": [
+    {
+      "id": "truckersfm",
+      "name": "TruckersFM",
+      "group": "Radio",
+      "kind": "radio",
+      "url": "https://truckers.fm/listen.pls",
+      "website": "https://truckers.fm/listen",
+      "description": "Live radio for the road, with presenters and a broad pop playlist.",
+      "tags": ["driving", "presenters", "pop"]
+    },
+    {
+      "id": "dark-academia-piano",
+      "name": "Dark academia piano (Relaxing Piano)",
+      "group": "Focus and chill",
+      "kind": "radio",
+      "url": "https://stream.laut.fm/relaxing-piano",
+      "website": "https://laut.fm/relaxing-piano",
+      "description": "Neoclassical piano for reading, with artists such as Ólafur Arnalds, Nils Frahm and Ludovico Einaudi. A quiet-library mood.",
+      "tags": ["dark academia", "piano", "neoclassical", "reading", "study"]
+    },
+    {
+      "id": "youtube-music-dark-academia",
+      "name": "Dark academia piano and strings on YouTube Music",
+      "group": "Discovery",
+      "kind": "discovery",
+      "url": "https://music.youtube.com/search?q=dark%20academia%20piano%20cello%20classical",
+      "description": "Explore darker piano, cello and classical study mixes in YouTube Music.",
+      "tags": ["dark academia", "piano", "cello", "classical", "reading"]
+    },
+    {
+      "id": "somafm-groove-salad",
+      "name": "SomaFM Groove Salad",
+      "group": "Focus and chill",
+      "kind": "radio",
+      "url": "https://somafm.com/groovesalad.pls",
+      "website": "https://somafm.com/groovesalad/",
+      "description": "Official permanent playlist link; downtempo and chillout electronica.",
+      "tags": ["focus", "chill", "downtempo", "electronica"]
+    },
+    {
+      "id": "somafm-drone-zone",
+      "name": "SomaFM Drone Zone",
+      "group": "Focus and chill",
+      "kind": "radio",
+      "url": "https://somafm.com/dronezone.pls",
+      "website": "https://somafm.com/dronezone/",
+      "description": "Official permanent playlist link; atmospheric space music with minimal beats.",
+      "tags": ["focus", "ambient", "space", "minimal"]
+    },
+    {
+      "id": "somafm-defcon",
+      "name": "SomaFM DEF CON Radio",
+      "group": "Radio",
+      "kind": "radio",
+      "url": "https://somafm.com/defcon.pls",
+      "website": "https://somafm.com/defcon/",
+      "description": "SomaFM's year-round DEF CON channel: hacker culture, ambient, and electronic music.",
+      "tags": ["hacker", "electronic", "ambient", "defcon"]
+    },
+    {
+      "id": "somafm-secret-agent",
+      "name": "SomaFM Secret Agent",
+      "group": "Atompunk mood",
+      "kind": "radio",
+      "url": "https://somafm.com/secretagent.pls",
+      "website": "https://somafm.com/secretagent/",
+      "description": "Cinematic downtempo, lounge, and easy-tempo international pop; a retro spy-film mood, not game soundtrack audio.",
+      "tags": ["cinematic", "lounge", "spy", "retro"]
+    },
+    {
+      "id": "lautfm-electro-swing",
+      "name": "laut.fm Electro Swing",
+      "group": "Radio",
+      "kind": "radio",
+      "url": "https://stream.laut.fm/electro-swing",
+      "website": "https://laut.fm/electro-swing",
+      "description": "User-curated Electro Swing station. The official stable station route redirects to the current audio stream.",
+      "tags": ["electro swing", "swing", "dance", "vintage-inspired"]
+    },
+    {
+      "id": "lautfm-nightcore",
+      "name": "laut.fm Nightcore",
+      "group": "Radio",
+      "kind": "radio",
+      "url": "https://stream.laut.fm/nightcore",
+      "website": "https://laut.fm/nightcore",
+      "description": "Nightcore station on laut.fm. For curated searches and mixes, see YouTube Music discovery below.",
+      "tags": ["nightcore", "remix", "pop", "electronic"]
+    },
+    {
+      "id": "radio-dismuke",
+      "name": "Radio Dismuke",
+      "group": "Atompunk mood",
+      "kind": "radio",
+      "url": "https://early1900s.org/radiodismuke/radiodismuke.pls",
+      "website": "https://radiodismuke.com/",
+      "description": "Official playlist for vintage 1925–1935 popular music and jazz. Its audio streams use HTTP. Vintage-era listening only; not game audio.",
+      "tags": ["vintage", "1920s", "1930s", "jazz", "big band", "atompunk mood"]
+    },
+    {
+      "id": "world-radio-garden",
+      "name": "Explore radio around the world",
+      "group": "Discovery",
+      "kind": "web",
+      "url": "https://radio.garden/",
+      "website": "https://radio.garden/",
+      "description": "Interactive globe for discovering live local stations around the world; playback runs in the browser.",
+      "tags": ["world radio", "discovery", "international"]
+    },
+    {
+      "id": "finnish-radio-directory",
+      "name": "Discover Finnish radio stations",
+      "group": "Finnish discovery",
+      "kind": "search",
+      "query": "country:FI",
+      "website": "https://www.radio-browser.info/",
+      "description": "Search playable stations in Finland, then listen or save a favorite.",
+      "tags": ["Finland", "Finnish", "Suomi", "discovery", "world radio"]
+    },
+    {
+      "id": "finnish-music-discovery",
+      "name": "New Finnish music on YouTube Music",
+      "group": "Finnish discovery",
+      "kind": "discovery",
+      "url": "https://music.youtube.com/search?q=uusi%20suomalainen%20musiikki",
+      "description": "Explore Finnish releases, artists and playlists in your usual music service.",
+      "tags": ["Finland", "Finnish", "Suomi", "new music"]
+    },
+    {
+      "id": "yle-areena-radio",
+      "name": "Yle Areena radio",
+      "group": "Finnish discovery",
+      "kind": "web",
+      "url": "https://areena.yle.fi/radio",
+      "website": "https://yle.fi/aihe/a/20-203991",
+      "description": "Official Yle radio listings and live listening. Streams are resolved by Yle Areena and may depend on current rights or sign-in state.",
+      "tags": ["Finland", "Finnish", "Yle", "discovery"]
+    },
+    {
+      "id": "ylex",
+      "name": "YleX",
+      "group": "Finnish discovery",
+      "kind": "radio",
+      "url": "https://icecast.live.yle.fi/radio/YleX/icecast.audio",
+      "website": "https://areena.yle.fi/audio/ohjelmat/ylex",
+      "description": "Finnish-language music and culture radio. Play the live Yle stream or open its Areena page.",
+      "tags": ["Finland", "Finnish", "pop", "new music", "discovery"]
+    },
+    {
+      "id": "yle-klassinen",
+      "name": "Yle Klassinen",
+      "group": "Finnish discovery",
+      "kind": "radio",
+      "url": "https://icecast.live.yle.fi/radio/YleKlassinen/icecast.audio",
+      "website": "https://yle.fi/aihe/a/20-34814",
+      "description": "Yle's digital classical channel. Play the live Yle stream or open its official page.",
+      "tags": ["Finland", "Finnish", "classical", "orchestral"]
+    },
+    {
+      "id": "youtube-music",
+      "name": "YouTube Music",
+      "group": "Apps and discovery",
+      "kind": "web",
+      "url": "https://music.youtube.com/",
+      "website": "https://music.youtube.com/",
+      "description": "Open your existing YouTube Music account and library in the browser.",
+      "tags": ["music", "library", "discovery"]
+    },
+    {
+      "id": "youtube-music-nightcore",
+      "name": "Discover Nightcore on YouTube Music",
+      "group": "Discovery",
+      "kind": "discovery",
+      "url": "https://music.youtube.com/search?q=nightcore",
+      "description": "Search YouTube Music for Nightcore playlists, artists, and mixes; no scraping or downloading.",
+      "tags": ["nightcore", "discovery", "youtube music"]
+    },
+    {
+      "id": "youtube-music-electro-swing",
+      "name": "Discover Electro Swing on YouTube Music",
+      "group": "Discovery",
+      "kind": "discovery",
+      "url": "https://music.youtube.com/search?q=electro%20swing",
+      "description": "Search YouTube Music for Electro Swing artists, mixes, and playlists.",
+      "tags": ["electro swing", "discovery", "youtube music"]
+    },
+    {
+      "id": "youtube-music-atompunk",
+      "name": "Vintage swing and atompunk mood on YouTube Music",
+      "group": "Discovery",
+      "kind": "discovery",
+      "url": "https://music.youtube.com/search?q=1940s%20swing%20jazz",
+      "description": "Search for vintage swing and jazz inspiration. This is era-style music discovery, not licensed Fallout or game soundtrack audio.",
+      "tags": ["vintage", "1940s", "swing", "jazz", "atompunk mood"]
+    },
+    {
+      "id": "twitch",
+      "name": "Twitch",
+      "group": "Apps and discovery",
+      "kind": "web",
+      "url": "https://www.twitch.tv/",
+      "website": "https://www.twitch.tv/",
+      "description": "Open Twitch in the browser for live channels and followed streams.",
+      "tags": ["live", "streaming", "community"]
+    },
+    {
+      "id": "jellyfin-music",
+      "name": "Jellyfin Music (Feishin)",
+      "group": "Apps and discovery",
+      "kind": "app",
+      "command": ["listening-hub-jellyfin"],
+      "website": "https://github.com/jeffvli/feishin",
+      "description": "Browse your Jellyfin music library in a dedicated desktop player. The Kotona server is prefilled; sign in in the app.",
+      "tags": ["library", "music", "Jellyfin", "Feishin"]
+    },
+    {
+      "id": "jellyfin-desktop",
+      "name": "Jellyfin Desktop",
+      "group": "Apps and discovery",
+      "kind": "app",
+      "command": ["flatpak", "run", "org.jellyfin.JellyfinDesktop"],
+      "description": "Launch the installed Jellyfin Desktop client. Sign-in and library access stay in that client.",
+      "tags": ["library", "media", "jellyfin"]
+    },
+    {
+      "id": "radio-rivendell",
+      "name": "Radio Rivendell",
+      "group": "Fantasy and story",
+      "kind": "radio",
+      "url": "https://play.radiorivendell.com/radio/8000/radio.mp3",
+      "website": "https://www.radiorivendell.com/page/listen/",
+      "description": "Fantasy music radio for the valley: instrumental worldbuilding and soundtracks, sometimes dramatic. Official direct stream.",
+      "tags": ["fantasy", "wizarding", "instrumental", "soundtrack", "reading"]
+    },
+    {
+      "id": "youtube-music-wizard-valley",
+      "name": "Gentle fantasy for Wizarding Valley on YouTube Music",
+      "group": "Fantasy and story",
+      "kind": "discovery",
+      "url": "https://music.youtube.com/search?q=gentle%20fantasy%20celesta%20harp%20chamber%20strings%20ambient",
+      "description": "Find a gentler valley soundtrack: celesta, harp, felt piano and chamber strings. Choose a mix in your existing player.",
+      "tags": ["fantasy", "wizarding", "harp", "piano", "ambient", "discovery"]
+    }
+  ]
+}
