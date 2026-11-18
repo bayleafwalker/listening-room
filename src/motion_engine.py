@@ -17,7 +17,7 @@ so grates, bars, frames and furniture occlude moving matter and never move.
 import math
 import random
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageMath, ImageOps
 
 
 def bounds(rect, size):
@@ -159,6 +159,7 @@ def _prepare_fire(effect, base, size, rng):
     # from it, a little taller, and from the fuel bed along the zone floor.
     painted = ImageChops.multiply(effect['mask'], patch.convert('L').point(
         lambda v: max(0, min(255, (v-threshold)*3))))
+    zone = effect['mask'].getbbox() or (0, 0, w, h)
     envelope = painted
     reach = max(1, round(effect.get('reach', .15) * h))
     for step in range(1, 7):
@@ -168,7 +169,6 @@ def _prepare_fire(effect, base, size, rng):
     bed = effect.get('bed', .45)
     if not 0 <= bed <= 1:
         raise ValueError('Fire bed must be between zero and one')
-    zone = effect['mask'].getbbox() or (0, 0, w, h)
     floor = Image.new('L', (w, h))
     floor.paste(Image.linear_gradient('L').resize((w, zone[3]-zone[1])).point(
         lambda v: round(255*bed*(v/255)**2.5)), (0, zone[1]))
@@ -184,13 +184,24 @@ def _prepare_fire(effect, base, size, rng):
     # Suppression reaches fainter painted licks than the envelope does.
     faint = ImageChops.multiply(effect['mask'], patch.convert('L').point(
         lambda v: max(0, min(255, (v-threshold+35)*5))))
-    effect['suppress_mask'] = ImageChops.multiply(faint.filter(ImageFilter.MaxFilter(3)).filter(
-        ImageFilter.GaussianBlur(max(1, 1.5*scale))), effect['mask']).point(lambda v: round(v*suppress))
-    # Stand-in for the wall behind the painted flame: thin bright licks are
-    # eroded away and the rest is dimmed evenly, which keeps its hue.
-    erode = max(3, round(5*scale) | 1)
-    effect['suppressed'] = patch.filter(ImageFilter.MinFilter(erode)).filter(
-        ImageFilter.GaussianBlur(max(1, scale))).point(lambda v: round(v*.62))
+    # The painted ember bed at the foot of the zone stays; only flames above
+    # it are replaced.
+    top, foot = zone[3] - .3*(zone[3]-zone[1]), zone[3] - .1*(zone[3]-zone[1])
+    above_bed = Image.new('L', (1, h))
+    above_bed.putdata([round(255*max(0, min(1, (foot-y)/(foot-top)))) for y in range(h)])
+    effect['suppress_mask'] = ImageChops.multiply(ImageChops.multiply(faint.filter(ImageFilter.MaxFilter(3)).filter(
+        ImageFilter.GaussianBlur(max(1, 1.5*scale))), effect['mask']), above_bed.resize((w, h))).point(
+        lambda v: round(v*suppress))
+    # Stand-in for the wall behind the painted flame: the surrounding wall,
+    # spread in from all sides (a blur normalised by what it averaged).
+    keep = ImageOps.invert(faint.filter(ImageFilter.MaxFilter(5)))
+    radius = max(2, 10*scale)
+    weight = keep.filter(ImageFilter.GaussianBlur(radius))
+    effect['suppressed'] = Image.merge('RGB', [
+        ImageMath.lambda_eval(lambda a: a['n'] * 255 / (a['d'] + 1),
+                              n=ImageChops.multiply(band, keep).filter(ImageFilter.GaussianBlur(radius)),
+                              d=weight).convert('L')
+        for band in patch.split()])
     effect['spill_mask'] = None
     if effect.get('spill'):
         spill = _union_mask(effect['spill'], size, box, effect.get('spill_feather', .12))
