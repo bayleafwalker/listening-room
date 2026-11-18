@@ -58,7 +58,7 @@ The window adapts down to narrow widths:
 | ![Finnish discoveries](docs/rooms/finnish-discoveries.jpg)<br>Finnish discoveries | ![Wizarding Valley](docs/rooms/wizard-valley.jpg)<br>Wizarding Valley | |
 
 The room art and scene inputs are **AI-generated** and released under
-[CC0-1.0](LICENSES/CC0-1.0.txt); the prompts are in `src/artwork/`.
+[CC0-1.0](LICENSES/CC0-1.0.txt) (see `src/artwork/LICENSE`); the prompts are in `src/artwork/`.
 
 ## Quick start
 

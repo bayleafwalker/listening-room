@@ -1,0 +1,7 @@
+Scene tuning: CC0-1.0 (public domain dedication)
+
+The tuning files in this directory describe how the room artwork in
+../artwork is animated. To the extent any rights exist, they are dedicated to
+the public domain under CC0 1.0 Universal, together with the scene loops and
+sound beds rendered from them at build time. See ../artwork/LICENSE and
+../../LICENSES/CC0-1.0.txt. The application code is GPL-3.0-or-later.
