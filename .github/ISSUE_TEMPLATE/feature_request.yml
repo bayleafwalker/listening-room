@@ -1,0 +1,15 @@
+name: Feature idea
+description: Suggest something that would make the room better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe the moment you are trying to make better, not only the feature.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you do today instead?

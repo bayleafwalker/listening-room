@@ -1,0 +1,27 @@
+name: Bug report
+description: Something does not work the way it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Package version or commit, and how you installed it
+  - type: textarea
+    id: env
+    attributes:
+      label: Desktop
+      description: Compositor (Hyprland, GNOME, KDE, ...), whether Waybar is in use, and which optional providers are configured
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output
+      description: Output of `listening-hub doctor`, or the terminal output. Remove tokens, server addresses and account names first.
+      render: shell
