@@ -11,12 +11,10 @@ import next_widgets
 
 
 class FakePicture:
+    """Like FocalPicture: it can be given a paintable but has no get_paintable."""
     def __init__(self):
         self.paintable = None
         self.sets = 0
-
-    def get_paintable(self):
-        return self.paintable
 
     def set_paintable(self, paintable):
         self.paintable = paintable

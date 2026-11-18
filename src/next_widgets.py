@@ -10,6 +10,7 @@ from gi.repository import Adw, Gdk, GLib, Graphene, Gtk
 import next_model
 
 _TEXTURES = {}
+_UNSET = object()
 
 
 def texture_for(path):
@@ -35,8 +36,11 @@ def texture_for(path):
 def show_texture(picture, path):
     """Point a picture at an image file's texture, leaving it alone when nothing changed."""
     texture = texture_for(path)
-    if picture.get_paintable() is not texture:
+    # Not every picture widget here has get_paintable (FocalPicture only sets), so
+    # remember what was shown on the widget itself.
+    if getattr(picture, '_shown_texture', _UNSET) is not texture:
         picture.set_paintable(texture)
+        picture._shown_texture = texture
     return texture
 
 
