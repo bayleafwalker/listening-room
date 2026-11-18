@@ -991,19 +991,13 @@ def s6_mix():
     # real failure, offers Try again and Stop; after it recovers the error is gone.
     def failed_menu(row_title, flag, layer):
         setattr(backend, flag, True)
-        try:
-            controller.layer({'layer': layer, 'action': 'retry'})
-        except Exception:
-            pass
-        settle(1.0)
+        service.execute('layer', {'layer': layer, 'action': 'retry'})   # the app's own path; it records the failure
+        settle(1.2)
         wake(window)
         shown_menu = menu_items(row_of(window, row_title))
         setattr(backend, flag, False)
-        try:
-            controller.layer({'layer': layer, 'action': 'retry'})
-        except Exception:
-            pass
-        settle(1.0)
+        service.execute('layer', {'layer': layer, 'action': 'retry'})
+        settle(1.2)
         return shown_menu, bool((snapshot().get('errors') or {}).get(layer))
     music_failed, music_recorded = failed_menu('Music', 'fail_music', 'music')
     amb_failed, amb_recorded = failed_menu('Ambience', 'fail_atmosphere', 'atmosphere')

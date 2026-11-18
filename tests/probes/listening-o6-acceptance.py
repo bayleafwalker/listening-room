@@ -471,7 +471,12 @@ class Tracer:
             if name == 'connect' and type(getattr(arg, '__self__', None)).__name__ != 'socket':
                 return    # a GObject signal connection, not a network connect
             if name in BLOCKING and self.app_frame(frame):
-                self.hits.append((name, frame.f_code.co_filename.replace(SRC + '/', ''), frame.f_lineno))
+                chain, walker = [], frame
+                while walker is not None and len(chain) < 6:
+                    if walker.f_code.co_filename.startswith(SRC):
+                        chain.append('%s:%d %s' % (walker.f_code.co_filename.replace(SRC + '/', ''), walker.f_lineno, walker.f_code.co_name))
+                    walker = walker.f_back
+                self.hits.append((name, chain))
         elif event == 'call' and frame.f_code.co_name in ('urlopen', 'create_connection') and self.app_frame(frame.f_back):
             self.hits.append((frame.f_code.co_name, 'stdlib', 0))
 
@@ -610,6 +615,7 @@ def s1b_other_selection_speed():
         pump(.25)
 
     keys = [k for k, _t in page.scope_list]
+    station = next(s for s in controller.stations() if s['name'] == 'Morning lift')   # harness read, outside the tracer
     with tracer, StallMeter() as stall:
         for key in keys:
             timed('scope:' + key, lambda key=key: page.scopes.set_active(keys.index(key)), lambda key=key: page.scope == key)
@@ -622,7 +628,6 @@ def s1b_other_selection_speed():
         window.sheet.set_open(False)
         pump(.4)
         window.show_listen()
-        station = next(s for s in controller.stations() if s['name'] == 'Morning lift')
         timed('open a station', lambda: page.show_station(station), lambda: page.stack.get_visible_child_name() == 'station')
         pump(.6)
         groups = [g for g in toggles(page.widget) if g.get_mapped() and g.get_n_toggles() >= 2 and 'Low' in toggle_names(g)]
@@ -947,7 +952,9 @@ def s4_new_station():
     if delete:
         mark = len(COMMANDS)
         click(delete[0])
-        pump(.8)
+        deadline = time.monotonic() + 7.5      # an earlier toast may still be on screen; this one queues behind it
+        while time.monotonic() < deadline and dialogs(window) is None and 'before deleting' not in ' '.join(label_texts(window)):
+            pump(.25)
         confirm = dialogs(window)
         said = ' '.join(sorted(label_texts(window) | (label_texts(confirm) if confirm is not None else set())))
         if confirm is not None:
@@ -1316,6 +1323,12 @@ def s7_pending():
     pump(.3)
     check('7e four presses of Tune in send one start and Now says Connecting',
           len([c for c in sent(mark) if c[0] in ('music', 'link', 'station.start')]) == 1 and bool(connecting_text(window)), mutating_actions(mark))
+    # A different choice made while one start is still connecting: recorded as a note (replace, queue or say why would
+    # all be fine; silently dropping it is a UX finding, not a criterion).
+    other_mark = len(COMMANDS)
+    taken = window.start('link', {'url': 'https://radio.example.test/other', 'destination': 'music'}, 'another station')
+    pump(.3)
+    NUMBERS['note_second_distinct_start_while_connecting'] = {'accepted': bool(taken), 'commands': len(sent(other_mark))}
     settle(3.0)
     backend.start_delay = 0.
     # (a) The controller cannot be reached / refuses: the pending card says so in words, the previous room stays.
@@ -1478,6 +1491,8 @@ def s8_mix():
         same = all(restored.get(k) == before.get(k) for k in ('kind', 'source_id', 'url', 'name') if k in before)
         check('8j Undo after replacing a %s ambience restores the same source' % first_kind, undo is not None and same and changed != before,
               (before, changed, restored))
+    service.execute('layer', {'layer': 'atmosphere', 'action': 'select', 'kind': 'local', 'source_id': 'rain-glass', 'name': 'Rain on glass'})
+    settle(1.0)
     window.show_now()
     window.open_mix()
     pump(.8)
@@ -1485,11 +1500,8 @@ def s8_mix():
     check('8k no healthy layer offers Try again; each offers Stop', all('Try again' not in v and 'Stop' in v for v in healthy.values()), healthy)
     for layer, flag in (('music', 'fail_music'), ('picture', 'fail_picture'), ('atmosphere', 'atmosphere_error')):
         setattr(backend, flag, 'Sound could not load' if flag == 'atmosphere_error' else True)
-        try:
-            controller.layer({'layer': layer, 'action': 'retry'})
-        except Exception:
-            pass
-        settle(1.0)
+        service.execute('layer', {'layer': layer, 'action': 'retry'})   # the path the app uses; it records the failure
+        settle(1.2)
         window.show_now()
         window.open_mix()
         pump(.8)
@@ -1497,11 +1509,8 @@ def s8_mix():
         failing_has = 'Try again' in menus[layer]
         others_clean = all('Try again' not in v for k, v in menus.items() if k != layer)
         setattr(backend, flag, None if flag == 'atmosphere_error' else False)
-        try:
-            controller.layer({'layer': layer, 'action': 'retry'})
-        except Exception:
-            pass
-        settle(1.0)
+        service.execute('layer', {'layer': layer, 'action': 'retry'})
+        settle(1.2)
         check('8l after the %s layer fails only its menu offers Try again' % layer, failing_has and others_clean, menus)
     window.show_now()
     window.open_mix()

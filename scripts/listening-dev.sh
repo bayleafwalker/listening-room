@@ -69,11 +69,12 @@ case "${1:-}" in
     }
     # O4 keeps one recorded failure: the superseded "5i [ORIGINAL]" check.
     declare -A expected=([next]='130 passed, 0 failed' [o2]='161 passed, 0 failed' [o3]='193 passed, 0 failed'
-                         [o4]='170 passed, 1 failed' [o5]='242 passed, 0 failed')
+                         [o4]='170 passed, 1 failed' [o5]='242 passed, 0 failed'
+                         [o6]='151 passed, 0 failed')
     status=0
     for entry in next:listening-next-ui:listening-next-acceptance o2:listening-next-rooms:listening-o2-acceptance \
                  o3:listening-listen-ui:listening-o3-acceptance o4::listening-o4-acceptance \
-                 o5:listening-session-ui:listening-o5-acceptance; do
+                 o5:listening-session-ui:listening-o5-acceptance o6::listening-o6-acceptance; do
       IFS=: read -r name evidence acceptance <<<"$entry"
       mkdir -p "$out/$name"
       if [ -n "$evidence" ]; then gui "tests/probes/$evidence.py" --output "$out/$name" >"$out/$name/evidence.log" 2>&1 || true; fi
