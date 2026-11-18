@@ -68,7 +68,7 @@ case "${1:-}" in
         xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session python3 "$@"
     }
     # O4 keeps one recorded failure: the superseded "5i [ORIGINAL]" check.
-    declare -A expected=([next]='131 passed, 0 failed' [o2]='161 passed, 0 failed' [o3]='193 passed, 0 failed'
+    declare -A expected=([next]='130 passed, 0 failed' [o2]='161 passed, 0 failed' [o3]='193 passed, 0 failed'
                          [o4]='170 passed, 1 failed' [o5]='242 passed, 0 failed')
     status=0
     for entry in next:listening-next-ui:listening-next-acceptance o2:listening-next-rooms:listening-o2-acceptance \

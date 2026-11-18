@@ -97,8 +97,11 @@ class Backend(FakeBackend):
     def __init__(self):
         super().__init__()
         self.fail_music_after_start = False
+        self.fail_atmosphere = False   # R4: lets 6h exercise an ambience layer that failed
 
     def start_atmosphere(self, selection, cancel):
+        if self.fail_atmosphere and selection.get('kind') != 'none':
+            raise ValueError('Sound could not load')
         super().start_atmosphere(selection, cancel)
         sound = next((x for x in atmosphere_catalogue.SOUNDS if x['id'] == selection.get('source_id')), {})
         if sound:
@@ -560,7 +563,7 @@ def leave_all():
     if controller.active is not None:
         controller.leave(0)
         settle(1.0)
-    backend.fail_picture = backend.fail_music = False
+    backend.fail_picture = backend.fail_music = backend.fail_atmosphere = False
     controller.timer_ends.clear() if hasattr(controller, 'timer_ends') else None
 
 
@@ -850,7 +853,11 @@ def s4_vocabulary():
             w.popup()
             pump(.5)
             bad = vocabulary_violations(popover)
-            check('4f Mix row menu %r: no forbidden vocabulary' % (acc_name(w) or w.get_label() or '?'), not bad, repr(bad))
+            # R4 (2026-11-18): the Ambience row's change path is a plain "Change…" button (O6 criterion 2), so one
+            # generated 4f instance (the Ambience Change menu) no longer exists. Every remaining Mix popover still
+            # gets this instance, now also required to be non-empty so an empty menu cannot pass vacuously.
+            check('4f Mix row menu %r: no forbidden vocabulary' % (acc_name(w) or w.get_label() or '?'),
+                  not bad and any(isinstance(b, Gtk.Button) for b in walk(popover)), repr(bad))
             w.popdown()
             pump(.2)
     close_mix(window)
@@ -924,9 +931,28 @@ def s6_mix():
         return [w for w in walk(r) if interactive_type(w) and shown(w) and 'mute' in (acc_name(w) or '').lower()]
     check('6c Music has level and mute', len(scales(rows['Music'])) == 1 and len(mutes(rows['Music'])) >= 1,
           'scales=%d mutes=%r' % (len(scales(rows['Music'])), [acc_name(m) for m in mutes(rows['Music'])]))
-    check('6d Ambience (outdoor sound) has level, mute and Window',
-          len(scales(rows['Ambience'])) == 2 and mutes(rows['Ambience']) and 'Window' in info['Ambience'],
-          'scales=%d texts=%r' % (len(scales(rows['Ambience'])), info['Ambience']))
+    # R4 (2026-11-18, operator feedback + O6 criterion 2): the Ambience row also has a primary, plain "Change…"
+    # button (not a menu) that opens Listen in ambience mode; browsing it sends nothing, and Cancel returns to the Mix.
+    # ORIGINAL 6d: len(scales)==2 and mutes and 'Window' in info['Ambience'] (kept below).
+    change = [w for w in walk(rows['Ambience']) if isinstance(w, Gtk.Button) and not isinstance(w, Gtk.MenuButton)
+              and shown(w) and ' '.join(texts(w)) == 'Change…']
+    ambience_path = False
+    ambience_detail = 'no plain Change… button on the Ambience row'
+    if change:
+        mark_nav = len(COMMANDS)
+        click(change[0])
+        pump(1.0)
+        opened = 'Choose an ambience' in ' '.join(texts(window)) and any(
+            isinstance(w, Gtk.Button) and shown(w) and ' '.join(texts(w)) == 'Play as ambience' for w in walk(window))
+        cancel = next((w for w in walk(window) if isinstance(w, Gtk.Button) and shown(w) and ' '.join(texts(w)) == 'Cancel'), None)
+        if cancel is not None:
+            click(cancel)
+            pump(1.0)
+        ambience_path = opened and not mutating_since(mark_nav) and mix_open(window) and cancel is not None
+        ambience_detail = 'opened=%s cancel=%s commands=%r mix=%s' % (opened, cancel is not None, mutating_since(mark_nav), mix_open(window))
+    check('6d Ambience (outdoor sound) has level, mute and Window, and a plain Change… that opens Listen in ambience mode',
+          len(scales(rows['Ambience'])) == 2 and mutes(rows['Ambience']) and 'Window' in info['Ambience'] and ambience_path,
+          'scales=%d texts=%r path=%s' % (len(scales(rows['Ambience'])), info['Ambience'], ambience_detail))
     check('6e Music row has no Window control', 'Window' not in info['Music'], '')
     check('6f Scene has placement (Workspace 9 / Here), Moving picture, a close control and no level/mute',
           'Workspace 9' in info['Scene'] and 'Moving picture' in info['Scene']
@@ -953,10 +979,45 @@ def s6_mix():
 
     def labels(m):
         return {t for items in m.values() for t, _ in items}
-    check('6g Music row menu: Try again and Stop, no Next track on live radio',
-          {'Try again', 'Stop'} <= labels(music_menu) and 'Next track' not in labels(music_menu), repr(music_menu))
-    check('6h Ambience row menu: Try again and Stop', {'Try again', 'Stop'} <= labels(amb_menu), repr(amb_menu))
-    check('6i Scene row menu: Try again and Stop', {'Try again', 'Stop'} <= labels(scene_menu), repr(scene_menu))
+    # R4 (2026-11-18): operator feedback plus the UX assessment (item 3) and O6 criterion 9 require "Try again" only
+    # for a layer that failed. ORIGINAL 6g/6h/6i required 'Try again' in every Music, Ambience and Scene row menu
+    # even when the room was healthy:
+    #   ORIGINAL 6g {'Try again','Stop'} <= labels(music_menu) and 'Next track' not in labels(music_menu)
+    #   ORIGINAL 6h {'Try again','Stop'} <= labels(amb_menu)
+    #   ORIGINAL 6i {'Try again','Stop'} <= labels(scene_menu)
+    # The revision is stronger: a healthy layer's menu has Stop and no Try again, and the same layer, after a
+    # real failure, offers Try again and Stop; after it recovers the error is gone.
+    def failed_menu(row_title, flag, layer):
+        setattr(backend, flag, True)
+        try:
+            controller.layer({'layer': layer, 'action': 'retry'})
+        except Exception:
+            pass
+        settle(1.0)
+        wake(window)
+        shown_menu = menu_items(row_of(window, row_title))
+        setattr(backend, flag, False)
+        try:
+            controller.layer({'layer': layer, 'action': 'retry'})
+        except Exception:
+            pass
+        settle(1.0)
+        return shown_menu, bool((snapshot().get('errors') or {}).get(layer))
+    music_failed, music_recorded = failed_menu('Music', 'fail_music', 'music')
+    amb_failed, amb_recorded = failed_menu('Ambience', 'fail_atmosphere', 'atmosphere')
+    scene_failed, scene_recorded = failed_menu('Scene', 'fail_picture', 'picture')
+    check('6g Music row menu: Stop always; Try again only after a failure; no Next track on live radio',
+          'Stop' in labels(music_menu) and 'Try again' not in labels(music_menu) and 'Next track' not in labels(music_menu)
+          and {'Try again', 'Stop'} <= labels(music_failed) and 'Next track' not in labels(music_failed) and not music_recorded,
+          'healthy=%r failed=%r recovered_error=%s' % (music_menu, music_failed, music_recorded))
+    check('6h Ambience row menu: Stop always; Try again only after a failure',
+          'Stop' in labels(amb_menu) and 'Try again' not in labels(amb_menu)
+          and {'Try again', 'Stop'} <= labels(amb_failed) and not amb_recorded,
+          'healthy=%r failed=%r recovered_error=%s' % (amb_menu, amb_failed, amb_recorded))
+    check('6i Scene row menu: Stop always; Try again only after a failure',
+          'Stop' in labels(scene_menu) and 'Try again' not in labels(scene_menu)
+          and {'Try again', 'Stop'} <= labels(scene_failed) and not scene_recorded,
+          'healthy=%r failed=%r recovered_error=%s' % (scene_menu, scene_failed, scene_recorded))
     assert_inert('6j opening Mix and row menus sends no playback command', mark_c, mark_b)
 
     # Level and mute reach the controller through the existing layer command.
