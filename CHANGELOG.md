@@ -14,6 +14,14 @@ All notable changes are recorded here. The format follows
   and unintelligible formant-shaped babble with cup clinks for the café. Still
   original procedural synthesis, CC0, with the same names and file names; levels
   are matched across the six. Descriptions were tightened to match.
+- Scene loops look like what they show. The Midnight Library fire is a living
+  flame behind the grate, with flicker, a few sparks and firelight on the
+  hearth, and the grate no longer bends. Chimney smoke rises instead of
+  swaying, clouds drift as one layer, and the Velvet Circuit candle and the
+  Wizarding Valley lantern flicker as light.
+- Each room names the structure that must not move: grates, frames, posts,
+  rocks, figures and horizons. No effect can move it, and the build checks it.
+  The room videos change as a result.
 
 ### Added
 - Objective checks for the sounds (spectrum, event structure, distinctness, loop
