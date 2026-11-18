@@ -976,6 +976,8 @@ def s6_mix():
     music_menu = menu_items(rows['Music'])
     amb_menu = menu_items(rows['Ambience'])
     scene_menu = menu_items(rows['Scene'])
+    # R4: evaluated before the failure induction below, whose retries are deliberate playback commands.
+    assert_inert('6j opening Mix and row menus sends no playback command', mark_c, mark_b)
 
     def labels(m):
         return {t for items in m.values() for t, _ in items}
@@ -1018,7 +1020,6 @@ def s6_mix():
           'Stop' in labels(scene_menu) and 'Try again' not in labels(scene_menu)
           and {'Try again', 'Stop'} <= labels(scene_failed) and not scene_recorded,
           'healthy=%r failed=%r recovered_error=%s' % (scene_menu, scene_failed, scene_recorded))
-    assert_inert('6j opening Mix and row menus sends no playback command', mark_c, mark_b)
 
     # Level and mute reach the controller through the existing layer command.
     mark = len(COMMANDS)
