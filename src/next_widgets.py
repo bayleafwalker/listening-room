@@ -1,4 +1,6 @@
 """Small GTK/libadwaita building blocks for the next Listening Room window."""
+import os
+
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
@@ -6,6 +8,47 @@ gi.require_version('Graphene', '1.0')
 from gi.repository import Adw, Gdk, GLib, Graphene, Gtk
 
 import next_model
+
+_TEXTURES = {}
+
+
+def texture_for(path):
+    """One Gdk.Texture per image file, reused across polls; None when it cannot be read.
+
+    Decoding and uploading the same art on every poll costs time and GPU memory."""
+    if not path:
+        return None
+    try:
+        key = (path, os.stat(path).st_mtime_ns)
+    except OSError:
+        return None
+    texture = _TEXTURES.get(key)
+    if texture is None:
+        try:
+            texture = Gdk.Texture.new_from_filename(path)
+        except GLib.Error:
+            return None
+        _TEXTURES[key] = texture
+    return texture
+
+
+def show_texture(picture, path):
+    """Point a picture at an image file's texture, leaving it alone when nothing changed."""
+    texture = texture_for(path)
+    if picture.get_paintable() is not texture:
+        picture.set_paintable(texture)
+    return texture
+
+
+def choose_renderer(environ=None, nvidia_marker='/proc/driver/nvidia/version'):
+    """Use GTK's OpenGL renderer on the NVIDIA proprietary driver.
+
+    GTK's Vulkan renderer crashes inside that driver while uploading textures
+    (gsk_vulkan_direct_allocator_alloc). An explicit GSK_RENDERER always wins."""
+    environ = os.environ if environ is None else environ
+    if not environ.get('GSK_RENDERER') and os.path.exists(nvidia_marker):
+        environ['GSK_RENDERER'] = 'ngl'
+    return environ.get('GSK_RENDERER')
 
 CSS = '''
 window.next { background: #17171a; color: #ffffff; }
@@ -179,12 +222,7 @@ class Scene(Gtk.Overlay):
         self._drop_media()
         self.want_motion = bool(motion and assets.get('loop') and gst_ready())
         still = assets.get('still') or assets.get('poster')
-        texture = None
-        if still:
-            try:
-                texture = Gdk.Texture.new_from_filename(still)
-            except GLib.Error:
-                texture = None
+        texture = texture_for(still)
         self.picture.set_paintable(texture)
         if self.want_motion:
             media = Gtk.MediaFile.new_for_filename(assets['loop'])

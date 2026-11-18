@@ -24,7 +24,7 @@ import next_model
 import next_station
 import session_client
 from next_listen_more import MORE_SCOPES, ServicesMixin
-from next_widgets import FocalPicture, icon_button, label, name_it
+from next_widgets import FocalPicture, show_texture, icon_button, label, name_it
 
 SCOPES = (('all', 'All'), ('stations', 'Your stations'), ('radio', 'Radio'),
           ('library', 'Library'), ('channels', 'Live channels'), ('world', 'World radio'))
@@ -837,13 +837,7 @@ class ListenPage(ServicesMixin):
         self.bar_play.set_icon_name('media-playback-pause-symbolic' if playing else 'media-playback-start-symbolic')
         name_it(self.bar_play, 'Pause the room' if playing else 'Play the room')
         poster = active.get('poster_path')
-        texture = None
-        if poster:
-            try:
-                texture = Gdk.Texture.new_from_filename(poster)
-            except GLib.Error:
-                texture = None
-        self.bar_picture.set_paintable(texture)
+        texture = show_texture(self.bar_picture, poster)
         self.bar_initials.set_text(next_station.initials(name))
         self.bar_initials.set_visible(texture is None)
         for index in range(6):

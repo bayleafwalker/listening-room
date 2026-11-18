@@ -24,7 +24,7 @@ from next_actions import RoomActions
 from next_mini import MiniPlayer, MiniWindow, install_mini_css
 from next_mix import MixSheet
 from next_rooms import RoomsPage
-from next_widgets import (FocalPicture, OutputPopover, Scene, TimerPopover, accent_css, icon_button,
+from next_widgets import (FocalPicture, choose_renderer, show_texture, OutputPopover, Scene, TimerPopover, accent_css, icon_button,
                           install_css, label, menu_item, name_it, pop_button)
 
 APP_ID = 'app.kotona.ListeningRoom'
@@ -171,13 +171,7 @@ class NextWindow(Adw.ApplicationWindow):
 
     @staticmethod
     def set_artwork(picture, path):
-        texture = None
-        if path:
-            try:
-                texture = Gdk.Texture.new_from_filename(path)
-            except GLib.Error:
-                texture = None
-        picture.set_paintable(texture)
+        show_texture(picture, path)
 
     def go_to_now(self):
         """A start command is in flight; open Now when the room is actually up.
@@ -846,6 +840,7 @@ def launch_arguments(arguments):
 
 class NextApp(Adw.Application):
     def __init__(self):
+        choose_renderer()
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
         self.window = None
 

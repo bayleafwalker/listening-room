@@ -5,3 +5,7 @@ result-*
 .direnv/
 /evidence/
 *.log
+
+# Local audit records written by agent hooks; never publish.
+.auditctl/
+_artifacts/

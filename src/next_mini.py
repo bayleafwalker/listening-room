@@ -17,7 +17,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 import next_model as model
 from next_actions import RoomActions
-from next_widgets import FocalPicture, TimerPopover, accent_css, icon_button, install_css, label, name_it
+from next_widgets import FocalPicture, choose_renderer, show_texture, TimerPopover, accent_css, icon_button, install_css, label, name_it
 
 MINI_CSS = '''
 .mini { background: #0e0f12; border-radius: 16px; }
@@ -177,13 +177,7 @@ class MiniPlayer(Gtk.Overlay):
             path = self.art_path(snapshot, active)
             if path != getattr(self, 'art_key', object()):
                 self.art_key = path
-                texture = None
-                if path:
-                    try:
-                        texture = Gdk.Texture.new_from_filename(path)
-                    except GLib.Error:
-                        texture = None
-                self.art.set_paintable(texture)
+                show_texture(self.art, path)
             if info:
                 self.state = info['state']
                 self.name.set_text(info['name'])
@@ -410,6 +404,7 @@ def run_popover(argv, request=None):
     if request is None:
         import session_client
         request = session_client.request
+    choose_renderer()
     app = Adw.Application(application_id='app.kotona.ListeningPopover')
     state = {}
 
