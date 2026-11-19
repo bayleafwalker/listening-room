@@ -544,19 +544,46 @@ class SeamClippingLoudnessDeterminism(unittest.TestCase):
             else:
                 self.assertGreater(one_second.min(), .1 * one_second.mean(), identity)
 
-    def test_loudness_is_consistent_in_rms_and_stated_target(self):
-        levels = {i: rms_db(beds()[i]) for i in IDS}
-        target = 20 * np.log10(render.TARGET_RMS)
-        for identity, level in levels.items():
-            self.assertAlmostEqual(level, target, delta=1.0, msg=identity)
-        self.assertLess(max(levels.values()) - min(levels.values()), 1.5)
+    def test_loudness_is_matched_perceptually_with_raw_rms_headroom(self):
+        # REVISION R5 (coordinator decision 2026-11-19). The six beds must be comparable to the ear, so they are matched
+        # on A-weighted level (this file's a_weighted_level; BS.1770 was not chosen because its K-weighting is nearly
+        # flat above 500 Hz and the helper already exists and is shared with the spread oracle), not on raw RMS.
+        # ORIGINAL (superseded; cannot coexist with perceptual matching, because equal raw RMS left a 16.7 dB A-weighted
+        # spread, distant-thunder 33.0 against rain-glass 49.8; reasons: operator feedback that the sounds should be
+        # comparable to the ear, O7 acceptance finding 2, coordinator decision 2026-11-19):
+        #     levels = {i: rms_db(beds()[i]) for i in IDS}
+        #     target = 20 * np.log10(render.TARGET_RMS)
+        #     for identity, level in levels.items():
+        #         self.assertAlmostEqual(level, target, delta=1.0, msg=identity)
+        #     self.assertLess(max(levels.values()) - min(levels.values()), 1.5)
+        perceived = {i: a_weighted_level(beds()[i]) for i in IDS}
+        median = float(np.median(list(perceived.values())))
+        for identity, level in perceived.items():
+            self.assertAlmostEqual(level, median, delta=1.5, msg=(identity, perceived))
+        # headroom: matching perceived level must not push any bed's raw RMS near full scale
+        for identity in IDS:
+            self.assertLess(rms_db(beds()[identity]), -12.0, identity)
 
     def test_perceived_loudness_spread_is_bounded(self):
         # A-weighted level: the deep beds carry most of their RMS where hearing is insensitive. The spread is bounded so no
         # bed is much louder or much quieter to the ear than the rest at one volume setting.
+        # R5: tightened from 20 dB to 3 dB, consistent with every bed within +-1.5 dB of the median.
+        # ORIGINAL: self.assertLess(spread, 20, levels)
         levels = {i: a_weighted_level(beds()[i]) for i in IDS}
         spread = max(levels.values()) - min(levels.values())
-        self.assertLess(spread, 20, levels)
+        self.assertLessEqual(spread, 3.0, levels)
+
+    def test_rain_under_thunder_is_audible_between_rolls(self):
+        # O9-SOUND criterion 1 (acceptance finding 1): thunder's rain was about 30 dB below rain-glass in 1.5-9 kHz and its
+        # 1 s RMS fell to about -55 dBFS between rolls.
+        def band_db(x):
+            f, P = welch(x)
+            return float(10 * np.log10(P[(f >= 1500) & (f < 9000)].sum()))
+        thunder, rain = beds()['distant-thunder'], beds()['rain-glass']
+        gap = band_db(thunder) - band_db(rain)
+        self.assertAlmostEqual(gap, 0.0, delta=10.0, msg='1.5-9 kHz level of thunder relative to rain-glass, dB: %.1f' % gap)
+        one_second = np.sqrt(smooth(thunder * thunder, R))[R // 2::R // 2]
+        self.assertGreater(20 * np.log10(one_second.min()), -40.0, 'thunder 1 s RMS must stay above -40 dBFS')
 
     def test_output_is_deterministic_across_processes_and_hash_seeds(self):
         script = ('import sys,hashlib; sys.path.insert(0, %r); import render_atmospheres as r; '
