@@ -139,6 +139,41 @@ class WindowSmoke(unittest.TestCase):
         env.service.execute('leave', {})
         env.settle(1.0)
 
+    def test_slow_and_competing_starts_are_never_silent_or_doubled(self):
+        env = self.env
+        window = env.launch(page='listen')
+        keys = [t for _k, t in window.listen.scope_list]
+        window.listen.scopes.set_active(keys.index('Radio'))
+        env.pump(.6)
+        import session_client
+        import time
+        answer = session_client.request   # the fixture's request double
+
+        def slow(action, arguments=None, *rest, **kw):
+            if action in ('music', 'link', 'station.start'):
+                time.sleep(2.5)           # the controller answers after the grace time
+            return answer(action, arguments, *rest, **kw)
+        with mock.patch.object(env.next_window, 'START_GRACE_S', 1.0), \
+                mock.patch.object(session_client, 'request', side_effect=slow):
+            mark = len(env.log)
+            env.buttons(window.listen.index_body, 'Tune in')[0].emit('clicked')
+            env.pump(.3)
+            self.assertFalse(window.start('link', {'url': 'https://radio.example.test/other', 'destination': 'music'}, 'Other'))
+            self.assertTrue(any(t.startswith('Still connecting to') for t in env.texts(window.toasts)),
+                            'a competing start was dropped without a word')
+            env.pump(1.4)
+            self.assertEqual(window.pending['state'], 'failed', 'the slow start never showed it is taking long')
+            self.assertFalse(window.pending_retry.get_sensitive(), 'Try again is offered while the first start runs')
+            window.retry_pending()
+            env.pump(2.5)
+            env.settle(1.0)
+            starts = [a for a, _ in env.commands(mark) if a in ('music', 'link', 'station.start')]
+            self.assertEqual(len(starts), 1, starts)
+            self.assertIsNone(window.pending, 'the late success did not clear the failure card')
+            self.assertTrue(env.controller.active)
+        env.service.execute('leave', {})
+        env.settle(1.0)
+
     def test_an_unreachable_room_service_says_so_and_offers_start_again(self):
         env = self.env
         window = env.launch(page='rooms')
