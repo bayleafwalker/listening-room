@@ -78,10 +78,15 @@ class LayerRow(Gtk.Box):
             self.controls.append(self.window)
         if layer == 'picture':
             self.placement = Adw.ToggleGroup()
+            name_it(self.placement, 'Scene placement', 'Where the scene window goes')
             for key, text in next_model.PLACEMENTS:
                 self.placement.add(Adw.Toggle(label=text, name=key))
             self.placement.connect('notify::active-name', self.placement_changed)
             self.controls.append(self.placement)
+            if not next_model.hyprland():
+                # Placement moves the scene window through Hyprland; say so where it would not work.
+                self.placement_note = label(next_model.NO_HYPRLAND, ['dim-label'], wrap=True)
+                self.controls.append(self.placement_note)
             self.moving = Gtk.Switch(valign=Gtk.Align.CENTER)
             name_it(self.moving, 'Moving picture', None)
             self.moving.connect('notify::active', self.moving_changed)

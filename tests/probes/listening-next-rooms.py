@@ -363,7 +363,7 @@ with tempfile.TemporaryDirectory(prefix='listening-next-') as folder:
         for expected in ('Night drive', 'Radio for the road', "What you'll hear", 'Music', 'Scene', 'Ambience', 'Enter room',
                          'Live radio · programming varies', 'Driving', 'Presenters', 'Landscapes'):
             assert expected in shown, (expected, shown)
-        assert any('Nothing starts until you enter' in text or 'fades out' in text for text in shown), shown
+        assert any('Other apps keep playing' in text or 'fades out' in text for text in shown), shown
         assert [w.get_label() for w in primaries()] == ['Enter room'], [w.get_label() for w in primaries()]
         assert_layout(window, 'Room preview 1200x800')
         assert_vocabulary(window, 'Room preview')
@@ -583,7 +583,7 @@ with tempfile.TemporaryDirectory(prefix='listening-next-') as folder:
         assert window.rooms.preview_widgets['scene'].media is None, 'reduced motion shows still art'
         assert not Gtk.Settings.get_default().get_property('gtk-enable-animations')
         assert 'A still of the scene. Nothing plays until you enter.' in labels(window)
-        assert 'Scene on workspace 9 · still' in labels(window)
+        assert 'Scene here · still' in labels(window)  # the default placement is the current workspace
         assert_layout(window, 'Room preview reduced motion')
         shot_to('o2-06-preview-reduced-motion')
         window.close()

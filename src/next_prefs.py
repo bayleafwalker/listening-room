@@ -891,6 +891,8 @@ class PreferencesDialog(Adw.PreferencesDialog):
         scene = Adw.PreferencesGroup(title='New rooms', description=(
             'Defaults for the scene each room opens with. A room change keeps this session’s own choices.'))
         self.placement_row = Adw.ComboRow(title='Default placement', model=Gtk.StringList.new(placement_words()))
+        if not next_model.hyprland():
+            self.placement_row.set_subtitle(next_model.NO_HYPRLAND)
         self.placement_row.connect('notify::selected', self.placement_chosen)
         scene.add(self.placement_row)
         self.display_row = Adw.ComboRow(title='Preferred display', model=Gtk.StringList.new(['Current display']))

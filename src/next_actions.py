@@ -4,6 +4,40 @@ to confirm; the wording, the commands and the Undo rules live here once."""
 import next_model as model
 
 
+class Ticket:
+    """One command in flight, handed back to whoever sent it.
+
+    ``add_finish(callback)`` runs the callback once the command ends, either way (on the GTK
+    thread); a pressed control uses it to re-enable itself. This replaces an attribute that the
+    next command sent, whichever it was, used to pick up."""
+    def __init__(self):
+        self.done = False
+        self.callbacks = []
+
+    def add_finish(self, callback):
+        if self.done:
+            callback()
+        else:
+            self.callbacks.append(callback)
+        return self
+
+    def finish(self):
+        if self.done:
+            return
+        self.done = True
+        callbacks, self.callbacks = self.callbacks, []
+        for callback in callbacks:
+            callback()
+
+
+def when_finished(ticket, callback):
+    """Run ``callback`` when ``ticket`` (what a send returned) ends, or now when nothing was sent."""
+    if isinstance(ticket, Ticket):
+        ticket.add_finish(callback)
+    else:
+        callback()
+
+
 class RoomActions:
     def __init__(self, send, toast, snapshot):
         """send(action, args=None, done=None, urgent=False, quiet=False);
@@ -11,16 +45,17 @@ class RoomActions:
         self.send, self.toast, self.snapshot = send, toast, snapshot
 
     def toggle(self):
-        """Pause is Quiet, Play is the existing resume; with a room but no sound, enter it again."""
+        """Pause is Quiet, Play is the existing resume; with a room but no sound, enter it again.
+
+        Returns what ``send`` returned (a Ticket from the windows), or None when nothing was sent."""
         snapshot = self.snapshot()
         if not snapshot.get('active'):
-            return
+            return None
         if model.room_state(snapshot) == 'playing':
-            self.send('quiet', urgent=True)
-        elif snapshot.get('resume_offer'):
-            self.send('resume')
-        else:
-            self.send('enter', {'recipe': snapshot['active']})
+            return self.send('quiet', urgent=True)
+        if snapshot.get('resume_offer'):
+            return self.send('resume')
+        return self.send('enter', {'recipe': snapshot['active']})
 
     def leave(self):
         name = (self.snapshot().get('active') or {}).get('name', 'the room')

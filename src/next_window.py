@@ -10,6 +10,7 @@ import json
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 import gi
@@ -20,7 +21,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 import listening_hub as hub
 import session_client
 import next_model as model
-from next_actions import RoomActions
+from next_actions import RoomActions, Ticket
 from next_mini import MiniPlayer, MiniWindow, install_mini_css
 from next_mix import MixSheet
 from next_rooms import RoomsPage
@@ -34,10 +35,12 @@ BREAKPOINT = 1000
 MINI_WIDTH = 560  # below this the mini layout replaces the window
 FULL_SIZE = (1000, 720)
 START_GRACE_S = 8  # how long a start command may take before Now is abandoned
+MUSIC_STARTS = ('music', 'online', 'link', 'station.start', 'station.replay')  # starts that replace a room's music
 SHORTCUTS = (('Space', 'Pause or play the room'), ('Ctrl+1', 'Rooms'), ('Ctrl+2', 'Listen'), ('Ctrl+3', 'Now'),
              ('Ctrl+F', 'Search Listen'), ('Ctrl+L', 'Add a link'), ('Ctrl+V', 'Add a link from the clipboard, outside text fields'),
              ('Ctrl+M', 'Mini player'), ('Ctrl+,', 'Preferences'),
-             ('Esc', 'Close Mix or a dialog, then go back to browsing'), ('Up / Down', 'Room volume, in Now and the mini player'),
+             ('Esc', 'Close Mix or a dialog, then go back to where you were'),
+             ('Up / Down', 'Room volume, in Now and the mini player'),
              ('Ctrl+?', 'Keyboard shortcuts'))
 
 
@@ -71,7 +74,15 @@ class NextWindow(Adw.ApplicationWindow):
         self.want_since = 0.
         self.pending = None        # a start in flight: {'name', 'art', 'state', 'done', 'since', ...}
         self.pending_waiters = []  # called when a pending start ends (controls re-enable themselves)
-        self._watch = None
+        self.now_origin = 'rooms'      # where Back and Esc in Now return to: 'rooms' or 'listen'
+        self.listen_origin = None      # where Esc in Listen returns to: 'now', 'rooms' or None (stay)
+        self.section_errors = {}       # surface -> the last exception its render raised
+        self.offline = False           # the room service did not answer the last poll
+        self.offline_error = ''
+        self.config_generation = None  # library connections and favourites, as the controller last saw them
+        self.browse_narrow = False     # Browse rooms was chosen in the narrow (mini) layout
+        self.listen_first = False      # the active room began with Tune in, not with a room
+        self.toast_margin = None
         self.room_key = self.cards_key = self.sources_key = None
         self.volume_timer = self.idle_timer = None
         self.selected_room = self.surface = None
@@ -100,7 +111,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.toolbar = Adw.ToolbarView()
         self.toolbar.set_top_bar_style(Adw.ToolbarStyle.FLAT)
         self.header = Adw.HeaderBar()
-        self.back = icon_button('go-previous-symbolic', 'Back to rooms', self.show_rooms, ['header-pill'])
+        self.back = icon_button('go-previous-symbolic', 'Back to rooms', self.go_back, ['header-pill'])
         self.header.pack_start(self.back)
         self.browse = Adw.ViewStack()
         self.browse.add_titled_with_icon(self.build_rooms(), 'rooms', 'Rooms', 'view-grid-symbolic')
@@ -123,6 +134,8 @@ class NextWindow(Adw.ApplicationWindow):
         for widget in (self.menu_button, self.timer_button, self.output_button, self.timer_chip):
             self.header.pack_end(widget)
         self.toolbar.add_top_bar(self.header)
+        self.toolbar.add_top_bar(self.build_offline_banner())
+        self.toolbar.add_top_bar(self.build_section_error())
         self.pages = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=250,
                                hhomogeneous=False, vhomogeneous=False)  # the mini layout must be able to be narrower than Rooms
         self.pages.add_named(Gtk.Spinner(spinning=True, halign=Gtk.Align.CENTER, valign=Gtk.Align.CENTER), 'loading')
@@ -140,6 +153,9 @@ class NextWindow(Adw.ApplicationWindow):
         self.connect('notify::mini-layout', lambda *_: self.apply_layout())
         self.toolbar.set_content(self.pages)
         self.toasts.set_child(self.toolbar)
+        self.toast_provider = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.toast_provider,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
         self.set_content(self.toasts)
         self.build_menu()
         self.show_page('loading')
@@ -158,6 +174,83 @@ class NextWindow(Adw.ApplicationWindow):
         box.append(menu_item('Keyboard shortcuts', self.shortcuts_dialog, self.menu_popover))
         box.append(menu_item('About', self.about_dialog, self.menu_popover))
         self.menu_popover.set_child(box)
+
+    @staticmethod
+    def details_expander():
+        """A collapsed "Details" holding the raw cause; the headline stays a plain sentence."""
+        text = label('', ['banner-detail'], wrap=True)
+        text.set_selectable(True)
+        text.set_xalign(0)
+        expander = Gtk.Expander(label='Details', child=text, visible=False)
+        expander.add_css_class('error-details')
+        expander.text = text
+        return expander
+
+    @staticmethod
+    def show_details(expander, raw):
+        expander.text.set_text(raw or '')
+        expander.set_visible(bool(raw))
+        if not raw:
+            expander.set_expanded(False)
+
+    def build_offline_banner(self):
+        """Persistent while the room service does not answer: says so, and offers Start again."""
+        self.offline_bar = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN, reveal_child=False)
+        box = Gtk.Box(spacing=12, margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
+        box.add_css_class('offline-banner')
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True, valign=Gtk.Align.CENTER)
+        self.offline_title = label('The room service isn’t running. Nothing can play until it is back.',
+                                   ['banner-title'], wrap=True)
+        self.offline_details = self.details_expander()
+        text.append(self.offline_title)
+        text.append(self.offline_details)
+        box.append(text)
+        self.offline_start = Gtk.Button(label='Start again', valign=Gtk.Align.CENTER)
+        self.offline_start.add_css_class('suggested-action')
+        self.offline_start.connect('clicked', lambda *_: self.start_service())
+        box.append(self.offline_start)
+        self.offline_bar.set_child(box)
+        return self.offline_bar
+
+    def build_section_error(self):
+        """One inline line when a part of the window failed to draw; the rest keeps working."""
+        self.section_bar = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN, reveal_child=False)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_start=12, margin_end=12,
+                      margin_top=4, margin_bottom=4)
+        box.add_css_class('offline-banner')
+        self.section_title = label('', ['banner-title'], wrap=True)
+        self.section_details = self.details_expander()
+        box.append(self.section_title)
+        box.append(self.section_details)
+        self.section_bar.set_child(box)
+        return self.section_bar
+
+    SECTION_WORDS = {'rooms': 'Rooms', 'listen': 'Listen', 'now': 'Now', 'mini': 'The mini player', 'pending': 'Now'}
+
+    def guard(self, section, render, *args):
+        """Run one surface's render; if it raises, log it and say so inline instead of blanking the window."""
+        try:
+            result = render(*args)
+        except Exception as error:
+            first = section not in self.section_errors
+            self.section_errors[section] = error
+            if first:
+                print('listening-room: drawing %s failed' % section, file=sys.stderr)
+                traceback.print_exc()
+            self.render_section_errors()
+            return None
+        if self.section_errors.pop(section, None) is not None:
+            self.render_section_errors()
+        return result
+
+    def render_section_errors(self):
+        errors = self.section_errors
+        self.section_bar.set_reveal_child(bool(errors))
+        if errors:
+            names = sorted({self.SECTION_WORDS.get(name, name.title()) for name in errors})
+            self.section_title.set_text('%s couldn’t be drawn. The rest of the window still works.' % ' and '.join(names))
+            self.show_details(self.section_details,
+                              '\n'.join('%s: %s: %s' % (name, type(error).__name__, error) for name, error in errors.items()))
 
     # ---- Rooms ------------------------------------------------------------
 
@@ -216,15 +309,27 @@ class NextWindow(Adw.ApplicationWindow):
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24, valign=Gtk.Align.END,
                          margin_start=40, margin_end=40, margin_bottom=36)
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        chips = Gtk.Box(spacing=8, halign=Gtk.Align.START)
         self.chip = label('', ['source-chip'])
         self.chip.set_halign(Gtk.Align.START)
+        chips.append(self.chip)
+        # Tune in replaced this room's music: say so; Save as my room… is in the Mix and the toast.
+        self.changed_chip = label('Changed', ['room-changed'])
+        self.changed_chip.set_visible(False)
+        self.changed_chip.set_tooltip_text('The music differs from the saved room. Save it from the Mix.')
+        chips.append(self.changed_chip)
         self.room_name = label('', ['room-name'], wrap=True)
         line = Gtk.Box(spacing=8)
         self.now_line = label('', ['now-line'], ellipsize=True)
         self.now_detail = label('', ['now-detail'], ellipsize=True)
         line.append(self.now_line)
         line.append(self.now_detail)
-        for widget in (self.chip, self.room_name, line):
+        # A room started from Listen has no scene of its own: offer one, never a black room.
+        self.choose_scene = Gtk.Button(label='Choose a scene', halign=Gtk.Align.START, visible=False)
+        self.choose_scene.add_css_class('glass')
+        self.choose_scene.add_css_class('pill')
+        self.choose_scene.connect('clicked', lambda *_: self.choose_other('picture'))
+        for widget in (chips, self.room_name, line, self.choose_scene):
             text.append(widget)
         column.append(text)
         self.controls = Gtk.CenterBox()
@@ -288,8 +393,10 @@ class NextWindow(Adw.ApplicationWindow):
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.banner_title = label('', ['banner-title'], wrap=True)
         self.banner_detail = label('', ['banner-detail'], wrap=True)
+        self.banner_details = self.details_expander()
         text.append(self.banner_title)
         text.append(self.banner_detail)
+        text.append(self.banner_details)
         banner.append(text)
         self.banner_retry = Gtk.Button(label='Try again', valign=Gtk.Align.CENTER)
         self.banner_retry.connect('clicked', lambda *_: self.try_again())
@@ -311,8 +418,10 @@ class NextWindow(Adw.ApplicationWindow):
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         self.pending_title = label('', ['banner-title'], wrap=True)
         self.pending_detail = label('', ['banner-detail'], wrap=True)
+        self.pending_details = self.details_expander()
         text.append(self.pending_title)
         text.append(self.pending_detail)
+        text.append(self.pending_details)
         card.append(text)
         self.pending_retry = Gtk.Button(label='Try again', valign=Gtk.Align.CENTER)
         self.pending_retry.connect('clicked', lambda *_: self.retry_pending())
@@ -325,44 +434,90 @@ class NextWindow(Adw.ApplicationWindow):
     # ---- a start in flight ---------------------------------------------------------------
 
     def start(self, action, args, name, art=None, done=None):
-        """Begin something that starts sound: show Now at once as "Connecting to name…" and ignore repeats.
+        """Begin something that starts sound: show Now at once as "Connecting to name…".
 
-        Nothing else changes until the controller answers: on failure the card says why, with the
-        previous state intact; on success the card clears when the room is up."""
-        if self.pending and self.pending['state'] == 'connecting':
+        Returns the command's Ticket, or False when it was not sent. A repeat of the start in flight
+        is ignored; a different one is refused with a toast that says why. Nothing else changes until
+        the controller answers: on failure the card says why, with the previous state intact; on
+        success the card clears when the room is up, even when the answer came after the grace time."""
+        pending = self.pending
+        if pending and (pending['state'] == 'connecting' or pending['inflight']):
+            if (action, args) != (pending['action'], pending['args']):
+                self.toast('Still connecting to %s. Choose again once it has started, or press Back.' % pending['name'],
+                           urgent=True)
             return False
-        self.pending = {'name': name, 'art': art, 'state': 'connecting', 'done': False, 'since': time.monotonic(),
-                        'action': action, 'args': args, 'origin': (self.page_name, self.browse.get_visible_child_name())}
+        origin = self.browse.get_visible_child_name() if self.page_name in ('browse', 'loading') else 'now'
+        pending = self.pending = {'name': name, 'art': art, 'state': 'connecting', 'done': False, 'inflight': True,
+                                  'since': time.monotonic(), 'action': action, 'args': args,
+                                  'origin': (self.page_name, self.browse.get_visible_child_name())}
+        if origin in ('rooms', 'listen'):
+            self.now_origin = origin
         self.want_now = False
         self.render_pending()
         self.show_page('now')
-        self.command(action, args, done=lambda result: (self.pending_done(result), done(result) if done else None),
-                     failed=self.pending_failed)
-        GLib.timeout_add(int(START_GRACE_S * 1000) + 300, self.pending_expired)
-        return True
+        room = self.snapshot.get('active')
+        if action in MUSIC_STARTS and not room:
+            self.listen_first = True     # Tune in with no room: Now offers Choose a scene
+        elif action in ('enter', 'return'):
+            self.listen_first = False
+        if room and action in MUSIC_STARTS and not model.ad_hoc(self.snapshot, self.catalogue):
+            done = self.then_mark_changed(room, name, done)
+        ticket = self.command(action, args, done=lambda result: (self.pending_done(pending), done(result) if done else None),
+                              failed=lambda error: self.pending_failed(error, pending))
+        GLib.timeout_add(int(START_GRACE_S * 1000) + 300, lambda: self.pending_expired(pending))
+        return ticket
 
-    def pending_done(self, _result):
-        if self.pending and self.pending['state'] == 'connecting':
-            self.pending['done'] = True
+    def then_mark_changed(self, room, name, done=None):
+        """After Tune in replaced a saved room's music (and it really did, with no new music error):
+        say the room changed, with Save as my room."""
+        error_before = (self.snapshot.get('errors') or {}).get('music')
 
-    def pending_failed(self, error):
-        if not self.pending or self.pending['state'] != 'connecting':
+        def changed(snapshot):
+            if snapshot is None or (snapshot.get('active') or {}).get('id') != room.get('id'):
+                return
+            error = (snapshot.get('errors') or {}).get('music')
+            if (error and error != error_before) or not model.room_changed(snapshot, self.catalogue):
+                return
+            self.toast('Changed: %s now plays in %s' % (name, room.get('name') or 'your room'),
+                       'Save as my room', self.save_dialog)
+
+        def finished(result):
+            if done:
+                done(result)
+            self.when_pending_ends(lambda: self.inspect_then(changed))   # once the new music is up
+        return finished
+
+    def pending_done(self, pending):
+        if pending is not self.pending:
             return
-        self.pending.update(state='failed', error=model.plain_error(error))
+        pending.update(inflight=False, done=True)
+        if pending['state'] == 'failed' and pending.get('timed_out'):
+            pending['state'] = 'connecting'   # a slow start that did succeed: the next snapshot clears the card
+            self.render_pending()
+
+    def pending_failed(self, error, pending=None):
+        pending = self.pending if pending is None else pending
+        if pending is not self.pending or not pending:
+            return
+        pending.update(inflight=False, state='failed', error=model.plain_error(error), details=model.error_details(error),
+                       timed_out=False)
         self.render_pending()
 
-    def pending_expired(self):
-        pending = self.pending
-        if pending and pending['state'] == 'connecting' and time.monotonic() - pending['since'] >= START_GRACE_S:
+    def pending_expired(self, pending=None):
+        pending = self.pending if pending is None else pending
+        if pending is self.pending and pending and pending['state'] == 'connecting' \
+                and time.monotonic() - pending['since'] >= START_GRACE_S:
             if pending['done']:
                 self.clear_pending()      # the controller said yes; do not call a slow start a failure
             else:
-                self.pending_failed('It took too long to start.')
+                pending.update(state='failed', timed_out=True, details='',
+                               error='It is taking longer than usual. If it starts after all, this card clears itself.')
+                self.render_pending()
         return False
 
     def retry_pending(self):
         pending = self.pending
-        if pending and pending['state'] == 'failed':
+        if pending and pending['state'] == 'failed' and not pending['inflight']:
             self.pending = None
             self.start(pending['action'], pending['args'], pending['name'], pending['art'])
 
@@ -380,6 +535,8 @@ class NextWindow(Adw.ApplicationWindow):
     def clear_pending(self):
         self.pending = None
         self.render_pending()
+        if self.current_page() in ('now', 'mini'):
+            GLib.idle_add(lambda: self.focus_play() and False)
         waiters, self.pending_waiters = self.pending_waiters, []
         for waiter in waiters:
             waiter()
@@ -387,21 +544,29 @@ class NextWindow(Adw.ApplicationWindow):
     def render_pending(self):
         pending = self.pending
         card = self.pending_card
+        connecting = bool(pending and pending['state'] == 'connecting')
+        failed = bool(pending and pending['state'] == 'failed')
         card.set_visible(bool(pending))
-        self.pending_spinner.set_spinning(bool(pending and pending['state'] == 'connecting'))
-        self.pending_spinner.set_visible(bool(pending and pending['state'] == 'connecting'))
-        self.pending_retry.set_visible(bool(pending and pending['state'] == 'failed'))
-        self.pending_back.set_visible(bool(pending and pending['state'] == 'failed'))
+        self.pending_spinner.set_spinning(connecting)
+        self.pending_spinner.set_visible(connecting)
+        self.pending_retry.set_visible(failed)
+        self.pending_back.set_visible(failed)
+        # Try again waits for the first answer: a start the controller is still working on is never sent twice.
+        self.pending_retry.set_sensitive(failed and not pending['inflight'])
+        self.pending_retry.set_tooltip_text('Still waiting for an answer' if failed and pending['inflight'] else None)
+        self.show_details(self.pending_details, pending.get('details', '') if failed else '')
         if not pending:
-            self.play.set_sensitive(True)
+            self.play.set_sensitive(not self.offline)
             return
-        if pending['state'] == 'connecting':
+        if connecting:
             self.pending_title.set_text('Connecting to ' + pending['name'] + '…')
             self.pending_detail.set_text('Nothing plays until it is ready.')
             self.play.set_child(Gtk.Spinner(spinning=True))
             self.play.set_sensitive(False)
             self.room_name.set_text(pending['name'])
             self.chip.set_text('Connecting')
+            self.changed_chip.set_visible(False)
+            self.choose_scene.set_visible(False)
             self.now_line.set_text('')
             self.now_detail.set_visible(False)
             if pending.get('art'):
@@ -410,7 +575,7 @@ class NextWindow(Adw.ApplicationWindow):
             previous = (self.snapshot.get('active') or {}).get('name')
             self.pending_title.set_text('Couldn’t start ' + pending['name'])
             self.pending_detail.set_text(pending.get('error', '') + (' ' + previous + ' is still there.' if previous else ''))
-            self.play.set_sensitive(True)
+            self.play.set_sensitive(not self.offline)
             self.play.set_icon_name('media-playback-start-symbolic')
 
     def when_pending_ends(self, waiter):
@@ -418,15 +583,6 @@ class NextWindow(Adw.ApplicationWindow):
             self.pending_waiters.append(waiter)
         else:
             waiter()
-
-    def watch_next_command(self, finish):
-        """The next command sent runs ``finish()`` when it ends, either way (a pressed control re-enables itself)."""
-        self._watch = finish
-
-    def unwatch_command(self):
-        """True when no command picked the watch up, so the pressed control can re-enable at once."""
-        watch, self._watch = self._watch, None
-        return watch
 
     def build_mix(self):
         self.mix = MixSheet(self.layer_command, self.choose_other, lambda: self.sheet.set_open(False), self.save_dialog,
@@ -437,8 +593,12 @@ class NextWindow(Adw.ApplicationWindow):
         info = model.now_model(snapshot)
         if info is None:
             return
-        self.chip.set_text(info['chip'])
-        self.room_name.set_text(info['name'])
+        ad_hoc = model.ad_hoc(snapshot, self.catalogue)
+        self.chip.set_text('Not connected' if self.offline else info['chip'])
+        # A room started from Listen is named after what plays, never "untitled".
+        self.room_name.set_text(model.room_title(snapshot) if ad_hoc else info['name'])
+        self.changed_chip.set_visible(model.room_changed(snapshot, self.catalogue))
+        self.choose_scene.set_visible((ad_hoc or self.listen_first) and bool(self.layer_options('picture')))
         self.now_line.set_text(info['line'])
         self.now_detail.set_text('· ' + info['detail'] if info['detail'] else '')
         self.now_detail.set_visible(bool(info['detail']))
@@ -459,6 +619,7 @@ class NextWindow(Adw.ApplicationWindow):
             self.banner_layer = failed['layer']
             self.banner_title.set_text(failed['title'])
             self.banner_detail.set_text(failed['detail'])
+            self.show_details(self.banner_details, failed['error'])
         self.apply_accent(info['accent'])
         shown = (failed and failed['layer'], tuple(item['kind'] for item in info['timers']), info['state'])
         if shown != getattr(self, 'shown', None):
@@ -466,6 +627,8 @@ class NextWindow(Adw.ApplicationWindow):
             self.kick_idle()  # a change worth seeing brings the controls back
         motion = model.motion_allowed(snapshot, self.system_animations)
         assets = model.scene_assets(snapshot.get('active'), self.presets)
+        if ad_hoc and not (assets.get('still') or assets.get('loop')):
+            assets = model.fallback_scene(snapshot, self.presets, self.catalogue)
         self.scene.show_room(assets, motion)
         self.mix.update(snapshot)
         self.render_timers(info['timers'])
@@ -480,15 +643,24 @@ class NextWindow(Adw.ApplicationWindow):
     # ---- navigation ---------------------------------------------------------
 
     def show_page(self, name):
-        """Show a page; below 560 px wide the mini layout stands in for every page but loading."""
+        """Show a page; below 560 px wide the mini layout stands in for every page but loading,
+        unless Browse rooms was chosen there. Entering Now focuses its play control."""
+        previous = self.page_name
+        if name == 'now' and previous == 'browse':
+            self.now_origin = 'listen' if self.browse.get_visible_child_name() == 'listen' else 'rooms'
+        if name == 'now':
+            self.browse_narrow = False
         self.page_name = name
-        mini = self.mini_layout and name != 'loading'
+        mini = self.mini_layout and name != 'loading' and not (name == 'browse' and self.browse_narrow)
         shown = 'mini' if mini else name
         self.pages.set_visible_child_name(shown)
         in_now = shown == 'now'
         art = shown in ('now', 'mini')
         self.toolbar.set_extend_content_to_top_edge(art)
         self.back.set_visible(in_now)
+        name_it(self.back, 'Back to Listen' if self.now_origin == 'listen' else 'Back to rooms')
+        if name == 'now' and previous != 'now':
+            GLib.idle_add(lambda: self.focus_play() and False)
         self.switcher.set_visible(shown == 'browse')
         (self.add_css_class if art else self.remove_css_class)('in-now')
         (self.add_css_class if mini else self.remove_css_class)('in-mini')
@@ -509,6 +681,10 @@ class NextWindow(Adw.ApplicationWindow):
         self.show_page('browse')
 
     def show_listen(self):
+        if self.page_name == 'now':
+            self.listen_origin = 'now'
+        elif self.page_name == 'browse' and self.browse.get_visible_child_name() == 'rooms':
+            self.listen_origin = 'rooms'
         self.browse.set_visible_child_name('listen')
         self.show_page('browse')
 
@@ -517,7 +693,45 @@ class NextWindow(Adw.ApplicationWindow):
             self.toast('You are not in a room yet')
             return
         self.show_page('now')
-        (self.mini_player.play if self.mini_layout else self.play).grab_focus()
+        self.focus_play()
+
+    def browse_rooms(self, player=None):
+        """Browse rooms from a mini player: Rooms itself, even in the narrow layout; from the separate
+        mini window, the full window on Rooms."""
+        if player is not None and player is not self.mini_player:
+            self.expand()
+        self.browse_narrow = True
+        self.show_rooms()
+
+    def go_back(self):
+        """Back (and Esc) in Now: to where you came from, Rooms or Listen."""
+        if self.now_origin == 'listen':
+            self.listen_origin = None
+            self.browse.set_visible_child_name('listen')
+            self.show_page('browse')
+        else:
+            self.show_rooms()
+
+    def listen_back(self):
+        """Esc in Listen with nothing left to clear: back to Now or Rooms, wherever Listen was opened from."""
+        origin, self.listen_origin = self.listen_origin, None
+        if origin == 'now' and self.snapshot.get('active'):
+            self.show_now()
+            return True
+        if origin == 'rooms':
+            self.show_rooms()
+            return True
+        return False
+
+    def focus_play(self):
+        """Keyboard focus on the room's play control (Space then pauses it); False when it cannot take it."""
+        if self.closed or self.current_page() not in ('now', 'mini'):
+            return False
+        target = self.mini_player.play if self.current_page() == 'mini' else self.play
+        if target.get_mapped() and target.get_sensitive():
+            return target.grab_focus()
+        self.set_focus(None)   # never leave focus on a control that has gone, a toast or Back
+        return False
 
     def current_page(self):
         return self.pages.get_visible_child_name()
@@ -546,10 +760,13 @@ class NextWindow(Adw.ApplicationWindow):
     # ---- commands -------------------------------------------------------------
 
     def command(self, action, args=None, done=None, urgent=False, quiet=False, failed=None):
-        """Send a controller command off the GTK thread; ``failed(message)`` replaces the default toast."""
+        """Send a controller command off the GTK thread; ``failed(message)`` replaces the default toast.
+
+        Returns a Ticket: a control that started the command re-enables itself from ``add_finish``."""
         if self.closed:
-            return
-        finish, self._watch = self._watch, None
+            return None
+        ticket = Ticket()
+        finish = ticket.finish
         pool = self.urgent if urgent else self.executor
         future = pool.submit(session_client.request, action, args or {}, 5)
 
@@ -561,6 +778,7 @@ class NextWindow(Adw.ApplicationWindow):
                 return
             GLib.idle_add(self.succeeded, result, done, finish)
         future.add_done_callback(finished)
+        return ticket
 
     def succeeded(self, result, done, finish=None):
         if not self.closed:
@@ -578,7 +796,7 @@ class NextWindow(Adw.ApplicationWindow):
         if not self.closed and handler:
             handler(error)
         elif not self.closed and not quiet:
-            self.toast(model.plain_error(error))
+            self.error_toast(error)
         return False
 
     def layer_command(self, action, args):
@@ -588,10 +806,10 @@ class NextWindow(Adw.ApplicationWindow):
         self.command(action, args, **kwargs)
 
     def return_room(self):
-        self.start('return', {}, 'your room')
+        return self.start('return', {}, 'your room')
 
     def toggle_room(self):
-        self.actions.toggle()
+        return self.actions.toggle()
 
     def next_track(self):
         self.command('layer', {'layer': 'music', 'action': 'next'})
@@ -678,17 +896,33 @@ class NextWindow(Adw.ApplicationWindow):
                 if message:
                     GLib.idle_add(lambda: self.toast(message) or False)
             except Exception as error:
-                GLib.idle_add(lambda: self.toast(str(error)) or False)
+                GLib.idle_add(lambda error=error: self.error_toast(error) or False)
         future.add_done_callback(done)
 
     # ---- dialogs and toasts -------------------------------------------------------
 
-    def toast(self, title, undo_label=None, undo=None):
+    def toast(self, title, undo_label=None, undo=None, urgent=False):
+        """A toast; ``urgent`` ones (refusals, failures) show at once instead of queueing behind another."""
         toast = Adw.Toast(title=title, timeout=5)
+        if urgent:
+            toast.set_priority(Adw.ToastPriority.HIGH)
         if undo_label and undo:
             toast.set_button_label(undo_label)
             toast.connect('button-clicked', lambda *_: undo())
         self.toasts.add_toast(toast)
+        return toast
+
+    def error_toast(self, error):
+        """A failure in plain words, at once; the raw cause only behind Details."""
+        raw = model.error_details(error)
+        self.toast(model.plain_error(error), 'Details' if raw else None,
+                   (lambda: self.details_dialog(model.plain_error(error), raw)) if raw else None, urgent=True)
+
+    def details_dialog(self, heading, raw):
+        dialog = Adw.AlertDialog(heading=heading, body=raw)
+        dialog.set_body_use_markup(False)
+        dialog.add_response('close', 'Close')
+        dialog.present(self)
 
     def save_dialog(self):
         self.rooms.save_dialog()
@@ -780,6 +1014,10 @@ class NextWindow(Adw.ApplicationWindow):
             if accel:
                 self.get_application().set_accels_for_action(
                     'win.' + name, [accel, '<Control><Shift>slash'] if name == 'shortcuts' else [accel])
+        captured = Gtk.EventControllerKey()
+        captured.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        captured.connect('key-pressed', self.key_captured)
+        self.add_controller(captured)
         keys = Gtk.EventControllerKey()
         keys.connect('key-pressed', self.key_pressed)
         self.add_controller(keys)
@@ -788,22 +1026,46 @@ class NextWindow(Adw.ApplicationWindow):
         self.kick_idle()
         if state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK):
             return False
-        now = self.current_page() in ('now', 'mini')
         if keyval == Gdk.KEY_Escape:
             if self.sheet.get_open():
                 self.sheet.set_open(False)
                 return True
             if self.current_page() == 'now':
-                self.show_rooms()
+                self.go_back()
                 return True
+            if self.current_page() == 'browse' and self.browse.get_visible_child_name() == 'listen':
+                return self.listen_back()
             return self.rooms.close_preview()
-        if not now or self.sheet.get_open() or not self.snapshot.get('active'):
+        return False
+
+    def key_captured(self, _controller, keyval, _code, state):
+        """Space plays or pauses and Up/Down set the room volume, before any focused button sees them.
+
+        In Now and the mini layout always; at Rooms only while nothing or the hero button has focus
+        (as at launch). Never while a text entry, a slider, a popover or a dialog has focus."""
+        if keyval not in (Gdk.KEY_space, Gdk.KEY_Up, Gdk.KEY_Down):
             return False
-        if keyval == Gdk.KEY_space:
-            self.toggle_room()
+        if state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK):
+            return False
+        if not self.snapshot.get('active') or self.offline or self.get_visible_dialog() is not None:
+            return False
+        focus = self.get_focus()
+        node = focus
+        while node is not None:
+            if isinstance(node, (Gtk.Editable, Gtk.Range, Gtk.Popover, Gtk.DropDown)):
+                return False
+            node = node.get_parent()
+        page = self.current_page()
+        if page in ('now', 'mini') and not self.sheet.get_open():
+            self.kick_idle()
+            if keyval == Gdk.KEY_space:
+                if self.play.get_sensitive() or page == 'mini':
+                    self.toggle_room()
+                return True
+            (self.mini_player if page == 'mini' else self).nudge_volume(5 if keyval == Gdk.KEY_Up else -5)
             return True
-        if keyval in (Gdk.KEY_Up, Gdk.KEY_Down):
-            (self.mini_player if self.mini_layout else self).nudge_volume(5 if keyval == Gdk.KEY_Up else -5)
+        if page == 'browse' and keyval == Gdk.KEY_space and (focus is None or focus is self.hero_button):
+            self.toggle_room()
             return True
         return False
 
@@ -837,10 +1099,37 @@ class NextWindow(Adw.ApplicationWindow):
     # ---- polling and lifecycle -----------------------------------------------------------------
 
     def adapt(self, widget, _clock):
-        compact = widget.get_width() < BREAKPOINT
+        width = widget.get_width()
+        compact = width < BREAKPOINT
         if compact != widget.has_css_class('compact'):
             (widget.add_css_class if compact else widget.remove_css_class)('compact')
+        self.fit_controls(width)
+        self.place_toasts(widget.get_height())
         return GLib.SOURCE_CONTINUE
+
+    def fit_controls(self, width):
+        """Now's control row at medium widths: drop the Mix summary, then shorten the volume slider, so the
+        play button never overlaps the volume icon."""
+        tier = 'wide' if width >= 900 else 'medium' if width >= 720 else 'narrow'
+        if tier == getattr(self, 'controls_tier', None):
+            return
+        self.controls_tier = tier
+        self.mix_summary.set_visible(tier == 'wide')
+        self.volume.set_size_request({'wide': 170, 'medium': 120, 'narrow': 84}[tier], -1)
+
+    def place_toasts(self, height):
+        """Toasts sit where they cover no control: at the top in Now and the mini layout, above Listen's
+        now-playing bar, and at the bottom elsewhere."""
+        page = self.current_page()
+        if page in ('now', 'mini'):
+            margin = max(12, height - 150)
+        elif page == 'browse' and self.browse.get_visible_child_name() == 'listen' and self.listen.bar.get_visible():
+            margin = self.listen.bar.get_height() + 12
+        else:
+            margin = 12
+        if margin != self.toast_margin:
+            self.toast_margin = margin
+            self.toast_provider.load_from_string('.next toast { margin-bottom: %dpx; }' % margin)
 
     def load_static(self):
         import ambience
@@ -900,14 +1189,64 @@ class NextWindow(Adw.ApplicationWindow):
         if error:
             if self.first:
                 self.first = False
-                self.show_page('browse')
-            if not getattr(self, 'offline', False):
-                self.toast('Room controller unavailable: ' + error)
-            self.offline = True
+                self.show_rooms()
+            self.set_offline(error)
             return False
-        self.offline = False
+        if self.offline:
+            self.set_offline(None)
         self.render(snapshot)
         return False
+
+    def set_offline(self, error):
+        """While the room service does not answer: a persistent banner, and nothing that looks live."""
+        offline = error is not None
+        self.offline, self.offline_error = offline, error or ''
+        self.offline_bar.set_reveal_child(offline)
+        self.show_details(self.offline_details, model.error_details(error) or (error or ''))
+        (self.add_css_class if offline else self.remove_css_class)('offline')
+        for widget in (self.play, self.skip, self.less, self.more, self.volume, self.mix_button,
+                       self.timer_button, self.mini_player.play, self.mini_player.volume, self.listen.bar_play,
+                       self.listen.bar_volume):
+            widget.set_sensitive(not offline and (widget is not self.play or not self.pending))
+        # The banner sits over Now's top edge: stale layer news goes, and the start card moves below it.
+        self.pending_card.set_margin_top(140 if offline else 70)
+        if offline:
+            self.banner.set_visible(False)
+            self.marker.set_visible(False)
+            self.chip.set_text('Not connected')
+            self.now_line.set_text('The room service isn’t running')
+            self.now_detail.set_visible(False)
+        elif self.snapshot.get('active') and not self.pending:
+            self.render_now(self.snapshot)
+
+    def start_service(self):
+        """Start again: the existing ensure_service path, which starts idle infrastructure and never playback."""
+        button = self.offline_start
+        if not button.get_sensitive():
+            return
+        button.set_sensitive(False)
+        button.set_label('Starting…')
+        future = self.executor.submit(session_client.ensure_service)
+
+        def finished(f):
+            try:
+                f.result()
+                error = None
+            except Exception as failure:
+                error = failure
+            GLib.idle_add(lambda: self.service_started(error) or False)
+        future.add_done_callback(finished)
+
+    def service_started(self, error):
+        if self.closed:
+            return
+        self.offline_start.set_sensitive(True)
+        self.offline_start.set_label('Start again')
+        if error is not None:
+            self.show_details(self.offline_details, str(error))
+            self.toast('The room service still isn’t running.', urgent=True)
+            return
+        self.poll()
 
     def render(self, snapshot):
         self.snapshot = snapshot
@@ -921,14 +1260,27 @@ class NextWindow(Adw.ApplicationWindow):
         gtk_settings = Gtk.Settings.get_default()
         if bool(gtk_settings.get_property('gtk-enable-animations')) != animations:
             gtk_settings.set_property('gtk-enable-animations', animations)
-        self.rooms.render(snapshot)
-        self.listen.update(snapshot)
+        generation = snapshot.get('config_generation')
+        if generation is not None and generation != self.config_generation:
+            # A library was connected or a radio favourite saved: reload them (off the GTK thread).
+            known, self.config_generation = self.config_generation, generation
+            if known is not None:
+                self.load_static()
+                self.listen.config_changed()
+        self.guard('rooms', self.rooms.render, snapshot)
+        self.guard('listen', self.listen.update, snapshot)
         active = snapshot.get('active')
         for item in self.menu_room_items:
             item.set_visible(bool(active))
+        self.timer_button.set_sensitive(bool(active) and not self.offline)
+        self.timer_button.set_tooltip_text('Timer' if active else 'Timer: enter a room first')
         if self.first:
             self.first = False
-            self.show_rooms() if model.launch_view(snapshot) == 'rooms' else self.show_page('now')
+            if model.launch_view(snapshot) == 'rooms':
+                self.show_rooms()
+                GLib.idle_add(lambda: (self.hero_button.get_mapped() and self.hero_button.grab_focus()) and False)
+            else:
+                self.show_page('now')
         elif self.want_now and active and not snapshot.get('transition'):
             self.want_now = False
             self.show_page('now')
@@ -936,22 +1288,24 @@ class NextWindow(Adw.ApplicationWindow):
             if time.monotonic() - self.want_since > START_GRACE_S:
                 self.want_now = False
                 if (snapshot.get('errors') or {}).get('music'):
-                    self.toast(str(snapshot['errors']['music']))
-        self.mini_player.update(snapshot)
+                    self.error_toast(snapshot['errors']['music'])
+        self.guard('mini', self.mini_player.update, snapshot)
         if self.mini_window is not None:
-            self.mini_window.player.update(snapshot)
+            self.guard('mini', self.mini_window.player.update, snapshot)
         pending = self.pending
         if pending and pending['state'] == 'connecting' and pending['done'] and not snapshot.get('transition'):
             self.clear_pending()
             pending = None
         if pending:
-            self.render_pending() if pending['state'] == 'failed' else None
+            self.guard('pending', self.render_pending) if pending['state'] == 'failed' else None
             if active and pending['state'] == 'failed':
-                self.render_now(snapshot)
+                self.guard('now', self.render_now, snapshot)
         elif active:
-            self.render_now(snapshot)
+            self.guard('now', self.render_now, snapshot)
         elif self.current_page() == 'now':
             self.show_rooms()
+        if not active and not self.pending:
+            self.listen_first = False
         return False
 
     def watch_surface(self, *_):

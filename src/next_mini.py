@@ -16,7 +16,7 @@ gi.require_version('Adw', '1')
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 import next_model as model
-from next_actions import RoomActions
+from next_actions import RoomActions, Ticket, when_finished
 from next_widgets import FocalPicture, choose_renderer, show_texture, TimerPopover, accent_css, icon_button, install_css, label, name_it
 
 MINI_CSS = '''
@@ -103,6 +103,11 @@ class MiniPlayer(Gtk.Overlay):
         self.return_button.add_css_class('mini-return')
         self.return_button.connect('clicked', lambda *_: self.play_clicked())
         bottom.append(self.return_button)
+        # With nothing playing, Return is not the only way on: rooms can be browsed from here too.
+        self.browse_button = Gtk.Button(label='Browse rooms', visible=False)
+        self.browse_button.add_css_class('mini-glass')
+        self.browse_button.connect('clicked', lambda *_: host.browse_rooms(self))
+        bottom.append(self.browse_button)
         self.volume_box = Gtk.Box(spacing=10, hexpand=True)
         icon = Gtk.Image(icon_name='audio-volume-high-symbolic')
         icon.add_css_class('mini-volume-icon')
@@ -152,14 +157,9 @@ class MiniPlayer(Gtk.Overlay):
             self.return_button.set_sensitive(True)
             if self.play.get_icon_name() is None and icon:
                 self.play.set_icon_name(icon)
-        self.host.watch_next_command(restore)
         self.play.set_child(Gtk.Spinner(spinning=True))
-        if self.state == 'return':
-            self.host.return_room()
-        else:
-            self.host.actions.toggle()
-        if self.host.unwatch_command():
-            restore()
+        ticket = self.host.return_room() if self.state == 'return' else self.host.actions.toggle()
+        when_finished(ticket, restore)
 
     def volume_changed(self, scale):
         if self.updating:
@@ -216,6 +216,7 @@ class MiniPlayer(Gtk.Overlay):
                 self.return_button.set_tooltip_text(hero.get('button', 'Return'))
             self.play.set_visible(bool(info))
             self.return_button.set_visible(self.state == 'return')
+            self.browse_button.set_visible(not info)
             for widget in (self.volume_box, self.timer_button if not self.extras else self.pills):
                 widget.set_visible(bool(info))
             if not info:
@@ -333,17 +334,12 @@ class PopoverHost:
         if not self.closed:
             self.window.toast(title, undo_label, undo)
 
-    def watch_next_command(self, finish):
-        self._watch = finish
-
-    def unwatch_command(self):
-        watch, self._watch = getattr(self, '_watch', None), None
-        return watch
-
     def send(self, action, args=None, done=None, urgent=False, quiet=False):
+        """Send a command; returns its Ticket (None once closed)."""
         if self.closed:
-            return
-        finish, self._watch = getattr(self, '_watch', None), None
+            return None
+        ticket = Ticket()
+        finish = ticket.finish
         future = (self.urgent if urgent else self.executor).submit(self.request, action, args or {}, 5)
 
         def finished(f):
@@ -353,10 +349,11 @@ class PopoverHost:
                 if finish:
                     GLib.idle_add(lambda: finish() or False)
                 if not quiet:
-                    GLib.idle_add(lambda: self.toast(model.plain_error(error)) or False)
+                    GLib.idle_add(lambda error=error: self.toast(model.plain_error(error)) or False)
                 return
             GLib.idle_add(lambda: (finish() if finish else None, self.succeeded(result, done)) and False)
         future.add_done_callback(finished)
+        return ticket
 
     def succeeded(self, result, done):
         if not self.closed:
@@ -365,7 +362,11 @@ class PopoverHost:
             self.poll()
 
     def return_room(self):
-        self.send('return')
+        return self.send('return')
+
+    def browse_rooms(self, _player=None):
+        """Browse rooms from the popover: the room window, on Rooms."""
+        self.expand()
 
     def expand(self):
         arguments = ['--inside'] if self.snapshot.get('active') else []
@@ -397,7 +398,7 @@ class PopoverHost:
             return False
         if error:
             if not self.offline:
-                self.toast('Room controller unavailable: ' + error)
+                self.toast('The room service isn’t running. Open the room window to start it again.')
             self.offline = True
             return False
         self.offline = False

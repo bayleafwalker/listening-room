@@ -10,6 +10,7 @@ MUSIC, AMBIENCE, SCENE = 'Music', 'Ambience', 'Scene'
 # Controller layer names are an implementation detail; people see these words.
 LAYER_WORDS = {'music': MUSIC, 'atmosphere': AMBIENCE, 'picture': SCENE}
 PLACEMENTS = (('9', 'Workspace 9'), ('here', 'Here'), ('pin', 'On top'), ('pip', 'Small'))
+NO_HYPRLAND = 'Placement needs Hyprland. In this session the scene shows in this window.'
 DEFAULT_ACCENT = '#c79b68'
 LAYER_ORDER = ('music', 'atmosphere', 'picture')
 TIMER_WORDS = {'break': 'Break', 'wind_down': 'Wind down', 'dim': 'Dim the scene'}
@@ -211,6 +212,30 @@ def scene_assets(active, presets):
             'loop': preset.get('url') if preset.get('kind') == 'local' else None}
 
 
+def room_title(snapshot):
+    """What an ad-hoc room is called: the station or source that plays, then the controller's name."""
+    active = (snapshot or {}).get('active') or {}
+    music = active.get('music') or {}
+    station = music.get('station') if isinstance(music.get('station'), dict) else {}
+    layer = _layer(snapshot or {}, 'music')
+    return (station.get('name') or layer.get('station') or music.get('name') or layer.get('name')
+            or active.get('name') or 'Your listening room')
+
+
+def fallback_scene(snapshot, presets, catalogue=()):
+    """Art for a room with no scene of its own: the last room's scene, else the first room that has art."""
+    last = (snapshot or {}).get('last_session') or {}
+    assets = scene_assets(last, presets) if last else {}
+    if assets.get('still') or assets.get('loop'):
+        return dict(assets, loop=None)
+    for room in catalogue or ():
+        preset = next((item for item in presets if item.get('id') == room.get('view_id')), {})
+        still = preset.get('still_url') or room.get('poster_path')
+        if still:
+            return {'still': still, 'poster': room.get('poster_path') or still, 'loop': None}
+    return {'still': None, 'poster': None, 'loop': None}
+
+
 def motion_allowed(snapshot, animations_enabled=True):
     settings = snapshot.get('settings') or {}
     picture = (snapshot.get('active') or {}).get('picture') or {}
@@ -218,8 +243,12 @@ def motion_allowed(snapshot, animations_enabled=True):
                 and not settings.get('still') and not picture.get('still'))
 
 
+_TECHNICAL = re.compile(r'\[Errno|Errno \d|Traceback|Exception|[A-Z][a-z]+Error\b|\bErr\w*:|0x[0-9a-f]{4,}|'
+                        r'(^|\s)/\S+|\b(?:file|line) \d+|[{}<>]')
+
+
 def plain_error(error):
-    """A controller or socket error in words a listener can act on."""
+    """A controller or socket error in words a listener can act on; never the raw cause."""
     text = str(error or '').strip()
     low = text.lower()
     if not text:
@@ -228,4 +257,55 @@ def plain_error(error):
         return 'The room service did not answer. Try again in a moment.'
     if 'timed out' in low or 'timeout' in low or 'took too long' in low:
         return 'It took too long to connect.'
-    return text[:200]
+    if _TECHNICAL.search(text) or len(text) > 160:
+        return 'Something went wrong. Try again, or open Details to see why.'
+    return text
+
+
+def error_details(error):
+    """The raw cause, for a Details expander, or '' when the plain sentence already says it all."""
+    text = str(error or '').strip()
+    return text if text and text != plain_error(text) else ''
+
+
+def hyprland(environ=None):
+    """True inside a Hyprland session: scene placement (workspace, on top, small) needs its hyprctl."""
+    import os
+    return bool((os.environ if environ is None else environ).get('HYPRLAND_INSTANCE_SIGNATURE'))
+
+
+def _music_identity(music):
+    music = music or {}
+    station = music.get('station') if isinstance(music.get('station'), dict) else None
+    if station:
+        return ('station', station.get('id'))
+    reference = music.get('reference') if isinstance(music.get('reference'), dict) else None
+    if reference:
+        return ('reference', reference.get('provider'), reference.get('id'))
+    return ('source', music.get('source_id') or music.get('url'))
+
+
+def room_base(snapshot, catalogue=()):
+    """The saved room or catalogue room the active room was entered from, or None for an ad-hoc room."""
+    active = (snapshot or {}).get('active') or {}
+    variant = next((item for item in (snapshot or {}).get('variants') or []
+                    if isinstance(item, dict) and item.get('id') == active.get('id')), None)
+    if variant is not None:
+        return {'name': variant.get('name'), 'music': variant.get('music') or {}}
+    room = next((item for item in catalogue or () if item.get('id') == active.get('room_id')), None)
+    if room is not None and room.get('source_id'):
+        return {'name': room.get('name'), 'music': {'source_id': room['source_id']}}
+    return None
+
+
+def room_changed(snapshot, catalogue=()):
+    """True when Tune in (or Change…) replaced the music of a saved or catalogue room."""
+    active = (snapshot or {}).get('active')
+    base = room_base(snapshot, catalogue) if active else None
+    return bool(base and _music_identity(active.get('music')) != _music_identity(base['music']))
+
+
+def ad_hoc(snapshot, catalogue=()):
+    """An active room started from Listen with no room behind it (no saved room, no catalogue room)."""
+    active = (snapshot or {}).get('active')
+    return bool(active) and room_base(snapshot, catalogue) is None and not active.get('room_id')

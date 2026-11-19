@@ -28,6 +28,7 @@ import session_client
 import youtube_search
 from next_listen_more import MORE_SCOPES, ServicesMixin
 from next_listen_sources import SourcesMixin
+from next_actions import when_finished
 from next_widgets import FocalPicture, show_texture, icon_button, label, name_it
 
 SCOPES = (('all', 'All'), ('stations', 'Your stations'), ('radio', 'Radio'),
@@ -198,6 +199,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         column.insert_child_after(self.build_ambience_banner(), None)
         column.append(self.search)
         self.scopes = Adw.ToggleGroup()
+        name_it(self.scopes, 'Listen from', '')
         self.scopes.add_css_class('listen-scopes')
         self.scopes.set_halign(Gtk.Align.START)
         try:
@@ -327,8 +329,15 @@ class ListenPage(ServicesMixin, SourcesMixin):
             group.connect('notify::active', lambda _group, _pspec, key=mood['key']: self.mood_changed(key))
             hint = label('', ['mood-hint'], wrap=True)
             hint.set_visible(False)
+            name_it(group, mood['title'], '')
             control.append(group)
             control.append(hint)
+            if mood['key'] == 'speech':
+                # The Instrumental-only hint leads somewhere that can act on it: library tracks to review.
+                self.review_link = Gtk.Button(label='Review library tracks', halign=Gtk.Align.START, visible=False)
+                self.review_link.add_css_class('flat')
+                self.review_link.connect('clicked', lambda *_: self.review_tracks())
+                control.append(self.review_link)
             row.append(title)
             row.append(control)
             moods.append(row)
@@ -343,6 +352,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
                                   row_spacing=8, selection_mode=Gtk.SelectionMode.NONE, valign=Gtk.Align.CENTER)
         arc_control.set_hexpand(True)
         self.arc_group = Adw.ToggleGroup()
+        name_it(self.arc_group, 'Over time', '')
         name_it(self.arc_group, 'Over time', '')
         self.arc_group.set_halign(Gtk.Align.START)
         self.arc_group.set_homogeneous(False)
@@ -368,6 +378,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         end_title = label('When it runs out', ['mood-title'])
         end_title.set_size_request(130, -1)
         self.end_group = Adw.ToggleGroup()
+        name_it(self.end_group, 'When it runs out', '')
         name_it(self.end_group, 'When it runs out', '')
         self.end_group.set_halign(Gtk.Align.START)
         self.end_group.set_homogeneous(False)
@@ -787,11 +798,32 @@ class ListenPage(ServicesMixin, SourcesMixin):
             self.channels_loaded = True
             self.refresh_twitch(force=True)
         if self.library_state == 'idle' and self.widget.get_mapped():
-            self.library_state = 'loading' if self.library_configured() else 'unavailable'
-            if self.library_state == 'loading':
-                self.load_library()
-            else:
-                self.refresh()
+            self.library_state = 'checking'
+            # Whether a library is connected is a config file read: never on the GTK thread.
+            self.executor.submit(self.library_configured).add_done_callback(
+                lambda future: GLib.idle_add(self.library_checked, future))
+
+    def library_checked(self, future):
+        try:
+            configured = bool(future.result())
+        except Exception:
+            configured = False
+        if self.closed or self.library_state != 'checking':
+            return False
+        self.library_state = 'loading' if configured else 'unavailable'
+        if configured:
+            self.load_library()
+        else:
+            self.refresh()
+        return False
+
+    def config_changed(self):
+        """A library was connected (or a favourite saved): look again, so Library appears without a restart."""
+        if self.library_state in ('unavailable', 'failed', 'checking'):
+            self.library_state = 'idle'
+            self.ensure_static_loads()
+        self.favorites_at = 0.
+        self.refresh_favorites()
 
     @staticmethod
     def library_configured():
@@ -1251,10 +1283,9 @@ class ListenPage(ServicesMixin, SourcesMixin):
                 if text:
                     button.set_label(text)
         button.set_sensitive(False)
-        self.window.watch_next_command(restore)
-        callback()
-        if self.window.unwatch_command():   # nothing was sent (a dialog opened, or the action was refused)
-            restore()
+        # The callback hands back the command's Ticket; anything else (a dialog opened, the action was
+        # refused) means nothing was sent, and the control re-enables at once.
+        when_finished(callback(), restore)
 
     def menu_button(self, name, items):
         popover = Gtk.Popover()
@@ -1433,7 +1464,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
     # ---- actions -----------------------------------------------------------
 
     def tune_station(self, station):
-        self.window.start('station.start', {'id': station.get('id')}, next_station.name(station))
+        return self.window.start('station.start', {'id': station.get('id')}, next_station.name(station))
 
     def station_ambience_action(self, station):
         first = next_station.first_source(station)
@@ -1445,24 +1476,24 @@ class ListenPage(ServicesMixin, SourcesMixin):
             args['url'] = first['url']
         else:
             self.window.toast('This station has no source to play on its own')
-            return
-        self.send_ambience(args, next_station.name(station))
+            return None
+        return self.send_ambience(args, next_station.name(station))
 
     def replay_history(self, row):
-        self.window.start('station.replay', {'id': row.get('id')}, row.get('name') or 'your station')
+        return self.window.start('station.replay', {'id': row.get('id')}, row.get('name') or 'your station')
 
     def tune_history(self, row):
-        self.window.start('station.start', {'id': row.get('station_id') or row.get('id')},
+        return self.window.start('station.start', {'id': row.get('station_id') or row.get('id')},
                           row.get('name') or 'your station')
 
     def tune_radio(self, item):
-        self.window.start('music', {'item': item}, item.get('name') or 'the station')
+        return self.window.start('music', {'item': item}, item.get('name') or 'the station')
 
     def tune_library(self, item):
-        self.window.start('online', {'service': 'jellyfin', 'item': item}, item.get('name') or 'your library')
+        return self.window.start('online', {'service': 'jellyfin', 'item': item}, item.get('name') or 'your library')
 
     def tune_channel(self, item):
-        self.window.start('link', {'url': item.get('url'), 'destination': 'music'},
+        return self.window.start('link', {'url': item.get('url'), 'destination': 'music'},
                           item.get('name') or item.get('login') or 'the channel')
 
     def play_next(self, item):
@@ -1473,18 +1504,18 @@ class ListenPage(ServicesMixin, SourcesMixin):
     def play_ambience(self, item):
         name = item.get('name') or 'Ambience'
         if item.get('reference') or item.get('provider') == 'jellyfin':
-            self.send_ambience({'kind': 'radio', 'reference': item, 'name': item.get('name') or 'Library'},
-                               item.get('name') or 'Library')
+            return self.send_ambience({'kind': 'radio', 'reference': item, 'name': item.get('name') or 'Library'},
+                                      item.get('name') or 'Library')
         elif item.get('kind') == 'twitch' or next_links.host(item.get('url') or '').endswith('twitch.tv'):
-            self.send_ambience({'kind': 'twitch', 'url': item.get('url'), 'name': item.get('name') or 'Twitch'},
-                               item.get('name') or 'Twitch')
+            return self.send_ambience({'kind': 'twitch', 'url': item.get('url'), 'name': item.get('name') or 'Twitch'},
+                                      item.get('name') or 'Twitch')
         elif item.get('kind') == 'youtube' or next_links.host(item.get('url') or '') in (
                 'youtube.com', 'www.youtube.com', 'music.youtube.com', 'm.youtube.com', 'youtu.be'):
-            self.send_ambience({'kind': 'radio', 'source_id': 'youtube-video', 'url': item.get('url'), 'resolver': True,
-                                'name': item.get('name') or 'YouTube'}, item.get('name') or 'YouTube')
+            return self.send_ambience({'kind': 'radio', 'source_id': 'youtube-video', 'url': item.get('url'), 'resolver': True,
+                                       'name': item.get('name') or 'YouTube'}, item.get('name') or 'YouTube')
         else:
-            self.send_ambience({'kind': 'radio', 'source_id': item.get('id'), 'url': item.get('url'),
-                                'name': item.get('name') or 'Radio'}, item.get('name') or 'Radio')
+            return self.send_ambience({'kind': 'radio', 'source_id': item.get('id'), 'url': item.get('url'),
+                                       'name': item.get('name') or 'Radio'}, item.get('name') or 'Radio')
 
     def show_as_scene(self, url):
         self.window.command('link', {'url': url, 'destination': 'picture'},
@@ -1653,8 +1684,11 @@ class ListenPage(ServicesMixin, SourcesMixin):
                 self.learned_box.append(label(line, ['section-note'], wrap=True))
         else:
             self.learned_box.append(label('Tune in to this station to see what it learns.', ['section-note'], wrap=True))
-        self.forget_button.set_sensitive(any(item.get('id') == station.get('id')
-                                             for item in self.snapshot.get('stations') or []))
+        # Forget… only once there is something to forget: a saved station that has learned likes or dislikes.
+        learned = (self.snapshot.get('station_learned') or {}).get(station.get('id'))
+        self.forget_button.set_sensitive(bool(learned) and any(item.get('id') == station.get('id')
+                                                              for item in self.snapshot.get('stations') or []))
+        self.forget_button.set_tooltip_text(None if learned else 'Nothing learned yet: use More or Less like this while it plays')
 
     def ensure_review_count(self, station):
         speech = (station.get('preferences') or {}).get('speech')
@@ -1706,6 +1740,13 @@ class ListenPage(ServicesMixin, SourcesMixin):
             text = next_station.hints(station, review, more) if mood['key'] == 'speech' else None
             hint.set_text(text or '')
             hint.set_visible(bool(text))
+            if mood['key'] == 'speech':
+                self.review_link.set_visible(next_station.wants_review(station) and self.library_state != 'unavailable')
+
+    def review_tracks(self):
+        """Library tracks, where each row's menu has Track details… with the instrumental review."""
+        self.show_index()
+        self.find_in_library('')
 
     def render_fallbacks(self, station):
         signature = json.dumps(station.get('fallbacks') or [], sort_keys=True, default=str)

@@ -299,6 +299,21 @@ class Backend:
         return details
 
 
+def _config_generation():
+    """Changes when a library connection or a radio favourite is saved, so windows reload them.
+
+    Only stats the two files (mtime, size, inode); it never reads them."""
+    parts = []
+    for path in (Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'listening-hub' / 'connections.json',
+                 hub.STATE / 'favorites.json'):
+        try:
+            info = path.stat()
+            parts.append('%d-%d-%d' % (info.st_mtime_ns, info.st_size, info.st_ino))
+        except OSError:
+            parts.append('-')
+    return ':'.join(parts)
+
+
 class Controller:
     def __init__(self, backend=None, directory=None, clock=time.time):
         self.backend = backend or Backend()
@@ -308,9 +323,13 @@ class Controller:
         self.worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='room-session')
         stored = hub.load_json(self.directory / 'session.json', {})
         self.last_session = stored.get('last_session') if isinstance(stored, dict) else None
-        self.settings = dict(placement='9', still=False, reduced_motion=False,
+        # The scene opens where you are ("here"). Workspace 9 stays only when it was chosen explicitly:
+        # older state stored the default without the placement_chosen mark, so that default is moved.
+        self.settings = dict(placement='here', still=False, reduced_motion=False,
                              pause_on_disconnect=True, duck_on_call=False, keep_controls=False)
         self.settings.update(stored.get('settings') or {} if isinstance(stored, dict) else {})
+        if self.settings.get('placement') == '9' and not self.settings.get('placement_chosen'):
+            self.settings['placement'] = 'here'
         # Session-wide multiplier (percent) over the Music and Ambience levels.
         # It never changes a layer's own level or mute, so the balance is kept.
         self.room_volume = 100.
@@ -710,6 +729,9 @@ class Controller:
                                      for name in ('music', 'atmosphere')},
                           'stations': self._cached_file('stations.json', self.stations),
                           'station_recent': self.station_history,
+                          'station_learned': {key: bool(value.get('liked_artists') or value.get('disliked'))
+                                              for key, value in self.station_memory.items() if isinstance(value, dict)},
+                          'config_generation': _config_generation(),
                           'station': ({'definition': self.program.station, 'upcoming': ([self.program.override] if self.program.override else []) + self.program.queue,
                                        'recent': self.program.recent,
                                        'current': (self.active or {}).get('music', {}).get('reference'),
@@ -1675,6 +1697,8 @@ class Controller:
                 # the session's settings nor its durable return offer changes.
                 adapter.configure(**routing)
             self.settings = dict(previous, **values)
+            if 'placement' in values:
+                self.settings['placement_chosen'] = True
             try:
                 self._persist()
             except (OSError, ValueError):

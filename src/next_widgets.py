@@ -89,6 +89,11 @@ window.next button.mini-return:focus:focus-visible
 .next .banner-card { background: rgba(38,26,24,.94); color: #ffffff; border-radius: 14px; border: 1px solid rgba(255,180,160,.5); padding: 10px 14px; }
 .next .banner-card .banner-title { font-weight: 700; }
 .next .banner-card .banner-detail { color: rgba(255,255,255,.82); }
+.next .offline-banner { background: rgba(38,26,24,.96); color: #ffffff; border-radius: 12px; border: 1px solid rgba(255,180,160,.5); padding: 8px 12px; }
+.next .offline-banner .banner-title { font-weight: 700; }
+.next .error-details, .next .error-details label { color: rgba(255,255,255,.78); font-size: 13px; }
+.next .room-changed { background: rgba(255,255,255,.16); color: #ffffff; border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 600; }
+.next.offline .play-button, .next.offline .bar-play { opacity: .45; }
 .next .timer-chip { background: rgba(255,255,255,.16); border-radius: 20px; padding: 0 14px; font-weight: 600; }
 .next .hero { border-radius: 18px; background: #0b0c0f; }
 .next .hero-title { font-family: "Newsreader", "Source Serif 4", "Noto Serif", Georgia, serif; font-size: 44px; color: #ffffff; }

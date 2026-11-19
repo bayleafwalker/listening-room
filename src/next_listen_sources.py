@@ -107,7 +107,7 @@ class SourcesMixin:
     def send_ambience(self, args, name):
         """Replace the room's ambience layer through the existing command."""
         undo = self.previous_ambience()
-        self.window.command('atmosphere', args, done=lambda _result: self.ambience_started(name, undo))
+        return self.window.command('atmosphere', args, done=lambda _result: self.ambience_started(name, undo))
 
     def ambience_started(self, name, undo=None):
         undo = undo or self.previous_ambience()
@@ -151,7 +151,7 @@ class SourcesMixin:
 
     def choose_sound(self, args, name):
         undo = self.previous_ambience()
-        self.window.command('layer', args, done=lambda _result: self.ambience_started(name, undo))
+        return self.window.command('layer', args, done=lambda _result: self.ambience_started(name, undo))
 
     # ---- Twitch ----------------------------------------------------------------------
 
@@ -261,7 +261,7 @@ class SourcesMixin:
                 'ambience': lambda item=item: self.play_ambience(item)}
 
     def tune_youtube(self, item):
-        self.window.start('link', {'url': item.get('url'), 'destination': 'music'}, item.get('name') or 'the video')
+        return self.window.start('link', {'url': item.get('url'), 'destination': 'music'}, item.get('name') or 'the video')
 
     def youtube_note(self):
         """The truthful line for the YouTube scope when there is nothing to list."""

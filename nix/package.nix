@@ -23,6 +23,8 @@
   wireplumber,
   hyprland,
   yt-dlp,
+  xvfb-run,
+  dbus,
   # Optional Jellyfin address for the packaged Feishin launcher. Empty leaves
   # the server for the user to add in the app.
   jellyfinUrl ? "",
@@ -90,6 +92,11 @@ stdenvNoCC.mkDerivation {
   '';
 
   doCheck = true;
+  # The window smoke test builds the real window on a private Xvfb with its own D-Bus.
+  nativeCheckInputs = [
+    xvfb-run
+    dbus
+  ];
   checkPhase = ''
     runHook preCheck
     export LISTENING_HUB_SOURCE="$PWD/src/listening_hub.py"
@@ -135,6 +142,8 @@ stdenvNoCC.mkDerivation {
     python3 tests/test_listening_overlay_swap.py
     python3 tests/test_listening_sources.py
     python3 tests/test_listening_o6_oracles.py
+    python3 tests/test_listening_o9_ux.py
+    LISTENING_HUB_ASSETS="$PWD/assets" python3 tests/test_listening_window_smoke.py
     LISTENING_TEST_MPV=${mpv}/bin/mpv python3 tests/test_listening_station_eof.py
     python3 src/validate_vistas.py assets
     python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Gtk, Adw"

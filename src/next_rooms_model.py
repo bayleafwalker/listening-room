@@ -199,7 +199,7 @@ def preview(entry, snapshot):
     elif active:
         note = '%s fades out first. Other apps keep playing.' % (active.get('name') or 'Your current room')
     else:
-        note = 'Nothing starts until you enter. Other apps keep playing.'
+        note = 'Other apps keep playing.'  # the scene caption already says nothing plays until you enter
     return {'title': entry['name'], 'subtitle': entry['sub'], 'description': entry['description'],
             'music': entry['music'] or 'Music', 'music_detail': music_detail(entry), 'scene': scene,
             'scene_available': entry['scene_available'], 'scene_on': entry['scene_on'],

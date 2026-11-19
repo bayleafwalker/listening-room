@@ -2,7 +2,7 @@
 
 * Library kinds and opening an album or playlist (Jellyfin).
 * Speakers: Music Assistant players, browse and search, play on a speaker, radio mix, transfer.
-* Remembered: local bookmarks and, on request only, ListenBrainz history and recommendations.
+* History (the remembered scope): local bookmarks and, on request only, ListenBrainz history and recommendations.
 
 Everything here reads on request and plays nothing until you press a play action. The
 controls that stay on screen (kind choice, speaker choice, note entry) are built once and
@@ -20,7 +20,7 @@ from next_widgets import name_it
 
 LIBRARY_KINDS = (('albums', 'Albums'), ('playlists', 'Playlists'), ('recent', 'Recently added'), ('tracks', 'Tracks'))
 MA_KINDS = (('playlists', 'Playlists'), ('tracks', 'Tracks'), ('albums', 'Albums'))
-MORE_SCOPES = (('speakers', 'Speakers'), ('remembered', 'Remembered'))
+MORE_SCOPES = (('speakers', 'Speakers'), ('remembered', 'History'))
 
 
 def configured(service, field='endpoint'):
@@ -242,7 +242,7 @@ class ServicesMixin:
             trailing=self.link_button('‹ Library', self.close_album)))
 
     def find_in_library(self, query):
-        """Remembered › Find in Jellyfin: the Tracks kind, searched for this text."""
+        """History › Find in Jellyfin: the Tracks kind, searched for this text."""
         self.kind_group.set_active(3)
         self.show_library_scope()
         self.search.set_text(query)
@@ -409,8 +409,8 @@ class ServicesMixin:
         sent = dict(item, player_id=player['id'], name=item.get('name') or player['name'])
         if radio:
             sent['radio_mode'] = True
-        self.window.command('online', {'service': 'music_assistant', 'item': sent},
-                            done=lambda _r: self.window.toast('Sent to ' + player['name']))
+        return self.window.command('online', {'service': 'music_assistant', 'item': sent},
+                                   done=lambda _r: self.window.toast('Sent to ' + player['name']))
 
     def transfer_queue(self, source, target):
         item = {'provider': 'music_assistant', 'action': 'transfer', 'source_player_id': source['id'],
@@ -534,7 +534,7 @@ class ServicesMixin:
             links = online_services.discovery_links(item)
             name = media_title(item) or 'Remembered moment'
             entries.append({'kind': 'remembered', 'name': name,
-                            'detail': ' · '.join(x for x in ('Remembered', item.get('note')) if x),
+                            'detail': ' · '.join(x for x in ('Bookmark', item.get('note')) if x),
                             'action': ('Find in Jellyfin', lambda query=links['query']: self.find_in_library(query)),
                             'menu': [('Open in YouTube Music', lambda url=links['youtube_music']: self.open_external(url))]})
         return entries
@@ -558,7 +558,7 @@ class ServicesMixin:
         local = self.memory['local']
         rows = self.remembered_entries(local or [])
         note = 'Loading…' if local is None else None if rows else 'Nothing remembered yet. Remember what is playing from here.'
-        self.index_body.append(self.section('Remembered', rows, note=note))
+        self.index_body.append(self.section('History', rows, note=note))
         extra = self.memory['extra']
         if self.memory['busy']:
             self.index_body.append(self.section('ListenBrainz', [], note='Reading ListenBrainz…'))

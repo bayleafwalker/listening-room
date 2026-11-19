@@ -219,6 +219,11 @@ def with_fallbacks(station, items):
     return dict(station or {}, fallbacks=[dict(item) for item in items or [] if isinstance(item, dict)])
 
 
+def wants_review(station):
+    """Instrumental only plays reviewed recordings, so its hint offers the way to review some."""
+    return _preferences(station).get('speech') == 'Strict instrumental'
+
+
 def hints(station, reviewed_count=None, more=False):
     """The one hint for the selected constrained Voice value, or None.
 
@@ -231,9 +236,9 @@ def hints(station, reviewed_count=None, more=False):
         if reviewed_count is None:
             return 'Plays only recordings you have reviewed.'
         if reviewed_count == 0:
-            return 'No reviewed recordings yet. Review them in Preferences › Recordings.'
-        return ('%d%s reviewed recording%s available across your whole library. Review more in Preferences › Recordings.'
-                % (reviewed_count, '+' if more else '', '' if reviewed_count == 1 and not more else 's'))
+            return 'No reviewed recordings yet. Review a library track from its menu › Track details….'
+        return ('%d%s reviewed recording%s available across your whole library. Review more from a library track’s '
+                'menu › Track details….' % (reviewed_count, '+' if more else '', '' if reviewed_count == 1 and not more else 's'))
     if speech == 'Likely instrumental':
         return 'Fewer uses model estimates and can be wrong.'
     if speech == 'Less speech':
