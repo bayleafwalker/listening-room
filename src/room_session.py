@@ -169,11 +169,8 @@ class Backend:
     def stop_owned_identity(self, player_unit):
         if not isinstance(player_unit, str) or not re.fullmatch(r'listening-hub-radio-[0-9a-f]{12}\.service', player_unit):
             raise SessionError('Invalid owned player identity')
-        result = hub.run(['systemctl', '--user', 'stop', player_unit], check=False)
-        if result.returncode:
-            status = hub.run(['systemctl', '--user', 'show', player_unit, '--property=LoadState', '--value'], check=False)
-            if status.returncode or status.stdout.strip() != 'not-found':
-                raise SessionError('Could not stop an orphaned verified player')
+        if not mpv_ipc.ensure_stopped(hub.run, player_unit):
+            raise SessionError('Could not stop an orphaned verified player')
 
     def music_control(self, action, value=None):
         if self.remote:

@@ -206,7 +206,7 @@ def player_command(name, command):
             ipc(['set_property', 'pause', command == 'pause'])
         elif command == 'stop':
             radio_audio_state()
-            run(['systemctl', '--user', 'stop', radio_unit()])
+            mpv_ipc.stop(run, radio_unit(), check=True)
         else:
             raise HubError('Live radio has no track navigation')
     elif name == 'video':
@@ -257,12 +257,16 @@ def start_twitch_audio(url):
         raise HubError('yt-dlp executable not found')
     start_radio({'id': 'twitch-channel', 'name': 'Twitch · ' + url.rsplit('/', 1)[-1], 'url': url}, ytdlp=ytdlp)
 
-def start_radio(item, ytdlp=None, cancel_event=None, fade_seconds=0.6, mpv_options=None, trusted_fd=None, trusted_unit=None):
-    if RUNTIME is None:
+def _private_runtime():
+    if RUNTIME is None or SOCKET is None:
         raise HubError('XDG_RUNTIME_DIR is required for radio playback')
     RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
     if RUNTIME.is_symlink() or RUNTIME.stat().st_uid != os.getuid() or RUNTIME.stat().st_mode & 0o077:
         raise HubError('Radio runtime directory must be private and owned by your user')
+
+
+def start_radio(item, ytdlp=None, cancel_event=None, fade_seconds=0.6, mpv_options=None, trusted_fd=None, trusted_unit=None):
+    _private_runtime()
     descriptor = os.open(RUNTIME / 'radio-start.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         while True:
@@ -294,6 +298,14 @@ def playback_url(item):
     raise HubError('Choose an HTTP stream or an installed offline sound')
 
 
+_LOAD_FAILURES = {
+    'start': 'Radio player did not start; check the user session',
+    'rejected': 'Unable to load radio: ',
+    'closed': 'Radio player closed before stream loaded',
+    'ended': 'Radio stream could not be opened: ',
+    'timeout': 'Radio loading timed out; previous playback has been preserved'}
+
+
 def _start_radio(item, ytdlp=None, cancel_event=None, fade_seconds=0.6, mpv_options=None, trusted_fd=None, trusted_unit=None):
     """Load a muted candidate before replacing the current owned player.
 
@@ -312,9 +324,7 @@ def _start_radio(item, ytdlp=None, cancel_event=None, fade_seconds=0.6, mpv_opti
     mpv = shutil.which('mpv')
     if not mpv:
         raise HubError('mpv executable not found')
-    RUNTIME.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if RUNTIME.is_symlink() or RUNTIME.stat().st_uid != os.getuid() or RUNTIME.stat().st_mode & 0o077:
-        raise HubError('Radio runtime directory must be private and owned by your user')
+    _private_runtime()
     def cancelled():
         if cancel_event is not None and cancel_event.is_set():
             raise HubError('Radio start cancelled')
@@ -335,60 +345,19 @@ def _start_radio(item, ytdlp=None, cancel_event=None, fade_seconds=0.6, mpv_opti
                            '--ytdl-raw-options=ignore-config=,no-playlist=', '--ytdl-format=bestaudio/best']
                           if ytdlp else ['--ytdl=no'])
         cancelled()
-        run(['systemd-run', '--user', '--collect', '--unit=' + unit,
-             '--property=PartOf=graphical-session.target',
-             '--property=After=graphical-session.target', '--', mpv,
-             '--no-config', '--idle=yes', '--no-video', '--input-terminal=no',
-             '--audio-client-name=ListeningRoomMusic', '--input-ipc-server=' + str(path),
-             '--volume=0', '--mute=yes'] + player_options + output_options + list(mpv_options or []))
-        deadline = time.monotonic() + (35 if ytdlp else 12)
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            while True:
-                cancelled()
-                try:
-                    connection.connect(str(path))
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise HubError('Radio player did not start; check the user session')
-                    time.sleep(.05)
-            connection.settimeout(.2)
-            connection.sendall((json.dumps({'command': ['loadfile', url, 'replace'], 'request_id': 1}) + '\n').encode())
-            buffer, loaded, ready = b'', False, False
-            while time.monotonic() < deadline and not ready:
-                cancelled()
-                try:
-                    part = connection.recv(65536)
-                except socket.timeout:
-                    continue
-                if not part:
-                    raise HubError('Radio player closed before stream loaded')
-                buffer += part
-                while b'\n' in buffer:
-                    line, buffer = buffer.split(b'\n', 1)
-                    msg = json.loads(line)
-                    if msg.get('request_id') == 1 and msg.get('error') != 'success':
-                        raise HubError('Unable to load radio: ' + clean(msg.get('error')))
-                    if msg.get('event') == 'file-loaded':
-                        loaded = True
-                    if loaded and msg.get('event') == 'playback-restart':
-                        ready = True
-                    if msg.get('event') == 'end-file' and msg.get('reason') != 'redirect':
-                        raise HubError('Radio stream could not be opened: ' + clean(msg.get('file_error') or msg.get('reason')))
-                    if ready:
-                        break
-            if not ready:
-                raise HubError('Radio loading timed out; previous playback has been preserved')
+        mpv_ipc.spawn(run, unit, mpv_ipc.audio_player(mpv, path, 'ListeningRoomMusic')
+                      + player_options + output_options + list(mpv_options or []))
+        try:
+            mpv_ipc.load(path, url, time.monotonic() + (35 if ytdlp else 12), cancelled)
+        except mpv_ipc.LoadError as failure:
+            raise HubError(_LOAD_FAILURES[failure.reason] + clean(failure.detail)) from None
         cancelled()
         # Preflight the private command path while the previous player survives.
         ipc(['set_property', 'volume', 0], socket_path=path)
         ipc(['set_property', 'mute', True], socket_path=path)
         cancelled()
-        stopped = run(['systemctl', '--user', 'stop', old_unit], check=False)
-        if stopped.returncode:
-            load = run(['systemctl', '--user', 'show', old_unit, '--property=LoadState', '--value'], check=False)
-            if load.returncode or load.stdout.strip() != 'not-found':
-                raise HubError('The existing radio could not be stopped; its controls have been preserved')
+        if not mpv_ipc.ensure_stopped(run, old_unit):
+            raise HubError('The existing radio could not be stopped; its controls have been preserved')
         update_state(selected='radio', radio_name=clean(item.get('name')), radio_source_id=clean(item.get('id')),
                      radio_unit=unit, radio_socket=path.name)
         committed = True
@@ -407,7 +376,7 @@ def _start_radio(item, ytdlp=None, cancel_event=None, fade_seconds=0.6, mpv_opti
                 else:
                     time.sleep(float(fade_seconds) / steps)
     except (OSError, ValueError, HubError) as error:
-        run(['systemctl', '--user', 'stop', unit], check=False)
+        mpv_ipc.stop(run, unit)
         path.unlink(missing_ok=True)
         suffix = '' if committed else ' Previous playback has been preserved.'
         raise HubError('Could not start radio: ' + str(error) + suffix) from error

@@ -7,7 +7,7 @@ import os
 import re
 from pathlib import Path
 import shutil
-import socket
+import socket  # noqa: F401  (tests patch socket.socket through this name)
 import subprocess
 import tempfile
 import threading
@@ -387,135 +387,105 @@ def _start_audio_locked(url, volume, timeout, cancel_event, local, generation, m
     committed = False
     try:
         check_cancel()
-        _run(['systemd-run', '--user', '--collect', '--unit=' + candidate['unit'],
-              '--property=PartOf=graphical-session.target', '--property=After=graphical-session.target', '--',
-              mpv, '--no-config', '--idle=yes', '--no-video', '--input-terminal=no',
-              '--audio-client-name=ListeningRoomAtmosphere',
-              '--input-ipc-server=' + str(path),
-              '--volume=0', '--mute=yes'] + device_options +
+        mpv_ipc.spawn(_run, candidate['unit'], mpv_ipc.audio_player(mpv, path, 'ListeningRoomAtmosphere') + device_options +
               (['--ytdl=no', '--loop-file=inf'] +
                (['--af=' + _window_filter(local)] if local.get('outdoor') else []) if local else [
               '--ytdl-format=bestaudio/best', '--ytdl-raw-options=ignore-config=,no-playlist=',
               '--script-opts=ytdl_hook-ytdl_path=' + resolver] if resolver else ['--ytdl=no']) +
               (['--keep-open=yes'] if direct and direct.get('reference', {}).get('provider') == 'jellyfin' else []))
-        deadline = time.monotonic() + timeout
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            while True:
+        try:
+            mpv_ipc.load(path, url, time.monotonic() + timeout, check_cancel)
+        except mpv_ipc.LoadError as failure:
+            raise LayerError(_LOAD_FAILURES[failure.reason]) from None
+        check_cancel()
+        saved = ({key: local[key] for key in ('kind', 'source_id', 'name', 'url', 'outdoor', 'window_open')}
+                 if local else ({key: direct[key] for key in ('source_id', 'name', 'reference', 'resolver') if key in direct} | {'kind': 'radio'}
+                                if direct else {'kind': 'twitch', 'url': url}))
+        if direct and direct.get('id'):
+            saved['source_id'] = direct['id']
+        if direct and not direct.get('reference'):
+            saved['url'] = url
+        # Confirm its command path while the previous player
+        # remains usable. The candidate is still inaudible.
+        _ipc(['set_property', 'volume', 0], socket_path=path)
+        _ipc(['set_property', 'mute', True], socket_path=path)
+        check_cancel()
+        with _commit():
+            check_cancel()
+            prior_settings = _settings()
+            live_mix = _current_settings()
+            settings['muted'] = live_mix['muted']
+            if volume is None or live_mix['volume'] != initial_mix['volume']:
+                settings['volume'] = live_mix['volume']
+            prior_state = state()
+            was_playing = bool(prior_state and prior_state.get('status') != 'Paused')
+            previous_path = _runtime_dir() / previous['socket']
+            try:
+                # Pause the old source reversibly. It survives
+                # every activation/persistence failure; a failed
+                # later service cleanup cannot produce overlap.
+                _ipc(['set_property', 'volume', settings['volume'] * _window_gain(local or {})], socket_path=path)
+                if was_playing:
+                    _ipc(['set_property', 'pause', True], socket_path=previous_path)
                 check_cancel()
-                try:
-                    connection.connect(str(path))
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise LayerError('Audio layer player did not start')
-                    time.sleep(.1)
-            connection.settimeout(min(1, max(.01, deadline - time.monotonic())))
-            connection.sendall((json.dumps({'command': ['loadfile', url, 'replace'], 'request_id': 1}) + '\n').encode())
-            buffer = b''
-            loaded = False
-            while time.monotonic() < deadline:
+                _save_source(saved)
+                _save_settings(settings)
+                candidate['retiring'] = previous.get('retiring', []) + [
+                    {key: previous[key] for key in ('unit', 'socket')}]
+                _save_player(candidate)
                 check_cancel()
-                connection.settimeout(min(1, max(.01, deadline - time.monotonic())))
-                try:
-                    part = connection.recv(65536)
-                except socket.timeout:
+                _ipc(['set_property', 'mute', settings['muted']], socket_path=path)
+                check_cancel()
+                committed = True
+            except (OSError, ValueError):
+                _save_source(previous_source)
+                _save_settings(prior_settings)
+                _save_player(previous)
+                if was_playing and _epoch() == epoch:
+                    _ipc(['set_property', 'pause', False], socket_path=previous_path)
+                raise
+        # Retired players are paused. Failed cleanup is retained
+        # in the shared pointer, so another process's Stop can
+        # retry it without discarding the working new source.
+        for retired in list(candidate['retiring']):
+            try:
+                if not mpv_ipc.stop(_run, retired['unit']):
                     continue
-                if not part:
-                    raise LayerError('Audio layer closed while loading')
-                buffer += part
-                while b'\n' in buffer:
-                    line, buffer = buffer.split(b'\n', 1)
-                    message = json.loads(line)
-                    if message.get('request_id') == 1 and message.get('error') != 'success':
-                        raise LayerError('Audio layer could not load the stream')
-                    if message.get('event') == 'file-loaded':
-                        loaded = True
-                    if message.get('event') == 'playback-restart' and loaded:
-                        check_cancel()
-                        saved = ({key: local[key] for key in ('kind', 'source_id', 'name', 'url', 'outdoor', 'window_open')}
-                                 if local else ({key: direct[key] for key in ('source_id', 'name', 'reference', 'resolver') if key in direct} | {'kind': 'radio'}
-                                                if direct else {'kind': 'twitch', 'url': url}))
-                        if direct and direct.get('id'):
-                            saved['source_id'] = direct['id']
-                        if direct and not direct.get('reference'):
-                            saved['url'] = url
-                        # Confirm its command path while the previous player
-                        # remains usable. The candidate is still inaudible.
-                        _ipc(['set_property', 'volume', 0], socket_path=path)
-                        _ipc(['set_property', 'mute', True], socket_path=path)
-                        check_cancel()
-                        with _commit():
-                            check_cancel()
-                            prior_settings = _settings()
-                            live_mix = _current_settings()
-                            settings['muted'] = live_mix['muted']
-                            if volume is None or live_mix['volume'] != initial_mix['volume']:
-                                settings['volume'] = live_mix['volume']
-                            prior_state = state()
-                            was_playing = bool(prior_state and prior_state.get('status') != 'Paused')
-                            previous_path = _runtime_dir() / previous['socket']
-                            try:
-                                # Pause the old source reversibly. It survives
-                                # every activation/persistence failure; a failed
-                                # later service cleanup cannot produce overlap.
-                                _ipc(['set_property', 'volume', settings['volume'] * _window_gain(local or {})], socket_path=path)
-                                if was_playing:
-                                    _ipc(['set_property', 'pause', True], socket_path=previous_path)
-                                check_cancel()
-                                _save_source(saved)
-                                _save_settings(settings)
-                                candidate['retiring'] = previous.get('retiring', []) + [
-                                    {key: previous[key] for key in ('unit', 'socket')}]
-                                _save_player(candidate)
-                                check_cancel()
-                                _ipc(['set_property', 'mute', settings['muted']], socket_path=path)
-                                check_cancel()
-                                committed = True
-                            except (OSError, ValueError):
-                                _save_source(previous_source)
-                                _save_settings(prior_settings)
-                                _save_player(previous)
-                                if was_playing and _epoch() == epoch:
-                                    _ipc(['set_property', 'pause', False], socket_path=previous_path)
-                                raise
-                        # Retired players are paused. Failed cleanup is retained
-                        # in the shared pointer, so another process's Stop can
-                        # retry it without discarding the working new source.
-                        for retired in list(candidate['retiring']):
-                            try:
-                                stopped = _run(['systemctl', '--user', 'stop', retired['unit']], check=False)
-                                if stopped.returncode:
-                                    continue
-                            except LayerError:
-                                continue
-                            try:
-                                (_runtime_dir() / retired['socket']).unlink(missing_ok=True)
-                            except OSError:
-                                pass
-                            with _commit():
-                                current = _player()
-                                if current['unit'] == candidate['unit']:
-                                    current['retiring'] = [x for x in current.get('retiring', [])
-                                                           if x['unit'] != retired['unit']]
-                                    try:
-                                        _save_player(current)
-                                    except OSError:
-                                        pass  # Leave a retryable cleanup record.
-                        return state()
-                    if message.get('event') == 'end-file' and message.get('reason') != 'redirect':
-                        raise LayerError('Audio layer could not play this stream; try Twitch in a browser')
-            raise LayerError('Audio layer loading timed out; try Twitch in a browser')
+            except LayerError:
+                continue
+            try:
+                (_runtime_dir() / retired['socket']).unlink(missing_ok=True)
+            except OSError:
+                pass
+            with _commit():
+                current = _player()
+                if current['unit'] == candidate['unit']:
+                    current['retiring'] = [x for x in current.get('retiring', [])
+                                           if x['unit'] != retired['unit']]
+                    try:
+                        _save_player(current)
+                    except OSError:
+                        pass  # Leave a retryable cleanup record.
+        return state()
     except (OSError, ValueError) as error:
         if committed:
             # A completed handover survives housekeeping failures. Its shared
             # retiring records remain available to Stop for a later retry.
             return state()
-        stopped = _run(['systemctl', '--user', 'stop', candidate['unit']], check=False)
+        stopped = mpv_ipc.stop(_run, candidate['unit'])
         path.unlink(missing_ok=True)
-        if stopped.returncode:
+        if not stopped:
             raise LayerError(str(error) + ' The audio layer could not be stopped.') from error
         suffix = '' if committed else ' Previous background playback has been preserved.'
         raise LayerError(str(error) + suffix) from error
+
+
+_LOAD_FAILURES = {
+    'start': 'Audio layer player did not start',
+    'rejected': 'Audio layer could not load the stream',
+    'closed': 'Audio layer closed while loading',
+    'ended': 'Audio layer could not play this stream; try Twitch in a browser',
+    'timeout': 'Audio layer loading timed out; try Twitch in a browser'}
 
 
 def control(action, value=None):
@@ -551,10 +521,7 @@ def control(action, value=None):
         failed = False
         for unit in units:
             try:
-                stopped = _run(['systemctl', '--user', 'stop', unit], check=False)
-                if stopped.returncode:
-                    loaded = _run(['systemctl', '--user', 'show', unit, '--property=LoadState', '--value'], check=False)
-                    failed = failed or loaded.returncode or loaded.stdout.strip() != 'not-found'
+                failed = not mpv_ipc.ensure_stopped(_run, unit) or failed
             except LayerError:
                 failed = True
         if failed:

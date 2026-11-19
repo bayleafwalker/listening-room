@@ -7,7 +7,7 @@ import os
 import re
 from pathlib import Path
 import shutil
-import socket
+import socket  # noqa: F401  (tests patch socket.socket through this name)
 import subprocess
 import tempfile
 import time
@@ -337,60 +337,20 @@ def _start(value, mode='ambience', placement='9', cancel_event=None, display=Non
         output_options = audio_devices.player_options()
     else:
         output_options = []
-    stopped = _run(['systemctl', '--user', 'stop', unit], check=False)
-    if stopped.returncode:
-        loaded = _run(['systemctl', '--user', 'show', unit, '--property=LoadState', '--value'], check=False)
-        if loaded.returncode or loaded.stdout.strip() != 'not-found':
-            raise AmbienceError('The existing window could not be stopped; its controls have been preserved')
+    if not mpv_ipc.ensure_stopped(_run, unit):
+        raise AmbienceError('The existing window could not be stopped; its controls have been preserved')
     path.unlink(missing_ok=True)
     try:
         cancelled()
-        _run(['systemd-run', '--user', '--collect', '--unit=' + unit,
-              '--property=PartOf=graphical-session.target',
-              '--property=After=graphical-session.target', '--'] + command_line(item, mode, mpv, path)
-             + output_options + (['--volume=' + str(audio.get('volume', 100)),
-                 '--mute=' + ('yes' if audio.get('muted', False) else 'no')] if mode == 'video' else []))
-        deadline = time.monotonic() + 35
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            while True:
-                cancelled()
-                try:
-                    connection.connect(str(path))
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise AmbienceError('The video window did not open')
-                    time.sleep(.1)
-            connection.settimeout(.2)
-            connection.sendall((json.dumps({'command': ['loadfile', item['url'], 'replace'], 'request_id': 1}) + '\n').encode())
-            # Read socket bytes with an absolute deadline. A YouTube error or
-            # endlessly buffering URL must not hang a control window forever.
-            buffer = b''
-            loaded = False
-            ready = False
-            while time.monotonic() < deadline and not ready:
-                cancelled()
-                try:
-                    part = connection.recv(65536)
-                except socket.timeout:
-                    continue
-                if not part:
-                    raise AmbienceError('The video window closed while loading')
-                buffer += part
-                while b'\n' in buffer:
-                    line, buffer = buffer.split(b'\n', 1)
-                    message = json.loads(line)
-                    if message.get('request_id') == 1 and message.get('error') != 'success':
-                        raise AmbienceError('The video URL could not be loaded')
-                    if message.get('event') == 'file-loaded':
-                        loaded = True
-                    if message.get('event') == 'playback-restart' and loaded:
-                        ready = True
-                        break
-                    if message.get('event') == 'end-file' and message.get('reason') != 'redirect':
-                        raise AmbienceError('This video could not be played. Try the offline lake, a local clip, or another public URL.')
-            if not ready:
-                raise AmbienceError('Video loading timed out. Try an offline vista or another URL.')
+        mpv_ipc.spawn(_run, unit, command_line(item, mode, mpv, path) + output_options
+                      + (['--volume=' + str(audio.get('volume', 100)),
+                          '--mute=' + ('yes' if audio.get('muted', False) else 'no')] if mode == 'video' else []))
+        # An absolute deadline: a YouTube error or an endlessly buffering URL
+        # must not hang a control window forever.
+        try:
+            mpv_ipc.load(path, item['url'], time.monotonic() + 35, cancelled)
+        except mpv_ipc.LoadError as failure:
+            raise AmbienceError(_LOAD_FAILURES[failure.reason]) from None
         cancelled()
         _save(mode, dict(item, placement=placement, **({'audio': audio} if mode == 'video' else {})))
         # Hyprland rules handle the initial placement. This also works when
@@ -407,10 +367,17 @@ def _start(value, mode='ambience', placement='9', cancel_event=None, display=Non
             place_on_display(display, mode)
         return state(mode)
     except (OSError, ValueError) as error:
-        stopped = _run(['systemctl', '--user', 'stop', unit], check=False)
-        if stopped.returncode:
+        if not mpv_ipc.stop(_run, unit):
             raise AmbienceError(str(error) + ' The window could not be closed; close it manually.') from error
         raise AmbienceError(str(error)) from error
+
+
+_LOAD_FAILURES = {
+    'start': 'The video window did not open',
+    'rejected': 'The video URL could not be loaded',
+    'closed': 'The video window closed while loading',
+    'ended': 'This video could not be played. Try the offline lake, a local clip, or another public URL.',
+    'timeout': 'Video loading timed out. Try an offline vista or another URL.'}
 
 
 def control(action, mode='ambience', value=None):
@@ -423,7 +390,7 @@ def control(action, mode='ambience', value=None):
         _generation(mode, write=True)
         if mode == 'video':
             _video_audio()
-        _run(['systemctl', '--user', 'stop', 'listening-hub-' + mode + '.service'])
+        mpv_ipc.stop(_run, 'listening-hub-' + mode + '.service', check=True)
     elif action == 'volume' and mode == 'video':
         try:
             value = float(value)
