@@ -881,6 +881,18 @@ class NextWindow(Adw.ApplicationWindow):
         future.add_done_callback(done)
         return True
 
+    def inspect_then(self, callback):
+        """Read fresh state off the GTK thread, then call ``callback(snapshot)`` (None when unreadable) on it."""
+        future = self.executor.submit(session_client.request, 'inspect', {}, 3)
+
+        def done(f):
+            try:
+                snapshot = f.result()
+            except Exception:
+                snapshot = None
+            GLib.idle_add(lambda: (None if self.closed else callback(snapshot)) and False)
+        future.add_done_callback(done)
+
     def render_poll(self, snapshot, error):
         self.polling = False
         if self.closed:

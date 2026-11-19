@@ -417,10 +417,18 @@ class RoomsPage:
         window = self.window
         back = rooms.previous_room(window.snapshot, window.catalogue)
         self.close_preview(animate=False)
-        done = None
-        if back:
-            done = lambda _result: window.toast('Entered ' + entry['name'], 'Back to ' + back['name'],
-                                                lambda: self.go_back(back))
+        errors_before = dict((window.snapshot or {}).get('errors') or {})
+
+        def entered(snapshot):
+            # The controller can say yes and still leave the old room with a layer error: only claim
+            # success when the room really changed and no new layer error came with it.
+            if snapshot is None or not rooms.is_active(entry, snapshot):
+                return
+            errors = snapshot.get('errors') or {}
+            if any(errors[layer] and errors[layer] != errors_before.get(layer) for layer in errors):
+                return
+            window.toast('Entered ' + entry['name'], 'Back to ' + back['name'], lambda: self.go_back(back))
+        done = (lambda _result: window.inspect_then(entered)) if back else None
         window.start('enter', rooms.enter_args(entry, scene_on), entry['name'], entry.get('poster'), done=done)
 
     def go_back(self, back):
