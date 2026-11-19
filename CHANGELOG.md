@@ -49,6 +49,12 @@ All notable changes are recorded here. The format follows
   a quick second click, double-click or Enter still enters.
 - Try again appears in a Mix row's menu only when that layer failed.
 - Favourites, the World radio cache and Twitch channels are read off the GTK thread.
+- Internal, no behaviour change: the radio, background-layer and picture players
+  share one mpv plumbing module (`mpv_ipc`: spawn, load handshake, IPC, stop)
+  instead of three copies; the provider HTTP clients open requests through one
+  no-redirect helper (`http_fetch`) with their timeouts and size limits kept;
+  the unused `room_catalogue.launch_room`, `quiet_room`, `stop_room` and
+  `twitch_channels.collections` are gone.
 
 ## [2.3.1] - 2026-11-18
 

@@ -16,10 +16,6 @@ STYLES = {'music': {'name': 'Music', 'category': 'Music'},
 LOGIN = re.compile(r'^[a-zA-Z0-9_]{1,25}$')
 
 
-def collections():
-    return {key: dict(value) for key, value in STYLES.items()}
-
-
 def _login(value):
     value = str(value).strip().lower()
     if not LOGIN.fullmatch(value):

@@ -3,7 +3,6 @@ from pathlib import Path
 
 import listening_hub as hub
 import ambience
-import audio_layers
 
 
 RECIPES = (
@@ -86,90 +85,3 @@ def rooms():
                     last_entered=last == recipe['id'])
         result.append(item)
     return result
-
-
-def launch_room(room_id, with_view=True, still=False):
-    room = next((item for item in rooms() if item['id'] == room_id), None)
-    if room is None or not room['available']:
-        raise hub.HubError('This room has no available sound source')
-    source = next((item for item in hub.sources() if item['id'] == room['source_id']), None)
-    view = next((item for item in ambience.presets() if item['id'] == room['view_id']), None)
-    if with_view and view is None:
-        raise hub.HubError('This view is unavailable. Choose sound only or another room.')
-    if with_view and still:
-        if not view.get('still_url') or not Path(view['still_url']).is_file():
-            raise hub.HubError('Still artwork is unavailable for this view. Turn off Still artwork or choose another room.')
-        view = dict(view, url=view['still_url'], name=view['name'] + ' · still artwork')
-    hub.play(source)
-    hub.update_state(last_room=room_id)
-    browser = source['kind'] in ('web', 'discovery')
-    message = ('Opened ' + source['name'] + '. Start playback in your browser.'
-               if browser else 'Playing ' + source['name'] + '.')
-    errors = []
-    if with_view:
-        try:
-            ambience.start(view, mode='ambience', placement='9')
-            message += ' The silent view is on workspace 9.'
-        except (ValueError, OSError, hub.HubError) as error:
-            message += ' The view could not open; use Views to try again.'
-            errors.append(str(error))
-    return {'message': message, 'room': room, 'errors': errors}
-
-
-def quiet_room(target_id=None):
-    infos = hub.all_info()
-    # None means no external app was selected when the action was pressed;
-    # never adopt a browser that appears while this action is queued.
-    selected = next((item for item in infos if item['id'] == target_id), None) if target_id is not None else None
-    targets = {item['id']: item for item in infos if item['id'] in ('radio', 'video')}
-    if selected:
-        targets[selected['id']] = selected
-    errors, paused = [], []
-    if target_id is not None and selected is None:
-        errors.append('The selected player is no longer available')
-    for identity, item in targets.items():
-        if item['status'].lower() != 'playing':
-            continue
-        try:
-            hub.player_command(identity, 'pause')
-            paused.append(identity)
-        except (hub.HubError, ValueError, OSError) as error:
-            errors.append(str(error))
-    if ambience.state('ambience'):
-        try:
-            ambience.control('pause', 'ambience')
-            paused.append('ambience')
-        except (ValueError, OSError) as error:
-            errors.append(str(error))
-    layer = audio_layers.state()
-    if layer and layer.get('status', '').lower() == 'playing':
-        try:
-            audio_layers.control('pause')
-            paused.append('overlay')
-        except (ValueError, OSError) as error:
-            errors.append(str(error))
-    message = 'Room paused.' if paused else 'Nothing in the room is playing.'
-    if errors:
-        message += ' Some controls could not be reached.'
-    return {'message': message, 'paused': paused, 'errors': errors}
-
-
-def stop_room():
-    stopped, errors = [], []
-    for name in ('radio', 'ambience', 'video', 'overlay'):
-        unit = hub.radio_unit() if name == 'radio' else 'listening-hub-' + name + '.service'
-        try:
-            if name == 'radio':hub.radio_audio_state()
-            elif name == 'video':ambience._video_audio()
-            elif name == 'overlay':audio_layers.remember_audio()
-            result = hub.run(['systemctl', '--user', 'stop', unit], check=False)
-            if result.returncode:
-                loaded = hub.run(['systemctl', '--user', 'show', unit, '--property=LoadState', '--value'], check=False)
-                if loaded.returncode or loaded.stdout.strip() != 'not-found':
-                    errors.append('Could not stop ' + name)
-            else:
-                stopped.append(name)
-        except (hub.HubError, ValueError, OSError) as error:
-            errors.append(str(error))
-    message = 'Room players stopped.' if not errors else 'Some room players could not be stopped.'
-    return {'message': message, 'stopped': stopped, 'errors': errors}
