@@ -13,7 +13,7 @@ import subprocess
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 import next_model as model
 from next_actions import RoomActions, Ticket, when_finished
@@ -213,6 +213,8 @@ class MiniPlayer(Gtk.Overlay):
                 self.name.set_text(hero['title'] if hero['kind'] == 'return' else 'Listening room')
                 self.line.set_text(hero.get('detail') or ('Pick a room to begin' if hero['kind'] == 'first-run' else ''))
                 self.return_button.set_label(hero.get('button', 'Return'))
+                # Ellipsized, so Return and Browse rooms both fit at the narrowest width.
+                self.return_button.get_child().set_ellipsize(Pango.EllipsizeMode.END)
                 self.return_button.set_tooltip_text(hero.get('button', 'Return'))
             self.play.set_visible(bool(info))
             self.return_button.set_visible(self.state == 'return')
