@@ -13,6 +13,8 @@ import time
 import urllib.error
 import urllib.request
 
+import http_fetch
+
 
 class TransportError(Exception):
     pass
@@ -97,7 +99,7 @@ def _worker():
         request = urllib.request.Request(data['url'], headers=data['headers'],
                                          data=payload.encode() if payload is not None else None)
         try:
-            response = urllib.request.build_opener(NoRedirect()).open(request, timeout=6)
+            response = http_fetch.open_url(request, 6, refuse=NoRedirect)
         except urllib.error.HTTPError as error:
             status = error.code
             error.close()

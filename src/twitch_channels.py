@@ -8,6 +8,7 @@ import tempfile
 import urllib.parse
 import urllib.error
 import urllib.request
+import http_fetch
 import twitch_credentials as local_credentials
 
 STYLES = {'music': {'name': 'Music', 'category': 'Music'},
@@ -116,18 +117,9 @@ def _credentials(client_id=None, access_token=None):
     return saved.client_id, saved.access_token
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, fp, code, message, headers, new_url):
-        return None
-
-
 def _json_get(request):
     # Custom Authorization headers must not follow a redirected API request.
-    with urllib.request.build_opener(_NoRedirect()).open(request, timeout=5) as response:
-        payload = response.read(2 * 1024 * 1024 + 1)
-    if len(payload) > 2 * 1024 * 1024:
-        raise ValueError('Twitch returned an oversized response')
-    return json.loads(payload)
+    return http_fetch.fetch_json(request, 5, 2 * 1024 * 1024)
 
 
 def _get(endpoint, params, client_id, token):

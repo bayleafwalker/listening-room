@@ -17,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import http_fetch
 import twitch_credentials as credentials
 
 
@@ -24,9 +25,7 @@ class AuthError(ValueError):
     pass
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, response, code, message, headers, url):
-        return None
+_NoRedirect = http_fetch.NoRedirect
 
 
 def _post(path, fields):
@@ -34,7 +33,7 @@ def _post(path, fields):
     request = urllib.request.Request(endpoint, data=urllib.parse.urlencode(fields).encode(),
         headers={'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded'}, method='POST')
     try:
-        with urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect()).open(request, timeout=6) as response:
+        with http_fetch.open_url(request, 6, direct=True, refuse=_NoRedirect) as response:
             if response.geturl() != endpoint:
                 raise AuthError('Twitch refused an unexpected redirect')
             body = response.read(65537)

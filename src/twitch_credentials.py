@@ -19,6 +19,8 @@ import urllib.parse
 import urllib.request
 import uuid
 
+import http_fetch
+
 MAX_LOGIN = 128 * 1024
 MAX_RESPONSE = 64 * 1024
 TOKEN_ENDPOINT = 'https://id.twitch.tv/oauth2/token'
@@ -127,9 +129,7 @@ def load():
     return Credentials()
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, response, code, message, headers, new_url):
-        return None
+_NoRedirect = http_fetch.NoRedirect
 
 
 def _renew(values):
@@ -140,9 +140,8 @@ def _renew(values):
     request = urllib.request.Request(TOKEN_ENDPOINT, data=body, method='POST', headers={
         'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json',
         'User-Agent': 'ListeningRoom/2'})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
     try:
-        with opener.open(request, timeout=5) as response:
+        with http_fetch.open_url(request, 5, direct=True, refuse=_NoRedirect) as response:
             if response.geturl() != TOKEN_ENDPOINT or response.status != 200:
                 raise CredentialError('Twitch renewal returned an unexpected response; retry discovery', 'transient')
             content = bytearray()

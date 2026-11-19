@@ -8,6 +8,7 @@ the Jellyfin SDK, and https://listenbrainz.readthedocs.io/en/latest/users/api/.
 """
 import hashlib
 import contextlib
+import http_fetch
 import metadata_http
 import http.server
 import json
@@ -309,7 +310,7 @@ def _request(service, path, params=None, data=None, method=None, cancel_event=No
                     raise ConnectionError('Invalid service response')
             body = b''.join(chunks)
         else:
-            with urllib.request.build_opener(_NoRedirect()).open(request, timeout=6) as response:
+            with http_fetch.open_url(request, 6, refuse=_NoRedirect) as response:
                 body = _read_bounded(response, MAX_RESPONSE, cancel_event)
         _check_context(context)
         _cancel(cancel_event)
@@ -600,7 +601,7 @@ class _StreamHandler(http.server.BaseHTTPRequestHandler):
                                           headers=headers, method='HEAD' if head else 'GET')
         started = False
         try:
-            with urllib.request.build_opener(_NoRedirect()).open(upstream, timeout=8) as response:
+            with http_fetch.open_url(upstream, 8, refuse=_NoRedirect) as response:
                 self.send_response(response.status)
                 for key in ('Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges'):
                     if response.headers.get(key):
@@ -768,7 +769,7 @@ def jellyfin_login(username, password, cancel_event=None):
         headers={'Content-Type': 'application/json', 'Accept': 'application/json',
                  'Authorization': 'MediaBrowser Client="Listening Room", Device="Desktop", DeviceId="listening-room", Version="2.0"'}, method='POST')
     try:
-        with urllib.request.build_opener(_NoRedirect()).open(request, timeout=6) as response:
+        with http_fetch.open_url(request, 6, refuse=_NoRedirect) as response:
             body = response.read(MAX_RESPONSE + 1)
         _cancel(cancel_event)
         if len(body) > MAX_RESPONSE:
