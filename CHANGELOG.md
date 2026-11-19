@@ -32,6 +32,18 @@ All notable changes are recorded here. The format follows
   button, and the level slider and Mute stay hidden until a source exists.
   Play as ambience shows a toast with Undo.
 - `tests/probes/listening-o6-timing.py` times selection and audits GTK-thread work.
+- A window smoke test in the package checks: the real window on a private Xvfb with
+  fixtures shows Rooms, a preview, Listen, Now with the Mix, and Preferences. Each
+  surface draws on its own; one that fails says so inline and the rest keeps working.
+- A persistent "The room service isn't running" banner with Start again (which
+  starts the idle service, never playback); meanwhile Now does not look live.
+- Errors are plain sentences; the raw cause is behind Details (banners) or a Details
+  button (toasts). Refusals and failures show at once, not behind another toast.
+- Tune in with no room shows a named room with the last scene (or a default) and
+  Choose a scene. Tune in over a room marks it Changed, with Save as my room.
+- Browse rooms in the idle mini player and the narrow layout.
+- Library appears after connecting Jellyfin, and World radio favourites on the
+  Radio shelf, without a restart (the snapshot carries `config_generation`).
 
 ### Changed
 - The six offline sounds now sound like their names. Each is synthesized from the
@@ -64,14 +76,6 @@ All notable changes are recorded here. The format follows
   a quick second click, double-click or Enter still enters.
 - Try again appears in a Mix row's menu only when that layer failed.
 - Favourites, the World radio cache and Twitch channels are read off the GTK thread.
-- Internal, no behaviour change: the radio, background-layer and picture players
-  share one mpv plumbing module (`mpv_ipc`: spawn, load handshake, IPC, stop)
-  instead of three copies; the provider HTTP clients open requests through one
-  no-redirect helper (`http_fetch`) with their timeouts and size limits kept;
-  the player core moved from `listening_hub` (now the rofi CLI, re-exporting
-  the core's names) to `player_core`; the unused `room_catalogue.launch_room`,
-  `quiet_room`, `stop_room`, `twitch_channels.collections` and
-  `listening_hub.start_youtube_audio` / `start_twitch_audio` are gone.
 
 ## [2.3.1] - 2026-11-18
 

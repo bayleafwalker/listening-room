@@ -170,15 +170,15 @@ Set them up under Menu > Preferences > Connections (all start as "Not set up"). 
 
 | Keys | Action |
 |---|---|
-| Space | Pause or resume the room |
+| Space | Pause or resume the room, in Now and the mini player, whatever button has focus (not in a text field or on a slider) |
 | Enter, double-click | Enter the focused room (one click or Space only previews) |
 | Ctrl+1, Ctrl+2, Ctrl+3 | Rooms, Listen, Now |
 | Ctrl+F | Search (or just start typing) |
 | Ctrl+L, Ctrl+V | Add a link |
 | Ctrl+M | Mini player |
 | Ctrl+, | Preferences |
-| Up, Down | Room volume in Now |
-| Esc | Close a sheet, then go back to browsing; leaves "choose an ambience" |
+| Up, Down | Room volume in Now and the mini player |
+| Esc | Close a sheet, then go back where you came from: Now returns to Rooms or Listen, Listen to Now or Rooms; leaves "choose an ambience" |
 | Ctrl+? | Show all shortcuts |
 
 ## Privacy
@@ -209,7 +209,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 **I do not use Hyprland or Waybar.** Neither is needed. `listening-room` is a
 normal GTK window and works on GNOME, KDE and other compositors. Waybar is only
 for the optional bar module; media keys use MPRIS, so they work anywhere. Only
-the window-placement actions that use Hyprland commands are skipped elsewhere.
+scene placement (Workspace 9, Here, On top, Small) needs Hyprland: the window
+detects it at runtime and, without it, says so beside the placement choices; the
+room's scene still shows in the window itself. With Hyprland the scene opens on
+the current workspace ("Here") unless you chose another placement.
 
 **I do not use Jellyfin.** Skip it. Radio, links, rooms and layers work without
 any account. If you do use it, connect it under Preferences > Connections, or
