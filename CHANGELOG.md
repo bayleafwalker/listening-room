@@ -5,6 +5,11 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- Sounds: the rain under distant thunder is now clearly audible between the
+  rolls, and the six offline sounds are matched on A-weighted (perceived)
+  loudness instead of raw RMS, so thunder is no longer far quieter than rain.
+
 ### Added
 - Objective checks for the sounds (spectrum, event structure, distinctness, loop
   seam, level, determinism): `tests/test_listening_atmosphere_character.py`.

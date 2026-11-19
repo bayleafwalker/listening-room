@@ -28,8 +28,12 @@ class AtmosphereTests(unittest.TestCase):
                 self.assertEqual(samples, render.render(item['id'], rate=8000, seconds=4))
                 self.assertEqual(len(samples), 32000)
                 rms = math.sqrt(sum(x * x for x in samples) / len(samples)) / 32767
-                self.assertGreater(rms, .05)
-                self.assertLess(rms, .12)
+                # Beds are matched on A-weighted level (31 dB below full scale), so raw RMS depends on the spectrum (it was
+                # between .05 and .12 when every bed was matched on raw RMS). A bed must still not be near silent.
+                self.assertGreater(rms, .02)
+                # Beds are matched on A-weighted level, so raw RMS differs by bed; the bound is the -12 dBFS headroom limit
+                # (it was .12 when every bed was matched on raw RMS).
+                self.assertLess(rms, .25)
                 self.assertLess(max(abs(x) for x in samples), 32767 * .66)
                 self.assertLess(abs(sum(samples) / len(samples)), 1)
                 differences = [samples[i] - samples[i-1] for i in range(1, len(samples))]

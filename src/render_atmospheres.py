@@ -12,8 +12,9 @@ over light rain, wind is gust envelopes driving band-limited leaf rustle, the
 train is a sway-modulated rumble with paired rail-joint clacks, and the cafe is
 formant-shaped nonverbal babble with cup clinks and chair movement.
 
-Level target: every bed is scaled to an RMS of 0.08 of full scale (about
--22 dBFS), then peaks are softly limited below 0.65 of full scale.
+Level target: every bed is scaled to the same A-weighted RMS (A_TARGET_DB, the
+measure of how loud a sound seems on ordinary speakers, not raw RMS, which
+overrates deep rumbles), then peaks are softly limited below 0.65 of full scale.
 """
 from array import array
 import argparse
@@ -29,7 +30,8 @@ from atmosphere_catalogue import SOUNDS
 
 RATE = 24000
 SECONDS = 40
-TARGET_RMS = .08
+A_TARGET_DB = -31.0  # A-weighted RMS every bed is matched to (dB re full scale); low enough that thunder's raw RMS stays below -12 dBFS
+TARGET_RMS = 10 ** (A_TARGET_DB / 20)  # kept for callers: the same target as a linear A-weighted RMS
 PEAK_CEILING = .65
 CONTROL_RATE = 100
 
@@ -172,7 +174,7 @@ def tscale(seconds):
     return min(1.0, seconds / SECONDS)
 
 
-def rain_layer(rng, count, rate, seconds, density=1.0, level=1.0):
+def rain_layer(rng, count, rate, seconds, density=1.0, level=1.0, wash_level=.06, spread=.75):
     """Wash, dense small droplets with varied pitch and level, plinks and runnels."""
     white = noise(rng, count)
     wash = mix(count, (.55, biquad(white, 'bp', 3000, .4, rate)),
@@ -181,7 +183,7 @@ def rain_layer(rng, count, rate, seconds, density=1.0, level=1.0):
     out = silence(count)
     for _ in range(max(2, int(seconds * 125 * density))):
         ring(out, rng.randrange(count), math.exp(rng.uniform(math.log(1900), math.log(6500))),
-             rng.uniform(.0012, .0042), .035 * math.exp(rng.gauss(0, .75)), rate)
+             rng.uniform(.0012, .0042), .035 * math.exp(rng.gauss(0, spread)), rate)
     for _ in range(max(1, int(seconds * 7 * density))):
         ring(out, rng.randrange(count), rng.uniform(1100, 2800), rng.uniform(.006, .014),
              .05 * math.exp(rng.gauss(0, .4)), rate)
@@ -195,7 +197,7 @@ def rain_layer(rng, count, rate, seconds, density=1.0, level=1.0):
         add_bump(runnels, rng.uniform(0, seconds), rng.uniform(.25, .6),
                  rng.uniform(.5, 1.3), rng.uniform(.5, 1.0), tail=0)
     trickle = multiply(biquad(white, 'bp', 4800, 1.6, rate), upsample(runnels, count))
-    return mix(count, (level * .06, wash), (level, out), (level * .11, trickle))
+    return mix(count, (level * wash_level, wash), (level, out), (level * .11, trickle))
 
 
 def fire(rng, count, rate, seconds):
@@ -230,7 +232,13 @@ def fire(rng, count, rate, seconds):
 
 def thunder(rng, count, rate, seconds):
     scale = tscale(seconds)
-    rain = rain_layer(rng, count, rate, seconds, density=.22, level=.20)
+    # Light rain that is clearly audible between the rolls: a few evenly sized droplets plus a wash that swells and
+    # fades over seconds. Sharp or dense droplets would either hide a loop-seam click or make thunder sound like
+    # the rain bed; the swells keep the rain below the rain-on-glass bed's typical level.
+    rain = rain_layer(rng, count, rate, seconds, density=.15, level=.15, wash_level=0, spread=.3)
+    wash = biquad(noise(rng, count), 'bp', 3200, .5, rate)
+    swell = scaled(rng, count, seconds * .5, .1, 1.0, power=3.5)
+    rain = mix(count, (1.0, rain), (.05, multiply(wash, swell)))
     white = noise(rng, count)
     sub = mix(count, (1.0, biquad(white, 'lp', 80, .8, rate)), (.8, biquad(white, 'bp', 48, 1.4, rate)))
     body = biquad(white, 'lp', 210, .7, rate)
@@ -244,10 +252,11 @@ def thunder(rng, count, rate, seconds):
         for _ in range(rng.randint(3, 5)):
             add_bump(envelope, at + rng.uniform(.5, 4.5) * scale, rng.uniform(.3, .7) * scale,
                      rng.uniform(1.4, 2.6) * scale, rng.uniform(.25, .6), tail=2.0)
-    env = upsample(envelope, count)
+    # a faint continuous rumble under the rolls, so the quiet between them is never silent
+    env = array('f', (e + .036 for e in upsample(envelope, count)))
     rumble = multiply(sub, env)
     front = array('f', (b * e * e for b, e in zip(body, env)))
-    return mix(count, (1.0, rain), (3.0, rumble), (1.1, front))
+    return mix(count, (1.0, rain), (2.0, rumble), (.9, front))
 
 
 def wind(rng, count, rate, seconds):
@@ -383,8 +392,35 @@ VOICES = {'rain-glass': lambda rng, count, rate, seconds: rain_layer(rng, count,
           'train-carriage': train, 'cafe-murmur': cafe}
 
 
+def a_weighted_rms(samples, rate=RATE):
+    """A-weighted RMS (IEC 61672 curve, 0 dB at 1 kHz) via bilinear one-pole sections; linear in the input level."""
+    def section(kind, freq):
+        k = math.tan(math.pi * freq / rate)
+        if kind == 'hp':
+            return 1 / (1 + k), -1 / (1 + k), -(1 - k) / (1 + k)
+        return k / (1 + k), k / (1 + k), -(1 - k) / (1 + k)
+    stages = [section('hp', 20.6)] * 2 + [section('hp', 107.7), section('hp', 737.9)] + [section('lp', min(12194, .4 * rate))] * 2
+    x = samples
+    for b0, b1, a1 in stages:
+        out = array('f', bytes(4 * len(x)))
+        px = py = 0.0
+        for i, v in enumerate(x):
+            py = b0 * v + b1 * px - a1 * py
+            px = v
+            out[i] = py
+        x = out
+    # gain that makes the cascade 0 dB at 1 kHz
+    w = 2 * math.pi * 1000 / rate
+    z = complex(math.cos(w), -math.sin(w))
+    h = 1.0
+    for b0, b1, a1 in stages:
+        h *= (b0 + b1 * z) / (1 + a1 * z)
+    gain = 1 / abs(h)
+    return gain * math.sqrt(sum(v * v for v in x) / len(x))
+
+
 def normalise(samples):
-    """Remove DC, set the target RMS, then softly limit peaks below the ceiling."""
+    """Remove DC, set the A-weighted target level, then softly limit peaks below the ceiling."""
     count = len(samples)
     mean = sum(samples) / count
     centred = [x - mean for x in samples]
@@ -392,8 +428,7 @@ def normalise(samples):
     span = PEAK_CEILING - knee
     result = centred
     for _ in range(3):
-        rms = math.sqrt(sum(x * x for x in result) / count)
-        gain = TARGET_RMS / max(rms, 1e-9)
+        gain = TARGET_RMS / max(a_weighted_rms(result), 1e-9)
         result = [x * gain for x in result]
         result = [math.copysign(knee + span * math.tanh((abs(x) - knee) / span), x) if abs(x) > knee else x
                   for x in result]

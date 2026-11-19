@@ -277,6 +277,12 @@ class CharacterOracles(unittest.TestCase):
             if identity != 'distant-thunder':
                 self.assertLess(self.table[identity]['lf_range'], t['lf_range'] / 2)
 
+    def test_rain_under_thunder_stays_audible_between_the_rolls(self):
+        x = bed('distant-thunder')
+        second = RATE
+        levels = [math.sqrt(sum(v * v for v in x[i:i + second]) / second) for i in range(0, len(x) - second + 1, second // 2)]
+        self.assertGreater(20 * math.log10(min(levels)), -40.0)
+
     def test_wind_swells_slowly_and_the_rustle_follows_the_gusts(self):
         w = self.table['forest-wind']
         self.assertGreater(w['slow_depth'], .5)
@@ -316,12 +322,15 @@ class CharacterOracles(unittest.TestCase):
                         self.assertGreaterEqual(len(apart), 2, apart)
 
     def test_loops_are_seamless_unclipped_and_equally_loud(self):
+        # Equally loud means equal A-weighted level (what ordinary speakers make audible), within 1.5 dB of the stated
+        # target; the raw RMS stays below -12 dBFS so matching never costs headroom. (Revision: this used to pin raw RMS.)
         target = render.TARGET_RMS
         for identity in IDS:
             x = bed(identity)
             with self.subTest(sound=identity):
                 rms = math.sqrt(sum(v * v for v in x) / len(x))
-                self.assertLess(abs(20 * math.log10(rms / target)), 1.0)
+                self.assertLess(20 * math.log10(rms), -12.0)
+                self.assertLess(abs(20 * math.log10(render.a_weighted_rms(x) / target)), 1.5)
                 self.assertLess(max(abs(v) for v in x), render.PEAK_CEILING + .001)
                 self.assertEqual(sum(1 for v in x if abs(v) >= .99), 0)
                 steps = [abs(x[i] - x[i - 1]) for i in range(1, len(x))]

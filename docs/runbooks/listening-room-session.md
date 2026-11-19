@@ -356,8 +356,16 @@ voices. `render_atmospheres.py` creates WAV files and CC0 provenance/hashes
 during packaging. Each bed is built from the events that define it (droplets,
 crackles, thunder rolls, gusts and leaf rustle, paired rail-joint clacks,
 formant-shaped babble and clinks) rather than from filtered noise, and every bed
-is scaled to the same level: RMS 0.08 of full scale (about -22 dBFS) with peaks
-softly limited below 0.65. `tests/test_listening_atmosphere_character.py`
+is scaled to the same perceived loudness, measured as A-weighted RMS (31 dB below
+full scale; raw RMS left a 17 dB A-weighted spread, with thunder far quieter than
+rain on ordinary speakers). The beds stay within 1.5 dB of each other on that
+measure, with peaks softly limited below 0.65. Thunder's low rolls carry little
+A-weighted level, so holding it level with the others costs raw headroom, which is
+why the whole set sits this low and every raw RMS stays below -12 dBFS. Distant
+thunder keeps its rain audible between the rolls (sparse droplets and a swelling
+wash, about 7 dB below the rain-on-glass bed in 1.5-9 kHz, over a faint continuous
+rumble), so its 1 s level never falls below -40 dBFS.
+`tests/test_listening_atmosphere_character.py`
 measures spectral flatness and tilt, onset rate, low-frequency rumble events,
 gust-rate modulation, clack periodicity and voiced formant texture, and checks
 that the six beds differ, loop without a click and render byte-identically. Those
