@@ -47,6 +47,16 @@ All notable changes are recorded here. The format follows
   hearth, and the grate no longer bends. Chimney smoke rises instead of
   swaying, clouds drift as one layer, and the Velvet Circuit candle and the
   Wizarding Valley lantern flicker as light.
+- Scene polish. The Midnight Library fire now fills the firebox (taller, wider
+  tongues, more heat) instead of being smaller than the painted flame, and the
+  wall where the painted flame was removed keeps the stone's grain instead of a
+  smooth smudge. Clouds in After Hours, Atomic Lounge and Wizarding Valley no
+  longer tick every 10 seconds: the drift is now resampled without the step
+  that appeared each time a copy passed zero shift. The unused fire `lick` key
+  is gone. Scene tuning files are validated at load: an unknown or
+  out-of-range effect parameter fails the asset build with a message naming the
+  file, effect and parameter (`tests/test_listening_scene_tuning.py`). The four
+  room videos change; the rigid-structure checks are unchanged.
 - Each room names the structure that must not move: grates, frames, posts,
   rocks, figures and horizons. No effect can move it, and the build checks it.
   The room videos change as a result.

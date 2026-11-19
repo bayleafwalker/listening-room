@@ -88,6 +88,26 @@ def _noise(size, cell, rng, contrast=1.6):
     return field.point(lambda v: max(0, min(255, round(128 + (v-128)*contrast))))
 
 
+def _mix(first, second, amount, dither):
+    """Blend two RGB images without a bias in either direction.
+
+    Image.blend truncates, which darkens every pixel that falls by a fraction
+    of a level, and plain rounding drops a small blend altogether until it
+    crosses half a level. Both show as steps when a nearly pure copy starts to
+    mix. A fixed per-column threshold (`dither`, 0-255) makes the average exact
+    and the change gradual.
+    """
+    k = round(amount*256)
+    if k <= 0:
+        return first
+    if k >= 256:
+        return second
+    return Image.merge('RGB', [
+        ImageMath.lambda_eval(lambda a: (a['n']*(256-k) + a['f']*k + a['d']) >> 8,
+                              n=n, f=f, d=dither).convert('L')
+        for n, f in zip(first.split(), second.split())])
+
+
 def _flicker(phase, offset, harmonics):
     """A gain near one built from whole loop harmonics, so it always wraps."""
     return 1 + sum(amount*math.sin(phase*cycles + offset*(i+1)*1.7)
@@ -183,7 +203,7 @@ def _prepare_fire(effect, base, size, rng):
         raise ValueError('Fire suppress must be between zero and one')
     # Suppression reaches fainter painted licks than the envelope does.
     faint = ImageChops.multiply(effect['mask'], patch.convert('L').point(
-        lambda v: max(0, min(255, (v-threshold+35)*5))))
+        lambda v: max(0, min(255, (v-threshold+effect.get('faint', 45))*5))))
     # The painted ember bed at the foot of the zone stays; only flames above
     # it are replaced.
     top, foot = zone[3] - .3*(zone[3]-zone[1]), zone[3] - .1*(zone[3]-zone[1])
@@ -194,14 +214,24 @@ def _prepare_fire(effect, base, size, rng):
         lambda v: round(v*suppress))
     # Stand-in for the wall behind the painted flame: the surrounding wall,
     # spread in from all sides (a blur normalised by what it averaged).
-    keep = ImageOps.invert(faint.filter(ImageFilter.MaxFilter(5)))
-    radius = max(2, 10*scale)
+    keep = ImageOps.invert(faint.filter(ImageFilter.MaxFilter(effect.get('fill_gap', 9))))
+    radius = max(2, effect.get('fill_radius', 14)*scale)
     weight = keep.filter(ImageFilter.GaussianBlur(radius))
-    effect['suppressed'] = Image.merge('RGB', [
+    smooth = Image.merge('RGB', [
         ImageMath.lambda_eval(lambda a: a['n'] * 255 / (a['d'] + 1),
                               n=ImageChops.multiply(band, keep).filter(ImageFilter.GaussianBlur(radius)),
                               d=weight).convert('L')
         for band in patch.split()])
+    # A smooth fill reads as a smudge when magnified. Give it a grain like the
+    # wall's: two fixed tiling noise scales, a little stronger in luma than
+    # the stone's mottling, so the patch matches its surroundings.
+    grain = effect.get('grain', .3)
+    if not 0 <= grain <= 1:
+        raise ValueError('Fire grain must be between zero and one')
+    stone = ImageChops.add(_noise((w, h), (7*scale, 5*scale), rng, 1.4),
+                           _noise((w, h), (22*scale, 14*scale), rng, 1.4), 2)
+    stone = stone.point(lambda v: round(128 + (v-128)*grain*.5))
+    effect['suppressed'] = ImageChops.add(smooth, Image.merge('RGB', [stone]*3), 1, -128)
     effect['spill_mask'] = None
     if effect.get('spill'):
         spill = _union_mask(effect['spill'], size, box, effect.get('spill_feather', .12))
@@ -251,6 +281,10 @@ def prepare_scene(plate, scene, size=(1440, 810)):
         count=effect.get('count',max(16,min(70,w*h//2500)))
         effect['particles']=[(rng.random(),rng.random(),rng.random(),rng.random()) for _ in range(count)]
         effect['phase_offset']=rng.random()*2*math.pi
+        if kind == 'cloud':
+            # One threshold per column, so the same drift stays identical on every row.
+            effect['dither'] = Image.frombytes('L', (w, 1), bytes(rng.randrange(256) for _ in range(w))).resize(
+                (w, h), Image.Resampling.NEAREST)
         if kind == 'cloud' and 'source_threshold' in effect:
             # Drift only painted cloud and the sky just around it: isolated
             # stars (one or two pixels) are opened away and stay fixed.
@@ -386,11 +420,21 @@ def room_frame(prepared, frame, total_frames=480):
             if drift not in (-1, 1):
                 raise ValueError('Cloud drift must be -1 or 1')
             u = (unit*cycles) % 1
+            dither = effect['dither']
             def drifted(offset):
-                return base.transform((w, h), Image.Transform.AFFINE,
-                                      (1, 0, x0 - drift*offset*amplitude, 0, 1, y0),
-                                      resample=Image.Resampling.BILINEAR)
-            warped = Image.blend(drifted((u+.5) % 1 - .5), drifted(u-.5), math.sin(math.pi*u)**2)
+                # Whole pixels are exact crops and the fraction blends the two
+                # neighbours, so the picture is the plate at a zero shift and
+                # moves smoothly through it. (A one-step bilinear transform
+                # softens at any non-zero shift, which showed as a tick every
+                # time a copy passed zero.)
+                at = -drift*offset*amplitude
+                whole = math.floor(at)
+                near = base.crop((x0 + whole, y0, x0 + whole + w, y0 + h))
+                if at == whole:
+                    return near
+                far = base.crop((x0 + whole + 1, y0, x0 + whole + 1 + w, y0 + h))
+                return _mix(near, far, at - whole, dither)
+            warped = _mix(drifted((u+.5) % 1 - .5), drifted(u-.5), math.sin(math.pi*u)**2, dither)
             shot.paste(warped,(x0,y0),effect['mask'].point(lambda v:round(v*strength)))
             continue
         elif kind == 'smoke':

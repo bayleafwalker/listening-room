@@ -101,6 +101,7 @@ stdenvNoCC.mkDerivation {
     python3 tests/test_listening_ambience.py
     python3 tests/test_listening_rooms.py
     python3 tests/test_listening_visuals.py
+    python3 tests/test_listening_scene_tuning.py
     python3 tests/test_listening_effects.py
     python3 tests/test_listening_twitch.py
     python3 tests/test_listening_layers.py

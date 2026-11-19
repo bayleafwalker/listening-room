@@ -107,3 +107,38 @@ sampled frames and short clips, not a continuous watch on the target display.
 | Atomic Lounge | `d63ebc78475adeced032a9306ca47f983c0f821facfae1af1fdb85352aaf20e2` | Clouds drift as one layer. The window head, mullion, right frame, tower, dish and horizon are rigid. The cloud used to bend the chrome window frame. | The sunset clouds drift behind a still frame. The valves and pendants are unchanged. |
 | Finnish Discoveries | `99403c0cee872ebd3e6be77ac6a8bc458ced90118167511abf5a75d4cdd836c4` | The swaying plume warp is now rising wisps. The chimney, far shore, pier, posts, ladder, reeds and rocks are rigid. | The plume stays where it is painted while density travels up through it. The mooring post no longer moves (it changed by 28 levels before), and the rocks are still. The lake ripples are otherwise as before. |
 | Wizarding Valley | `1a25f202e2c9b0cc744d8b06e6857bd8a2d3d2cc1179f00e2ba593a9281150a7` | Clouds drift as one layer (amplitude 30 to 12). The lantern's invisible glow is now a candle flicker. The peaks, pool rim, both bathers and the lantern frame are rigid. | The bather beside the pool and the lantern frame used to ripple with the water. The lantern light now visibly breathes. |
+
+### Polish record (2026-11-19)
+
+Four changes after review of the 2026-11-18 deliveries. The new hashes are
+SHA-256 of the room videos from `nix build .#listening-hub.assets`; other rooms
+are unchanged. Frames were reviewed at full size and at 4× (sampled frames and
+short clips, not a continuous watch).
+
+- **Library fire size.** The tuning now has `heat` 1.8, `bed` 0.7 and `reach`
+  0.32 (was default, 0.35 and 0.15), so tongues fill the firebox from the
+  grate to the upper stones. Brighter values (`heat` 2.0 and above) lit the
+  edge beside the left post enough that the independent rigid oracle read it
+  as a displaced block (gain .051 against .05); 1.8 leaves it at .040.
+- **Smudge.** The fill that replaces the painted flame is smooth, so it showed
+  as a flat patch at 3–4× zoom. It now carries two scales of tiling noise
+  (`grain`, 0.3), the fill spreads from a wider gap around the flame
+  (`fill_gap`, `fill_radius`) and fainter licks are caught (`faint`).
+- **Cloud tick.** The drift was an affine bilinear transform. PIL's transform
+  at any non-zero shift is about 0.27 mean luma levels softer than the exact
+  copy it gives at zero, so frame 0 and the half-loop frame were different
+  from their neighbours. They were the largest frame step of the loop (0.29,
+  0.58 and 0.70 against a median of 0.02), once per 10 s, since two copies
+  cross zero half a loop apart. Clouds now use exact crops and a bias-free
+  blend with a fixed per-column dither. The largest step is now 1.4 times
+  the median in each room, and frame 0 equals the plate in the cloud rectangle.
+- **Tuning validation.** `validate_tuning` in `src/visual_scenes.py` checks
+  every key, type and range of every effect kind and rigid region at load. The
+  unused fire `lick` key was removed.
+
+| Room | Video SHA-256 (new) |
+| --- | --- |
+| Midnight Library | `33d699a19a4bb848feb0e67aeb9776c4d0cdf9e3ea64370772e6bd35d8bef8af` |
+| After Hours | `784d3def6d8941e1aeb8a79500007f15ce2bee56106b6310d0b61c52ae86d256` |
+| Atomic Lounge | `aa84df717c960e3bcf9e048f18e0ecfd678ddab8041bfd940417a6c3b6a9d345` |
+| Wizarding Valley | `bbeac8e15c534654b09dcefd06f7880bd0f65a44e52784cbf5d9015a4f189a11` |

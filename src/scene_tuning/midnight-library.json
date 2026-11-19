@@ -385,8 +385,9 @@
       "strength": 1,
       "flame_threshold": 140,
       "rise": 9,
-      "reach": 0.15,
-      "bed": 0.35,
+      "reach": 0.32,
+      "bed": 0.7,
+      "heat": 1.8,
       "suppress": 0.85,
       "sparks": 7,
       "spill": [
@@ -468,8 +469,8 @@
         ]
       ],
       "spill_feather": 0.04,
-      "tongue": 7,
-      "lick": 0.9
+      "tongue": 8,
+      "grain": 0.3
     },
     {
       "kind": "electrical",
