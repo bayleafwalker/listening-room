@@ -7,11 +7,14 @@ them. The parity gap oracles that must FAIL while a contract capability has no p
 tests/probes/listening-o5-acceptance.py, so that this suite stays green in the package build.
 """
 import contextlib
+import importlib.util
 import io
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -69,6 +72,38 @@ class LaunchContract(unittest.TestCase):
             for name in gone:
                 self.assertIsNone(re.search(r'^\s*(import|from)\s+%s\b' % name, text, re.M), '%s imports %s' % (path.name, name))
 
+    # R-src1 (acceptance author, WP4): the test above stays as it is. An import statement is itself the guarded thing,
+    # and the text search also covers imports inside functions that no run can reach. This adds the behaviour:
+    # none of the removed modules can be found, and importing every module of the program finds none of them either.
+    def test_the_removed_modules_cannot_be_imported_and_no_module_needs_them(self):
+        gone = ('room_experience', 'connections_ui', 'twitch_ui', 'world_radio_ui', 'room_discovery')
+        script = '''
+import importlib, json, sys
+sys.path.insert(0, sys.argv[1])
+gone, missing = set(sys.argv[3:]), []
+for name in sys.argv[2].split(','):
+    try:
+        importlib.import_module(name)
+    except ModuleNotFoundError as error:
+        if error.name in gone:
+            missing.append((name, error.name))
+    except BaseException:
+        pass   # GTK without a display and similar: not what this oracle guards
+print(json.dumps({'missing': missing, 'loaded': sorted(gone & set(sys.modules))}))
+'''
+        modules = sorted(path.stem for path in SOURCE.glob('*.py'))
+        with tempfile.TemporaryDirectory() as home:
+            env = dict(os.environ, HOME=home, XDG_STATE_HOME=home, XDG_CONFIG_HOME=home, XDG_CACHE_HOME=home)
+            env.pop('DISPLAY', None)
+            env.pop('WAYLAND_DISPLAY', None)
+            result = subprocess.run([sys.executable, '-c', script, str(SOURCE), ','.join(modules)] + list(gone),
+                                    capture_output=True, text=True, env=env, timeout=120, stdin=subprocess.DEVNULL)
+        self.assertEqual(result.returncode, 0, result.stderr[-800:])
+        report = __import__('json').loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(report, {'missing': [], 'loaded': []})
+        for name in gone:
+            self.assertIsNone(importlib.util.find_spec(name), name)
+
 
 class HomeModuleContract(unittest.TestCase):
     """The desktop actions and Waybar settings point at verbs and flags that exist."""
@@ -81,12 +116,26 @@ class HomeModuleContract(unittest.TestCase):
         module = Path(module)
         self.text = module.read_text()
 
+    @unittest.skip('ORIGINAL, superseded by test_every_roomctl_verb_is_accepted_by_roomctl (R-src1, acceptance author, WP4): '
+                   'it parsed the choices list out of roomctl.py source text, so a verb list built any other way would break it')
     def test_every_roomctl_verb_exists(self):
         source = (SOURCE / 'roomctl.py').read_text()
         choices = set(re.findall(r"'([a-z-]+)'", re.search(r"choices=\[(.*?)\]", source, re.S).group(1)))
         verbs = set(re.findall(r'listening-roomctl\s+([a-z-]+)', self.text))
         self.assertTrue({'return', 'menu', 'quiet', 'popover', 'status'} <= verbs, verbs)
         self.assertEqual(verbs - choices, set())
+
+    def test_every_roomctl_verb_is_accepted_by_roomctl(self):
+        # The real command line decides: an unknown verb is an argparse usage error (status 2) before --help runs.
+        verbs = set(re.findall(r'listening-roomctl\s+([a-z-]+)', self.text))
+        self.assertTrue({'return', 'menu', 'quiet', 'popover', 'status'} <= verbs, verbs)
+        refused = []
+        for verb in sorted(verbs | {'no-such-verb-wp4'}):
+            result = subprocess.run([sys.executable, str(SOURCE / 'roomctl.py'), verb, '--help'], capture_output=True, text=True,
+                                    timeout=60, stdin=subprocess.DEVNULL, env=dict(os.environ, PYTHONPATH=str(SOURCE)))
+            if result.returncode != 0:
+                refused.append(verb)
+        self.assertEqual(refused, ['no-such-verb-wp4'])   # the control verb must be refused, every module verb accepted
 
     def test_every_listening_room_flag_is_accepted(self):
         if next_window is None:
@@ -140,8 +189,21 @@ class RetiredClassicTestsKeptTheirOracles(unittest.TestCase):
             with self.assertRaises(ValueError):
                 twitch.parse_names(value)
 
+    @unittest.skip('ORIGINAL, superseded by test_the_room_model_names_the_state_words (R-src1, acceptance author, WP4): '
+                   'it only checked that a function called now_model exists, not what it says')
     def test_the_old_room_model_still_names_the_state_words(self):
         self.assertTrue(hasattr(next_model, 'now_model'))
+
+    def test_the_room_model_names_the_state_words(self):
+        from test_listening_next_model import snapshot
+        self.assertIsNone(next_model.now_model(snapshot(active=None)))
+        playing = snapshot()
+        paused = snapshot()
+        paused['layers']['music']['status'] = paused['layers']['atmosphere']['status'] = 'Paused'
+        idle = snapshot()
+        idle['layers']['music']['status'] = idle['layers']['atmosphere']['status'] = 'Stopped'
+        self.assertEqual([next_model.now_model(s)['state'] for s in (playing, paused, idle)], ['playing', 'paused', 'idle'])
+        self.assertEqual(next_model.now_model(playing)['name'], 'Midnight library')
 
 
 if __name__ == '__main__':

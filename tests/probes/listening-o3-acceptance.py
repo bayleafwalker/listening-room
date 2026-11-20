@@ -1745,9 +1745,38 @@ def s13_evidence_and_integration_static():
     ok = True
     for needed in ('nav', 'next_window.py'):
         pass
+    # ORIGINAL oracles, kept visible but no longer counted (revision R-src1, acceptance author, WP4). Both read source
+    # text: the first passed on any mention of the two calls, the second on a file name anywhere in package.nix, so a
+    # moved suite list (WP4) or a renamed helper would fail them while behaviour is unchanged.
     window_source = (repo / 'src/next_window.py').read_text()
-    check('integration: render() calls both rooms and listen updates', 'self.rooms.render' in window_source and 'self.listen.update' in window_source, '')
-    check('integration: the hub test list registers the O2 and O3 suites', 'test_listening_rooms_oracles.py' in (repo / 'nix/package.nix').read_text() and 'test_listening_listen.py' in (repo / 'nix/package.nix').read_text(), '')
+    for name, ok, by in (
+            ('integration: render() calls both rooms and listen updates',
+             'self.rooms.render' in window_source and 'self.listen.update' in window_source, 'integration-R1a/R1b'),
+            ('integration: the hub test list registers the O2 and O3 suites',
+             'test_listening_rooms_oracles.py' in (repo / 'nix/package.nix').read_text() and 'test_listening_listen.py' in (repo / 'nix/package.nix').read_text(),
+             'tests/probes/wp4-oracles.py suites and canary (the dev loop and the Nix checkPhase run the same traced suites, these two included; an unregistered test is caught or runs)')):
+        print('SUPERSEDED [ORIGINAL, superseded by %s] %s %s: source text, not behaviour' % (by, 'PASS' if ok else 'FAIL', name), flush=True)
+    # integration-R1: one state change reaches both pages through the window's own poll and render.
+    leave_all()
+    rooms = {r['id']: r['name'] for r in room_catalogue.rooms()}
+    window = launch(1200, 800)
+    pump(1.0)
+
+    def playing_cards():
+        cards = [w for w in walk(window.rooms.cards) if isinstance(w, Gtk.FlowBoxChild)]
+        return sorted(name for name in rooms.values() for card in cards if 'Playing' in texts(card) and name in texts(card))
+    seen = []
+    for room_id in ('midnight-library', 'night-drive'):
+        enter_room(room_id)
+        pump(2.0)
+        seen.append((window.listen.bar_title.get_text(), window.listen.bar.get_visible(), playing_cards()))
+    check('integration-R1a a room change reaches Listen: the now-playing bar names each room as it is entered',
+          [s[:2] for s in seen] == [(rooms['midnight-library'], True), (rooms['night-drive'], True)], repr(seen))
+    check('integration-R1b a room change reaches Rooms: the Playing tag follows the entered room',
+          [s[2] for s in seen] == [[rooms['midnight-library']], [rooms['night-drive']]], repr(seen))
+    window.close()
+    pump(.3)
+    leave_all()
 
 
 def main():

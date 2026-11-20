@@ -463,11 +463,37 @@ with env:
                   window.offline_bar.get_reveal_child() and any('still isn’t running' in t for t in toast_texts(window)),
                   toast_texts(window))
         pump(1.5)
-        # The service source: ensure_service only starts idle infrastructure (documented guarantee).
+        # ORIGINAL oracle, kept visible but no longer counted (revision R-src1, acceptance author, WP4): it read the
+        # function's source text, so a playback verb built at run time or sent by a helper would pass it.
         import inspect
         src = inspect.getsource(session_client.ensure_service)
-        check('S11 ensure_service sends no playback command (only inspect)', "'inspect'" in src
-              and not any(word in src for word in ("'enter'", "'return'", "'resume'", "'music'")))
+        print('SUPERSEDED [ORIGINAL, superseded by S11-R1] %s S11 ensure_service sends no playback command (only inspect): source text, not behaviour'
+              % ('PASS' if "'inspect'" in src and not any(word in src for word in ("'enter'", "'return'", "'resume'", "'music'")) else 'FAIL'), flush=True)
+        # S11-R1: drive every startup path of ensure_service against fakes that record what it sends and starts.
+        sent, started, spawned = [], [], []
+
+        def startup_paths(answer_after):
+            calls = [0]
+
+            def exchange(path, action, args, timeout):
+                sent.append(action)
+                calls[0] += 1
+                if answer_after is not None and (calls[0] > answer_after or spawned):
+                    return {}
+                raise ConnectionRefusedError(111, 'refused')
+            with mock.patch.object(session_client, '_exchange', side_effect=exchange), \
+                    mock.patch.object(session_client.subprocess, 'run', side_effect=lambda argv, **kw: started.append(list(argv))), \
+                    mock.patch.object(session_client.subprocess, 'Popen', side_effect=lambda argv, **kw: spawned.append(list(argv))), \
+                    mock.patch.dict(os.environ, {'DISPLAY': ':99'}):
+                session_client.ensure_service(env.output / 'S11-fixture.sock', timeout=2)
+        startup_paths(0)        # already running
+        startup_paths(1)        # the systemd unit answers
+        startup_paths(10 ** 6)  # no unit: the service script is spawned
+        spawned_ok = all(len(a) == 4 and a[1].endswith('session_service.py') and a[2] == '--socket' for a in spawned)
+        check('S11-R1 ensure_service sends only inspect on every startup path and starts only the idle service (unit or script, no play arguments)',
+              sent and set(sent) == {'inspect'} and spawned and spawned_ok
+              and all(a[:4] == ['systemctl', '--user', 'start', '--no-block'] and a[4:] == ['listening-session.service'] for a in started),
+              (sorted(set(sent)), started, spawned))
 
     # =========================================================================== D: fresh data (criterion 4)
     @section('D')
@@ -1080,8 +1106,11 @@ with env:
         # The explicit Ticket channel.
         import glob
         sources = ''.join(Path(p).read_text() for p in glob.glob(str(env.source / 'next_*.py')))
-        check('O9 the implicit _watch channel is gone (no _watch / watch_next_command / unwatch_command)',
-              not any(word in sources for word in ('_watch', 'watch_next_command', 'unwatch_command')))
+        # ORIGINAL oracle, kept visible but no longer counted (revision R-src1, acceptance author, WP4): a source-text
+        # search for the old names. Superseded by O10-O12, which drive the explicit Ticket channel: every command hands
+        # back its own Ticket, finishes with its own command (never whichever ends first) and late callbacks still run.
+        print('SUPERSEDED [ORIGINAL, superseded by O10-O12] %s O9 the implicit _watch channel is gone (no _watch / watch_next_command / unwatch_command): source text, not behaviour'
+              % ('PASS' if not any(word in sources for word in ('_watch', 'watch_next_command', 'unwatch_command')) else 'FAIL'), flush=True)
         import next_actions
         ticket = window.command('inspect', {})
         check('O10 command() hands back an explicit Ticket', isinstance(ticket, getattr(next_actions, 'Ticket', ())), ticket)

@@ -1256,7 +1256,29 @@ def s15_save_collision_undo():
 # ---------------------------------------------------------------- main
 def s0_static():
     plan = (repo / 'docs/plans/listening-room-ux-redesign.md').read_text()
-    check('0a static: rename is registered immediate in the service (no worker round-trip surprises)', 'rename' in (repo / 'src/session_service.py').read_text(), '')
+    # ORIGINAL oracle, kept visible but no longer counted (revision R-src1, acceptance author, WP4): it passed whenever
+    # the word "rename" appeared anywhere in session_service.py, comments included, so it could not tell an immediate
+    # rename from a queued one. Superseded by 0a-R1, which drives the service itself.
+    original = 'rename' in (repo / 'src/session_service.py').read_text()
+    print('SUPERSEDED [ORIGINAL, superseded by 0a-R1] %s 0a static: rename is registered immediate in the service '
+          '(no worker round-trip surprises): source text, not behaviour' % ('PASS' if original else 'FAIL'), flush=True)
+    # 0a-R1: with the controller's worker busy, a rename through the service must still return its real result
+    # and the saved room must carry the new name before the worker is free (no queued "Updating room" reply).
+    import threading
+    reset_state()
+    variant = save_room('Static rename probe')
+    gate = threading.Event()
+    controller.worker.submit(gate.wait, 10)
+    try:
+        result = service.execute('rename', {'id': variant['id'], 'name': 'Static rename done'})
+        names = [v['name'] for v in controller.variants()]
+    finally:
+        gate.set()
+    settle()
+    check('0a-R1 rename is immediate in the service: with the worker busy it returns the real result and the saved room is renamed at once',
+          isinstance(result, dict) and not result.get('accepted') and (result.get('variant') or {}).get('name') == 'Static rename done'
+          and 'Static rename done' in names and 'Static rename probe' not in names, repr((result, names)))
+    reset_state()
 
 
 def s16_evidence_static():

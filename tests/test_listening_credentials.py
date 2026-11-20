@@ -174,6 +174,9 @@ class CredentialTests(unittest.TestCase):
             self.assertNotIn('sensitive-sentinel',str(caught.exception))
             self.assertEqual(before,self.file.read_bytes())
 
+    @unittest.skip('ORIGINAL, superseded by test_token_post_redirects_are_refused_on_the_wire (R-src1, acceptance author, WP4): '
+                   'it called the private _NoRedirect class and mocked build_opener to raise, so it never showed that the real '
+                   'renewal request refuses a redirect')
     def test_redirect_handler_refuses_token_post_redirects(self):
         handler=credentials._NoRedirect()
         self.assertIsNone(handler.redirect_request(None,None,302,'redirect',{},'https://example.test/steal'))
@@ -183,6 +186,51 @@ class CredentialTests(unittest.TestCase):
         with mocked,self.assertRaises(credentials.CredentialError) as caught:credentials.refresh('old-access')
         self.assertNotIn('sensitive-redirect',str(caught.exception))
         self.assertEqual(before,self.file.read_bytes())
+
+    def test_token_post_redirects_are_refused_on_the_wire(self):
+        # R-src1: a real loopback token endpoint answers the renewal with a redirect to a second server. The renewal
+        # must fail as a value-free retryable error, leave the login file alone, and never reach the second server.
+        import http.server
+        stolen = []
+
+        class Thief(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                stolen.append((self.command, self.path)); self.send_response(200); self.end_headers(); self.wfile.write(b'{}')
+            do_POST = do_GET
+
+            def log_message(self, *args):
+                pass
+        thief = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Thief)
+        target = 'http://127.0.0.1:%d/steal?sensitive-redirect-sentinel' % thief.server_port
+
+        class Endpoint(http.server.BaseHTTPRequestHandler):
+            code = 302
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get('Content-Length') or 0))
+                self.send_response(type(self).code); self.send_header('Location', target); self.send_header('Content-Length', '0'); self.end_headers()
+
+            def log_message(self, *args):
+                pass
+        endpoint = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Endpoint)
+        for server in (thief, endpoint):
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+        self.write('old-access')
+        self.file.write_text(self.file.read_text().replace('REFRESHTOKEN=unused', 'REFRESHTOKEN=old-refresh'))
+        before = self.file.read_bytes()
+        url = 'http://127.0.0.1:%d/oauth2/token' % endpoint.server_port
+        for code in (301, 302, 303, 307, 308):
+            Endpoint.code = code
+            with self.subTest(code=code), patch.object(credentials, 'TOKEN_ENDPOINT', url):
+                with self.assertRaises(credentials.CredentialError) as caught:
+                    credentials.refresh('old-access')
+                self.assertEqual(caught.exception.kind, 'transient')
+                self.assertNotIn('sensitive-redirect-sentinel', str(caught.exception))
+                self.assertNotIn('old-refresh', str(caught.exception))
+                self.assertEqual(before, self.file.read_bytes())
+        self.assertEqual(stolen, [])
 
     def test_parent_0755_allowed_but_writable_parent_rejected(self):
         self.write('old-access');self.file.parent.chmod(0o755)

@@ -65,11 +65,37 @@ class TuningValidationTest(unittest.TestCase):
         self.rejects(lambda t: t['rigid'][0].update(grown=2), 'rigid region 1', "unknown parameter 'grown'")
         self.rejects(lambda t: t['rigid'][0].update(grow=9), 'grow must be')
 
+    @unittest.skip('ORIGINAL, superseded by test_a_bad_shipped_file_stops_the_import (R-src1, acceptance author, WP4): '
+                   'it looked for one call spelled exactly so in visual_scenes.py instead of importing a broken tree')
     def test_loading_a_bad_file_stops_the_import(self):
         # The loader calls validate_tuning for every file, so a typo in a
         # shipped file cannot reach a build: importing visual_scenes fails.
         source = (SRC / 'visual_scenes.py').read_text()
         self.assertIn('validate_tuning(_path.name, _tuning)', source)
+
+    def test_a_bad_shipped_file_stops_the_import(self):
+        # A typo in any shipped tuning file cannot reach a build: importing visual_scenes from that tree fails and
+        # names the file and the key. The clean copy is the control.
+        import shutil
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            for name in sorted(TUNING):
+                tree = Path(folder) / name
+                tree.mkdir()
+                shutil.copy(SRC / 'visual_scenes.py', tree)
+                shutil.copytree(SRC / 'scene_tuning', tree / 'scene_tuning')
+                load = lambda: subprocess.run([sys.executable, '-c', 'import visual_scenes'], cwd=tree, capture_output=True, text=True,
+                                              timeout=60, stdin=subprocess.DEVNULL, env={'PATH': '', 'PYTHONPATH': str(tree)})
+                clean = load()
+                self.assertEqual(clean.returncode, 0, clean.stderr[-400:])
+                tuning = copy.deepcopy(TUNING[name])
+                tuning['effects'][0]['sizze'] = 1
+                (tree / 'scene_tuning' / name).write_text(json.dumps(tuning))
+                result = load()
+                self.assertNotEqual(result.returncode, 0, name)
+                self.assertIn(name, result.stderr)
+                self.assertIn('sizze', result.stderr)
 
     def test_every_documented_parameter_is_read_by_the_engine(self):
         engine = (SRC / 'motion_engine.py').read_text()
