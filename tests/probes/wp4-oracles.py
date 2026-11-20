@@ -568,13 +568,13 @@ def cmd_docs(a):
     check('D3 CONTRIBUTING says how to add a probe', any(re.search(r'\badd(ing)?\b|\bnew\b|\bregister', p, re.I) and re.search(r'\bprobe', p, re.I)
                                                          for p in paras(contributing)))
     named = sorted(set(re.findall(r'`((?:tests|scripts|nix|src)/[^`\s]+)`', contributing)))
-    missing = [n for n in named if not any(repo.glob(n)) and not (repo / n).exists()]
+    missing = [n for n in named if not any(repo.glob(re.sub(r'<[^>]+>', '*', n))) and not (repo / n).exists()]   # <name> placeholders match any file
     check('D4 every repository path CONTRIBUTING names exists', not missing, missing)
     stale = re.findall(r'\b1[0-9]{2} passed\b|\b(?:1[0-9]{2}|2[0-9]{2})(?:, | and )(?:1[0-9]{2}|2[0-9]{2})', contributing)
     note('CONTRIBUTING count-like phrases (should not duplicate expected results): %r' % stale)
     check('D5 SECURITY.md: valid_url allows loopback and LAN streams',
           any(re.search(r'valid_url|stream|url', p, re.I) and re.search(r'loopback|localhost|127\.0\.0\.1', p, re.I)
-              and re.search(r'\bLAN\b|local network|private (network|address)', p, re.I) for p in paras(security)))
+              and re.search(r'\bLAN\b|local[ -]network|private (network|address)', p, re.I) for p in paras(security)))
     check('D6 SECURITY.md: catalogue app entries run command lists',
           any(re.search(r'catalog', p, re.I) and re.search(r'\bapp\b', p, re.I) and re.search(r'command', p, re.I) for p in paras(security)))
     check('D7 SECURITY.md: the catalogue path can be overridden from the environment',
