@@ -894,7 +894,8 @@ class ListenPage(ServicesMixin, SourcesMixin):
         name = (station.get('name') or (info['name'] if active.get('room_id') else '')
                 or music.get('station') or music.get('name') or info['name'])
         self.bar_title.set_text(name)
-        line = info['line'] + (' · ' + info['detail'] if info['detail'] else '')
+        line, detail = next_model.without_name(name, info['line'], info['detail'])
+        line += ' · ' + detail if detail else ''
         self.bar_line.set_text(line)
         playing = info['state'] == 'playing'
         self.bar_play.set_icon_name('media-playback-pause-symbolic' if playing else 'media-playback-start-symbolic')

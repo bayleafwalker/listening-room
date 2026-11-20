@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -338,7 +339,11 @@ class WindowSmoke(unittest.TestCase):
         import session_client
         env = self.env
         env.start_station_room()          # a room is up: its chip and name are what the card could cover
-        window = env.launch(width=1000, height=460, page='rooms')
+        streams, subscribe = self.fake_stream()   # pushes only: no routine poll redraws Now after a failure
+        with mock.patch.object(session_client, 'subscribe', side_effect=subscribe, create=True):
+            window = env.launch(width=1000, height=460, page='rooms')
+        streams[0].push(env.service.execute('inspect', {}))
+        env.pump(.3)
         station = next(s for s in env.controller.stations() if s['name'] == 'Morning lift')
         answer = session_client.request
 
@@ -367,10 +372,43 @@ class WindowSmoke(unittest.TestCase):
                 self.assertIsNotNone(card, 'the %s card is not shown' % state)
                 for widget in (window.chip, window.room_name):
                     self.assertFalse(overlap(card, bounds(widget)), 'the %s card covers %r' % (state, widget.get_text()))
+                if state == 'failed':     # no poll needed: the room still there is what Now says under the card
+                    self.assertNotEqual(window.chip.get_text(), 'Connecting', 'the chip still says Connecting')
             window.dismiss_pending()
             env.pump(3.0)
         env.settle(.5)
         self.assertTrue(window.room_name.get_mapped(), 'the room name did not come back after the card')
+        window.close()
+        env.service.execute('leave', {})
+        env.settle(1.0)
+
+    def test_leaving_listen_any_way_ends_ambience_mode_so_music_change_offers_music(self):
+        env = self.env
+        env.start_station_room()
+        window = env.launch(page='now')
+        listen = window.listen
+        routes = (('the Rooms tab', lambda: window.browse.set_visible_child_name('rooms')),
+                  ('Now', window.show_now),
+                  ('the Back button', lambda: (window.show_now(), window.go_back())),
+                  ('the mini layout', lambda: window.set_property('mini-layout', True)))
+        for route, leave in routes:
+            with self.subTest(route=route):
+                window.set_property('mini-layout', False)
+                window.show_now()
+                window.choose_other('atmosphere')
+                env.pump(.3)
+                self.assertEqual(listen.mode, 'ambience')
+                self.assertTrue(listen.ambience_banner.get_visible())
+                leave()
+                env.pump(.3)
+                self.assertEqual(listen.mode, 'music', 'leaving Listen by %s kept ambience mode' % route)
+                window.set_property('mini-layout', False)
+                window.show_now()
+                window.choose_other('music')
+                env.pump(.3)
+                self.assertEqual(window.browse.get_visible_child_name(), 'listen')
+                self.assertEqual(listen.mode, 'music')
+                self.assertFalse(listen.ambience_banner.get_visible(), 'Music › Change… opened "Choose an ambience"')
         window.close()
         env.service.execute('leave', {})
         env.settle(1.0)
@@ -380,7 +418,6 @@ class WindowSmoke(unittest.TestCase):
     def fake_stream(self):
         """A stand-in for session_client.subscribe: the test pushes updates from another thread."""
         import collections
-        import threading
         update = collections.namedtuple('Update', 'snapshot revision session connected error')
         streams = []
 
@@ -506,11 +543,13 @@ class WindowSmoke(unittest.TestCase):
             stream.push(env.service.execute('inspect', {}))
             env.pump(.4)
 
+            release = threading.Event()
+
             def stale(action, arguments=None, *rest, **kw):
                 answer = real(action, arguments, *rest, **kw)
                 if action == 'inspect' and stale.first:
                     stale.first = False
-                    time.sleep(.6)            # read now, answered after a newer push
+                    release.wait(10)          # read now, answered only after a newer push landed
                 return answer
             stale.first = True
             with mock.patch.object(session_client, 'request', side_effect=stale):
@@ -522,6 +561,7 @@ class WindowSmoke(unittest.TestCase):
                 env.pump(.2)
                 self.assertEqual(round(window.volume.get_value()), 64)
                 self.assertFalse(window.fresh_since(mark), 'a push counted as a fresh read')
+                release.set()
                 env.pump(1.0)
             self.assertEqual(round(window.volume.get_value()), 64, 'the older read replaced the pushed snapshot')
             self.assertTrue(window.fresh_since(mark + 1), 'no read sent after the push landed')

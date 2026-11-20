@@ -163,6 +163,9 @@ class NextWindow(Adw.ApplicationWindow):
         self.pages.add_named(self.sheet, 'now')
         self.mini_player = MiniPlayer(self, closable=False)
         self.pages.add_named(self.mini_player, 'mini')
+        self.listen_shown = False
+        for stack in (self.pages, self.browse):
+            stack.connect('notify::visible-child', lambda *_: self.listen_visibility())
         breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse('max-width: %dpx' % (MINI_WIDTH - 1)))
         breakpoint.add_setter(self, 'mini-layout', True)
         self.add_breakpoint(breakpoint)
@@ -594,7 +597,9 @@ class NextWindow(Adw.ApplicationWindow):
                 self.scene.show_room({'still': pending['art'], 'poster': pending['art'], 'loop': None}, False)
         else:
             previous = (self.snapshot.get('active') or {}).get('name')
-            if not previous:
+            if previous:
+                self.render_now(self.snapshot)  # the room that is still there, not "Connecting", under the card
+            else:
                 self.chip.set_visible(False)    # nothing is connecting any more; render_now brings it back
             self.pending_title.set_text('Couldn’t start ' + pending['name'])
             self.pending_detail.set_text(pending.get('error', '') + (' ' + previous + ' is still there.' if previous else ''))
@@ -629,7 +634,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.now_line.set_text(line)
         self.now_detail.set_text('· ' + detail if detail else '')
         self.now_detail.set_visible(bool(detail))
-        self.mix_summary.set_text(info['summary'])
+        self.mix_summary.set_text(model.layer_summary(snapshot, name))
         self.play.set_icon_name('media-playback-pause-symbolic' if info['state'] == 'playing' else 'media-playback-start-symbolic')
         name_it(self.play, 'Pause the room' if info['state'] == 'playing' else 'Play the room')
         self.skip.set_visible(info['can_next'])
@@ -715,6 +720,14 @@ class NextWindow(Adw.ApplicationWindow):
         self.browse.set_visible_child_name('listen')
         self.show_page('browse')
 
+    def listen_visibility(self):
+        """Leaving Listen by any route (a tab, Back, a shortcut, the mini layout) ends ambience mode,
+        so the next Listen or Music › Change… offers music again."""
+        shown = self.pages.get_visible_child_name() == 'browse' and self.browse.get_visible_child_name() == 'listen'
+        if self.listen_shown and not shown:
+            self.listen.end_ambience()
+        self.listen_shown = shown
+
     def show_now(self):
         if not self.snapshot.get('active'):
             self.toast('You are not in a room yet')
@@ -775,6 +788,7 @@ class NextWindow(Adw.ApplicationWindow):
         """Music and Ambience are chosen in Listen (Ambience in its own mode); Scene on its Mix row."""
         if layer == 'music':
             self.sheet.set_open(False)
+            self.listen.end_ambience()
             self.show_listen()
         elif layer == 'atmosphere':
             origin = 'mix' if self.sheet.get_open() else 'now'

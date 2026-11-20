@@ -96,9 +96,14 @@ All notable changes are recorded here. The format follows
   so a slow command never delays them, and all thread handoffs go through one helper.
 - One stylesheet helper instead of four copies; the art cache keeps at most 64 images.
 - Now says a room's name once: a room named after its station shows the track
-  under the name, not the station again. Now's cards never cover the room's name
-  and chip: in a short window they step aside while the card shows, and a failed
-  start leaves no "Connecting" chip behind.
+  under the name, not the station again, and the Mix button, the mini players and
+  Listen's now-playing bar say "Music" or the track instead of repeating it. Now's
+  cards never cover the room's name and chip: in a short window they step aside
+  while the card shows, and a failed start puts the room that is still playing back
+  at once, with no "Connecting" chip left under "Couldn't start…".
+- Leaving Listen by any route (a tab, Back, Now, a shortcut or the mini layout) ends
+  ambience choosing, so Music › Change… and the Listen tab offer music again instead
+  of "Choose an ambience".
 - Undo of a default placement change in Preferences no longer counts as choosing a
   placement.
 - The Waybar popover stays open when it loses focus (with focus-follows-mouse it closed

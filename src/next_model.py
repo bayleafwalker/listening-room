@@ -131,15 +131,22 @@ def now_line(snapshot):
     return primary, secondary
 
 
-def layer_summary(snapshot):
-    """Names of what is sounding, for the Mix button: Piano · Rain on glass · Scene."""
+def same_text(a, b):
+    return bool(a and b) and a.strip().casefold() == b.strip().casefold()
+
+
+def layer_summary(snapshot, room=''):
+    """Names of what is sounding, for the Mix button: Piano · Rain on glass · Scene. A layer named like the
+    ``room`` title above it is called by its kind (Music) rather than repeating the name."""
     parts = []
     music, ambience, picture = (_layer(snapshot, name) for name in LAYER_ORDER)
     active = snapshot.get('active') or {}
     if music.get('status') in ('Playing', 'Paused'):
-        parts.append(music.get('station') or music.get('name') or (active.get('music') or {}).get('name') or MUSIC)
+        named = music.get('station') or music.get('name') or (active.get('music') or {}).get('name')
+        parts.append(MUSIC if not named or same_text(named, room) else named)
     if ambience.get('status') in ('Playing', 'Paused') and ambience.get('kind', 'local') != 'none':
-        parts.append(ambience.get('name') or ambience.get('title') or AMBIENCE)
+        named = ambience.get('name') or ambience.get('title')
+        parts.append(AMBIENCE if not named or same_text(named, room) else named)
     if picture.get('status') in ('Playing', 'Paused'):
         parts.append(SCENE)
     return ' · '.join(parts) if parts else 'Nothing playing'
@@ -278,15 +285,16 @@ def now_text(snapshot, catalogue=()):
     """(name, line, detail) for Now: the room's title and what plays, never saying the same name twice. A room
     named after its station shows the track (or nothing more) under the name, not the station again."""
     name = shown_name(snapshot, catalogue) or ''
-    line, detail = now_line(snapshot)
+    return (name,) + without_name(name, *now_line(snapshot))
 
-    def same(text):
-        return bool(text) and text.strip().casefold() == name.strip().casefold()
-    if same(detail):
+
+def without_name(name, line, detail):
+    """(line, detail) under a title ``name``, dropping whichever just repeats it."""
+    if same_text(detail, name):
         detail = ''
-    if same(line):
+    if same_text(line, name):
         line, detail = detail, ''
-    return name, line, detail
+    return line, detail
 
 
 def suggested_name(snapshot):

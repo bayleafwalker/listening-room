@@ -185,7 +185,8 @@ class MiniPlayer(Gtk.Overlay):
             if info:
                 self.state = info['state']
                 self.name.set_text(info['name'])
-                self.line.set_text(info['line'] + (' · ' + info['detail'] if info['detail'] else ''))
+                line, detail = model.without_name(info['name'], info['line'], info['detail'])
+                self.line.set_text(line + (' · ' + detail if detail else ''))
                 self.play.set_icon_name('media-playback-pause-symbolic' if info['state'] == 'playing'
                                         else 'media-playback-start-symbolic')
                 name_it(self.play, 'Pause the room' if info['state'] == 'playing' else 'Play the room')

@@ -71,6 +71,15 @@ class NowTextTests(unittest.TestCase):
         self.assertEqual(model.now_text(self.snapshot('Night Drive')), ('Groove Radio', 'Night Drive', ''))
         self.assertEqual(model.now_text(self.snapshot('Night Drive', 'Someone')), ('Groove Radio', 'Night Drive', 'Someone'))
 
+    def test_the_mix_button_and_mini_players_do_not_repeat_it_either(self):
+        snap = self.snapshot()
+        self.assertEqual(model.layer_summary(snap, 'Groove Radio'), 'Music')
+        self.assertEqual(model.layer_summary(snap), 'Groove Radio')
+        self.assertEqual(model.layer_summary(snap, 'Midnight library'), 'Groove Radio')
+        self.assertEqual(model.without_name('Groove Radio', 'groove radio ', 'Night Drive'), ('Night Drive', ''))
+        self.assertEqual(model.without_name('Groove Radio', 'Night Drive', 'Groove Radio'), ('Night Drive', ''))
+        self.assertEqual(model.without_name('Groove Radio', 'Night Drive', 'Someone'), ('Night Drive', 'Someone'))
+
 
 class LaunchTests(unittest.TestCase):
     def test_an_active_room_opens_now_otherwise_rooms(self):
