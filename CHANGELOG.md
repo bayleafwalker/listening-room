@@ -75,6 +75,18 @@ All notable changes are recorded here. The format follows
 - Try again appears in a Mix row's menu only when that layer failed.
 - Favourites, the World radio cache and Twitch channels are read off the GTK thread.
 
+## [2.3.2] - 2026-11-21
+
+### Fixed
+- Opening a room preview, switching rooms quickly, entering or leaving a room, or
+  closing the window could crash the window (a segfault on GStreamer's `GstPlay`
+  thread). Clearing a scene loop while GStreamer was still busy with it let that
+  thread free its own player and then keep using it. Each scene loop is now
+  created once, shared by the preview and Now, and only ever paused or played,
+  never torn down; a closed preview also lets go of it.
+  `tests/probes/listening-scene-media-stress.py` repeats these actions with real
+  scene loops.
+
 ## [2.3.1] - 2026-11-18
 
 First public release. The application had been developed privately; this is

@@ -169,15 +169,19 @@ class FocalPicture(Gtk.Widget):
     def __init__(self, focal=(.5, .42)):
         super().__init__(accessible_role=Gtk.AccessibleRole.PRESENTATION)
         self.paintable = None
+        self.invalidated = 0
         self.focal = focal
         self.set_hexpand(True)
         self.set_vexpand(True)
         self.set_overflow(Gtk.Overflow.HIDDEN)
 
     def set_paintable(self, paintable):
+        if self.invalidated:   # a shared scene loop outlives this picture: never leave a handler on it
+            self.paintable.disconnect(self.invalidated)
+            self.invalidated = 0
         self.paintable = paintable
         if paintable is not None:
-            paintable.connect('invalidate-contents', lambda *_: self.queue_draw())
+            self.invalidated = paintable.connect('invalidate-contents', lambda *_: self.queue_draw())
         self.queue_draw()
 
     def do_measure(self, orientation, for_size):
@@ -209,6 +213,41 @@ def gst_ready():
         return False
 
 
+# One Gtk.MediaFile per loop file, shared by every Scene and kept for the life of the process.
+# Clearing or finalizing a Gtk.MediaFile while GStreamer's GstPlay thread is still posting messages
+# (preroll, the position tick, a pause in flight) can make that thread drop the last GstPlay
+# reference itself; GstPlay then frees itself and gst_play_main keeps using it, and the window
+# segfaults (g_object_unref <- gst_play_main). So a loop is created once, only ever paused and
+# played, and never torn down. The catalogue has a fixed, small set of loops, which bounds this.
+_LOOPS = {}       # loop path -> Gtk.MediaFile
+_WANTED = {}      # Gtk.MediaFile -> ids of the Scenes that want it playing now
+
+
+def shared_loop(path):
+    media = _LOOPS.get(path)
+    if media is None:
+        media = Gtk.MediaFile.new_for_filename(path)
+        media.set_loop(True)
+        media.set_muted(True)
+        _LOOPS[path] = media
+        _WANTED[media] = set()
+    return media
+
+
+def _want(media, scene, playing):
+    wanted = _WANTED[media]
+    (wanted.add if playing else wanted.discard)(id(scene))
+    if wanted:
+        media.play()
+    else:
+        media.pause()
+
+
+# A source that never fires holds _LOOPS from C, so interpreter shutdown does not finalize the loops
+# either (that would be a teardown too); the process exits with them paused.
+GLib.timeout_add_seconds(GLib.MAXINT32, lambda *_: True, _LOOPS)
+
+
 class Scene(Gtk.Overlay):
     """The room scene, full bleed: still art, or the reviewed loop (muted) when allowed."""
     def __init__(self):
@@ -217,6 +256,8 @@ class Scene(Gtk.Overlay):
         self.picture = FocalPicture()
         self.set_child(self.picture)
         self.media = None
+        self.error_handler = 0
+        self.still = None
         self.key = None
         self.want_motion = False
         self.mapped = self.minimized = False
@@ -231,44 +272,44 @@ class Scene(Gtk.Overlay):
         self._drop_media()
         self.want_motion = bool(motion and assets.get('loop') and gst_ready())
         still = assets.get('still') or assets.get('poster')
-        texture = texture_for(still)
+        self.still = texture = texture_for(still)
         self.picture.set_paintable(texture)
         if self.want_motion:
-            media = Gtk.MediaFile.new_for_filename(assets['loop'])
-            media.set_loop(True)
-            media.set_muted(True)
-            media.connect('notify::error', lambda m, *_: m.get_error() and self._fall_back(texture))
+            media = shared_loop(assets['loop'])
+            if media.get_error() is not None:   # this loop failed before: still art, like _fall_back
+                self.want_motion = False
+                return
+            self.error_handler = media.connect('notify::error', lambda m, *_: m.get_error() and self._fall_back())
             self.media = media
             self.picture.set_paintable(media)
             self._visibility(mapped=self.get_mapped())
 
-    def _fall_back(self, texture):
+    def _fall_back(self):
         self._drop_media()
-        self.picture.set_paintable(texture)
+        self.picture.set_paintable(self.still)
 
     def _drop_media(self):
+        """Stop wanting the shared loop (it pauses when no other Scene wants it); never clear it."""
         if self.media is not None:
-            self.media.pause()
-            self.media.clear()
-            self.media = None
+            media, self.media = self.media, None
+            media.disconnect(self.error_handler)
+            self.error_handler = 0
+            _want(media, self, False)
 
     def _visibility(self, mapped=None, minimized=None):
         """Play only while the window is on screen: mapped and not minimized or suspended."""
         self.mapped = self.mapped if mapped is None else mapped
         self.minimized = self.minimized if minimized is None else minimized
-        if self.media is None:
-            return
-        if self.mapped and not self.minimized:
-            self.media.play()
-        else:
-            self.media.pause()
+        if self.media is not None:
+            _want(self.media, self, self.mapped and not self.minimized)
 
     @property
     def playing_motion(self):
-        return self.media is not None and self.media.get_playing()
+        return self.media is not None and id(self) in _WANTED[self.media] and self.media.get_playing()
 
     def close(self):
         self._drop_media()
+        self.picture.set_paintable(self.still)   # let go of the shared loop
 
 
 def pop_button(icon, name, popover):
