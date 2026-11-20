@@ -910,7 +910,6 @@ class NextWindow(Adw.ApplicationWindow):
             toast.set_button_label(undo_label)
             toast.connect('button-clicked', lambda *_: undo())
         self.toasts.add_toast(toast)
-        return toast
 
     def error_toast(self, error):
         """A failure in plain words, at once; the raw cause only behind Details."""
@@ -1126,7 +1125,8 @@ class NextWindow(Adw.ApplicationWindow):
         followed the height would grow the window through the toast's own size request."""
         page = self.current_page()
         if page == 'now':
-            margin = self.mix.get_height() + 48 if self.sheet.get_open() else 140
+            # The Mix's natural height, capped: its allocation follows the window and would feed back.
+            margin = min(self.mix.measure(Gtk.Orientation.VERTICAL, -1)[1], 360) + 48 if self.sheet.get_open() else 140
         elif page == 'mini':
             margin = 96
         elif page == 'browse' and self.browse.get_visible_child_name() == 'listen' and self.listen.bar.get_visible():
