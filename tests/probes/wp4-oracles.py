@@ -676,6 +676,24 @@ def cmd_structure(a):
           all(n <= 2 for n in counts.values()), counts)
     flake = (repo / 'flake.nix').read_text()
     check('T3 the devShell no longer writes out its own python3.withPackages list', 'withPackages' not in flake, '')
+    # Measured spans ("@@") in expected check lists are pinned here, outside the implementer's files:
+    # a span matches any text, so a new or widened one (an all-"@@" entry, a "!" known failure with a
+    # span, a span over a threshold) must be an acceptance decision, not an edit to an expected list.
+    allowed = {
+        'o6': {'1b single click -> preview visible within 150 ms for every card (measured @@ ms)',
+               '1c the GTK thread was never held for more than 150 ms after the first (cold) preview (gaps @@ ms), and never more than 400 ms',
+               '1l every selection (scope chips, Mix, station, mood) updates within 100 ms: @@',
+               '1m the GTK thread was never held for more than 120 ms during those selections (worst @@ ms)',
+               '6g the GTK thread was not blocked by the search subprocess (worst gap @@ ms)',
+               '7a pressing Enter room shows "Connecting to <room>\u2026" on Now within 150 ms (@@ ms)'}}
+    spans = {}
+    for path in sorted((repo / 'tests' / 'probes' / 'expected').glob('*.checks')):
+        for line in path.read_text().splitlines():
+            if '@@' in line and not line.startswith('#'):
+                spans.setdefault(path.stem, set()).add(line)
+    extra = {name: sorted(lines - allowed.get(name, set())) for name, lines in spans.items() if lines - allowed.get(name, set())}
+    check('T4 measured "@@" spans in expected check lists are exactly the pinned o6 timing entries (none known-failure, none new or widened)',
+          not extra, extra)
 
 
 def main():
