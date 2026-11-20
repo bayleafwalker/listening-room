@@ -40,6 +40,27 @@ def library_queue():
     return value
 
 
+class SnapshotChangeTests(unittest.TestCase):
+    def test_only_keys_that_differ_count_and_the_clock_only_by_the_minute(self):
+        old = {'now': 600.0, 'active': {'id': 'a'}, 'stations': [{'id': 's'}], 'room_volume': 80}
+        self.assertIsNone(model.snapshot_changes(None, old))
+        self.assertIsNone(model.snapshot_changes(old, old), 'the same snapshot again draws everything')
+        same = copy.deepcopy(old)
+        same['now'] = 601.0
+        self.assertEqual(model.snapshot_changes(old, same), set())
+        moved = dict(same, room_volume=55, now=661.0)
+        self.assertEqual(model.snapshot_changes(old, moved), {'room_volume', 'minute'})
+        gone = {key: value for key, value in old.items() if key != 'stations'}
+        self.assertEqual(model.snapshot_changes(old, gone), {'stations'})
+
+    def test_touches(self):
+        self.assertTrue(model.touches(None, {'a'}))
+        self.assertFalse(model.touches(set(), None))
+        self.assertTrue(model.touches({'b', 'a'}, {'a'}))
+        self.assertFalse(model.touches({'stations'}, ignores=model.NOW_IGNORES))
+        self.assertTrue(model.touches({'stations', 'layers'}, ignores=model.NOW_IGNORES))
+
+
 class LaunchTests(unittest.TestCase):
     def test_an_active_room_opens_now_otherwise_rooms(self):
         self.assertEqual(model.launch_view(snapshot()), 'now')

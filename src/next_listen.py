@@ -7,8 +7,8 @@ commands) and never re-implements a provider. Browsing, searching and opening
 pages stay inert: only Tune in, Replay, the row menu's Play as ambience and
 Show as scene, and a chosen link destination start anything.
 """
-import concurrent.futures
-import json
+import collections
+import copy
 import sys
 import threading
 import time
@@ -29,7 +29,8 @@ import youtube_search
 from next_listen_more import MORE_SCOPES, ServicesMixin
 from next_listen_sources import SourcesMixin
 from next_actions import when_finished
-from next_widgets import FocalPicture, show_texture, icon_button, label, name_it
+from next_async import error_text, pool, run_async
+from next_widgets import FocalPicture, show_texture, icon_button, install_css, label, name_it
 
 SCOPES = (('all', 'All'), ('stations', 'Your stations'), ('radio', 'Radio'),
           ('library', 'Library'), ('channels', 'Live channels'), ('world', 'World radio'), ('youtube', 'YouTube'))
@@ -89,18 +90,6 @@ LISTEN_CSS = '''
 .next .error { color: #ffb4a6; }
 '''
 
-_provider = None
-
-
-def install_css(display):
-    global _provider
-    if _provider is None:
-        _provider = Gtk.CssProvider()
-        _provider.load_from_string(LISTEN_CSS)
-        Gtk.StyleContext.add_provider_for_display(display, _provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-    return _provider
-
-
 def _clear(box):
     child = box.get_first_child()
     while child:
@@ -146,6 +135,8 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.cancel_event = None
         self.debounce = None
         self.index_sig = None
+        self.shelves = None            # shelf name -> (inputs, widget) while the shelves are shown
+        self.rebuilds = collections.Counter()   # what was rebuilt, by part: the partial-rebuild tests read it
         self.station = None
         self.station_id = None
         self.station_sig = None
@@ -161,9 +152,9 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.volume_timer = None
         self.launch_link = next_links.launch_link(getattr(sys, 'argv', []))
         self.launch_queued = False
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix='listen')
-        self.save_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='listen-save')
-        install_css(Gdk.Display.get_default())
+        self.executor = pool('listen', 3)
+        self.save_executor = pool('listen-save')    # one worker, so the last choice lands last
+        install_css(Gdk.Display.get_default(), LISTEN_CSS)
         self.widget = self.build()
         self.widget.add_tick_callback(self.adapt_geometry)
         self.install_shortcuts()
@@ -701,8 +692,10 @@ class ListenPage(ServicesMixin, SourcesMixin):
         searches = {'world': self.search_world, 'library': self.search_library, 'channels': self.search_channels,
                     'youtube': self.search_youtube, 'speakers': self.search_speakers}
         for scope in scopes:
-            future = self.executor.submit(searches[scope], query, event)
-            future.add_done_callback(lambda done, name=scope: self.search_finished(request, name, query, done))
+            run_async(lambda search=searches[scope]: search(query, event),
+                      lambda rows, name=scope: self.apply_search(request, name, query, rows, None),
+                      lambda error, name=scope: self.apply_search(request, name, query, [], error_text(error)),
+                      self.executor)
         self.refresh()
 
     def stop_search(self):
@@ -740,13 +733,6 @@ class ListenPage(ServicesMixin, SourcesMixin):
             raise problem
         return channel_browse.project(list(found.values()), query)
 
-    def search_finished(self, request, scope, query, future):
-        try:
-            rows, error = future.result(), None
-        except Exception as problem:
-            rows, error = [], str(problem) or type(problem).__name__
-        GLib.idle_add(self.apply_search, request, scope, query, rows, error)
-
     def apply_search(self, request, scope, query, rows, error):
         if self.closed or request != self.request_id:
             return False
@@ -757,11 +743,14 @@ class ListenPage(ServicesMixin, SourcesMixin):
 
     # ---- polling data ------------------------------------------------------
 
-    def update(self, snapshot):
+    def update(self, snapshot, changed=None):
+        """A new snapshot; ``changed`` is the set of keys that differ from the last one (None: draw everything).
+        The bar redraws only for what it reads; the index and the pages rebuild only the parts whose inputs moved."""
         self.snapshot = snapshot or {}
         self.refresh_favorites()
         self.ensure_static_loads()
-        self.sync_bar(self.snapshot)
+        if next_model.touches(changed, ignores=next_model.NOW_IGNORES):
+            self.sync_bar(self.snapshot)
         self.refresh()
         self.refresh_station()
         self.refresh_history()
@@ -780,13 +769,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
             except (OSError, ValueError):
                 return set()
 
-        def done(future):
-            try:
-                found = future.result()
-            except Exception:
-                found = set()
-            GLib.idle_add(self.favorites_read, found)
-        self.executor.submit(read).add_done_callback(done)
+        run_async(read, self.favorites_read, lambda _error: self.favorites_read(set()), self.executor)
 
     def favorites_read(self, found):
         if not self.closed and found != self.favorites:
@@ -801,14 +784,9 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if self.library_state == 'idle' and self.widget.get_mapped():
             self.library_state = 'checking'
             # Whether a library is connected is a config file read: never on the GTK thread.
-            self.executor.submit(self.library_identity).add_done_callback(
-                lambda future: GLib.idle_add(self.library_checked, future))
+            run_async(self.library_identity, self.library_checked, lambda _error: self.library_checked(None), self.executor)
 
-    def library_checked(self, future):
-        try:
-            identity = future.result()
-        except Exception:
-            identity = None
+    def library_checked(self, identity):
         configured = identity is not None
         if self.closed or self.library_state != 'checking':
             return False
@@ -831,8 +809,8 @@ class ListenPage(ServicesMixin, SourcesMixin):
             self.ensure_static_loads()
         elif self.library_state in ('ready', 'empty'):
             # Reload only when the library connection itself changed, not for every favourite saved.
-            self.executor.submit(self.library_identity).add_done_callback(
-                lambda future: GLib.idle_add(self.library_identity_checked, future))
+            run_async(self.library_identity, self.library_identity_checked,
+                      lambda _error: self.library_identity_checked(None), self.executor)
         self.favorites_at = 0.
         self.refresh_favorites()
 
@@ -850,11 +828,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
             return None
         return (jellyfin.get('endpoint'), jellyfin['user_id']) if jellyfin.get('user_id') else None
 
-    def library_identity_checked(self, future):
-        try:
-            identity = future.result()
-        except Exception:
-            identity = None
+    def library_identity_checked(self, identity):
         if not self.closed and self.library_state in ('ready', 'empty') and identity != self.library_from:
             self.library_state = 'idle'
             self.ensure_static_loads()
@@ -863,8 +837,8 @@ class ListenPage(ServicesMixin, SourcesMixin):
     def load_library(self):
         cancel = threading.Event()
         self.library_cancel = cancel
-        future = self.executor.submit(self.browse_library, cancel)
-        future.add_done_callback(self.library_finished)
+        run_async(lambda: self.browse_library(cancel), lambda items: self.apply_library(items, None),
+                  lambda error: self.apply_library([], error_text(error)), self.executor)
         self.refresh()
 
     @staticmethod
@@ -883,13 +857,6 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if kind == 'tracks':
             return online_services.browse_jellyfin(query, kind='tracks', cancel_event=cancel)
         return online_services.browse_jellyfin(query, kind='albums', cancel_event=cancel)
-
-    def library_finished(self, future):
-        try:
-            items, error = future.result(), None
-        except Exception as problem:
-            items, error = [], str(problem) or type(problem).__name__
-        GLib.idle_add(self.apply_library, items, error)
 
     def apply_library(self, items, error):
         if self.closed:
@@ -959,36 +926,47 @@ class ListenPage(ServicesMixin, SourcesMixin):
     # ---- index -------------------------------------------------------------
 
     def index_signature(self):
+        """Everything the index view (not its shelves) is drawn from. Compared as data, never serialised."""
+        snapshot = self.snapshot
+        if self.scope == 'all' and not self.query:
+            # The shelves: each one is compared on its own inputs (shelf_parts).
+            return ('shelves', self.mode, self.searching, youtube_search.available())
+        return (self.scope, self.query, self.mode, self.searching, youtube_search.available(),
+                snapshot.get('stations'), snapshot.get('station_recent'),
+                self.window.radio, sorted(self.favorites), self.library_state, self.library,
+                self.channels, self.twitch['state'], self.sounds, self.world_cache,
+                self.services_signature(), self.remote)
+
+    def shelf_parts(self):
+        """The shelves as (name, inputs, build): a shelf is rebuilt only when its own inputs change."""
         snapshot = self.snapshot
         stations = snapshot.get('stations') or []
         history = snapshot.get('station_recent') or []
-        active = snapshot.get('active') or {}
-        return json.dumps([
-            [[station.get('id'), station.get('name'), next_station.descriptor(station),
-              json.dumps(station.get('preferences') or {}, sort_keys=True)] for station in stations],
-            [[entry.get('id'), len(entry.get('tracks') or []), (entry.get('station') or {}).get('name')]
-             for entry in history if isinstance(entry, dict)],
-            [[item.get('id'), item.get('name'), item.get('group')] for item in self.window.radio],
-            sorted(self.favorites), self.library_state, len(self.library),
-            [[item.get('login'), item.get('live')] for item in self.channels], self.twitch['state'],
-            self.mode, len(self.sounds or []), youtube_search.available(),
-            self.query, self.scope, self.searching, self.services_signature(),
-            {key: [value.get('query'), len(value.get('rows') or []), value.get('error')]
-             for key, value in self.remote.items()},
-            active.get('name'), bool(active),
-        ], sort_keys=True, default=str)
+        minute = int((snapshot.get('now') or time.time()) // 60)   # "5 min ago" words stay true
+        play_next = (snapshot.get('station') or {}).get('explanation') is not None
+        radio, favorites = self.window.radio, sorted(self.favorites)
+        return [
+            ('stations', (stations,), lambda: self.stations_shelf(stations)),
+            ('recent', (history, minute), self.recent_shelf),
+            ('radio', (radio, favorites), self.radio_shelf),
+            ('library', (self.library, self.library_state, play_next, self.services_signature()), self.library_shelf),
+            ('channels', (self.channels, self.twitch['state'], self.twitch.get('message')), self.channels_shelf),
+            ('elsewhere', (radio,), self.elsewhere_shelf),
+        ]
 
     def refresh(self):
         if self.closed:
             return
         signature = self.index_signature()
-        if signature == self.index_sig:
-            return
-        self.index_sig = signature
-        self.render_index()
+        if signature != self.index_sig:
+            self.index_sig = signature
+            self.render_index()
+        elif self.shelves is not None:
+            self.update_shelves()
 
     def render_index(self):
         _clear(self.index_body)
+        self.shelves = None
         if self.scope == 'speakers':
             self.render_speakers()
         elif self.scope == 'remembered':
@@ -999,37 +977,64 @@ class ListenPage(ServicesMixin, SourcesMixin):
             self.render_shelves()
         else:
             self.render_scope(self.scope)
+        self.rebuilds['index'] += 1
 
     # ---- shelves -----------------------------------------------------------
 
     def render_shelves(self):
+        self.shelves = {}
+        self.update_shelves()
+
+    def update_shelves(self):
+        """Rebuild the shelves whose inputs changed, in place; the others keep their widgets."""
+        previous = None
+        for name, inputs, build in self.shelf_parts():
+            shown = self.shelves.get(name)
+            if shown is None or shown[0] != inputs:
+                if shown is not None and shown[1] is not None:
+                    self.index_body.remove(shown[1])
+                widget = build()
+                if widget is not None:
+                    self.index_body.insert_child_after(widget, previous)
+                self.shelves[name] = shown = (inputs, widget)
+                self.rebuilds['shelf.' + name] += 1
+            previous = shown[1] if shown[1] is not None else previous
+
+    def recent_shelf(self):
         snapshot = self.snapshot
-        self.index_body.append(self.stations_shelf(snapshot.get('stations') or []))
         history = next_station.history_rows(snapshot.get('station_recent') or [], snapshot.get('now') or time.time())
-        if history:
-            self.index_body.append(self.section('Recently played', [self.history_entry(row) for row in history[:4]],
-                                                trailing=self.link_button('History', self.show_history)))
+        if not history:
+            return None
+        return self.section('Recently played', [self.history_entry(row) for row in history[:4]],
+                            trailing=self.link_button('History', self.show_history))
+
+    def radio_shelf(self):
         radio = self.radio_entries()
-        if radio:
-            self.index_body.append(self.section('Radio', radio[:SHELF_LIMIT]))
+        return self.section('Radio', radio[:SHELF_LIMIT]) if radio else None
+
+    def library_shelf(self):
         library = self.library_entries()
-        if library or self.library_state in ('loading', 'failed', 'empty'):
-            self.index_body.append(self.section(
-                'Library', library[:SHELF_LIMIT],
-                note={'loading': 'Loading the library…', 'failed': 'The library could not be read.',
-                      'empty': 'No albums in the library yet.'}.get(self.library_state)))
+        if not library and self.library_state not in ('loading', 'failed', 'empty'):
+            return None
+        return self.section('Library', library[:SHELF_LIMIT],
+                            note={'loading': 'Loading the library…', 'failed': 'The library could not be read.',
+                                  'empty': 'No albums in the library yet.'}.get(self.library_state))
+
+    def channels_shelf(self):
         channels = self.channel_rows()
-        if channels:
-            self.index_body.append(self.section('Live channels', channels[:SHELF_LIMIT], note=self.twitch_footnote()))
+        return self.section('Live channels', channels[:SHELF_LIMIT], note=self.twitch_footnote()) if channels else None
+
+    def elsewhere_shelf(self):
         elsewhere = self.elsewhere_entries()
-        if elsewhere:
-            expander = Gtk.Expander(label='Open elsewhere')
-            body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
-            body.set_margin_top(4)
-            for entry in elsewhere[:FULL_LIMIT]:
-                body.append(self.row(entry))
-            expander.set_child(body)
-            self.index_body.append(expander)
+        if not elsewhere:
+            return None
+        expander = Gtk.Expander(label='Open elsewhere')
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        body.set_margin_top(4)
+        for entry in elsewhere[:FULL_LIMIT]:
+            body.append(self.row(entry))
+        expander.set_child(body)
+        return expander
 
     def render_scope(self, scope):
         if scope == 'stations':
@@ -1083,13 +1088,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
             found = hub.load_json(hub.STATE / 'search-cache.json', [])
             return found if isinstance(found, list) else []
 
-        def done(future):
-            try:
-                found = future.result()
-            except Exception:
-                found = []
-            GLib.idle_add(self.world_read, found)
-        self.executor.submit(read).add_done_callback(done)
+        run_async(read, self.world_read, lambda _error: self.world_read([]), self.executor)
 
     def world_read(self, found):
         if not self.closed and found != self.world_cache:
@@ -1658,10 +1657,8 @@ class ListenPage(ServicesMixin, SourcesMixin):
             self.station = stations[self.station_id]
         if self.station is None:
             return
-        signature = json.dumps([self.station, self.program()], sort_keys=True, default=str)
-        if signature == self.station_sig:
+        if [self.station, self.program()] == self.station_sig:
             return
-        self.station_sig = signature
         self.render_station()
 
     def render_station(self):
@@ -1715,7 +1712,8 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.render_hints(station)
         self.render_fallbacks(station)
         self.render_upcoming()
-        self.station_sig = json.dumps([station, self.program()], sort_keys=True, default=str)
+        self.station_sig = copy.deepcopy([station, self.program()])   # a copy: edits build new dicts, but be sure
+        self.rebuilds['station'] += 1
 
     def render_learned(self, station):
         _clear(self.learned_box)
@@ -1739,8 +1737,8 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if identity in self.reviewed or identity in self.review_wanted:
             return
         self.review_wanted.add(identity)
-        future = self.executor.submit(self.count_reviewed)
-        future.add_done_callback(lambda done: GLib.idle_add(self.review_counted, identity, done))
+        run_async(self.count_reviewed, lambda count: self.review_counted(identity, count),
+                  lambda _error: self.review_counted(identity, None), self.executor)
 
     @staticmethod
     def count_reviewed():
@@ -1758,14 +1756,11 @@ class ListenPage(ServicesMixin, SourcesMixin):
                 return count, False
         return count, True
 
-    def review_counted(self, identity, future):
+    def review_counted(self, identity, count):
         self.review_wanted.discard(identity)
-        if self.closed:
-            return False
-        try:
-            self.reviewed[identity] = future.result()
-        except Exception:
-            return False   # the hint keeps its plain wording; reopening the page tries again
+        if self.closed or count is None:
+            return False   # unreadable: the hint keeps its plain wording; reopening the page tries again
+        self.reviewed[identity] = count
         if identity == self.station_id:
             self.render_hints(self.station)
         return False
@@ -1790,7 +1785,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.find_in_library('')
 
     def render_fallbacks(self, station):
-        signature = json.dumps(station.get('fallbacks') or [], sort_keys=True, default=str)
+        signature = copy.deepcopy(station.get('fallbacks') or [])
         items = next_station.fallbacks(station)
         self.focus_targets = {}
         if signature == self.fallback_sig and self.fallbacks_box.get_first_child() is not None:
@@ -1991,17 +1986,16 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.save_serial = getattr(self, 'save_serial', 0) + 1
         serial = self.save_serial
         self.render_station()
-        future = self.save_executor.submit(session_client.request, 'station.save', {'station': station}, 5)
-        future.add_done_callback(lambda done: GLib.idle_add(self.save_finished, serial, done, toast, undo))
+        run_async(lambda: session_client.request('station.save', {'station': station}, 5),
+                  lambda result: self.save_finished(serial, result, None, toast, undo),
+                  lambda problem: self.save_finished(serial, None, problem, toast, undo), self.save_executor)
 
-    def save_finished(self, serial, future, toast, undo):
+    def save_finished(self, serial, result, problem, toast, undo):
         if self.closed:
             return False
-        try:
-            result = future.result()
-        except Exception as problem:
+        if problem is not None:
             if serial == getattr(self, 'save_serial', serial):
-                self.window.failed(str(problem) or type(problem).__name__)
+                self.window.failed(error_text(problem))
                 self.save_failed()
             return False
         self.station_saved(serial, result, toast, undo)
@@ -2123,10 +2117,10 @@ class ListenPage(ServicesMixin, SourcesMixin):
 
     def render_history(self):
         rows = self.history_rows()
-        signature = json.dumps(rows, sort_keys=True, default=str)
-        if signature == self.history_sig:
+        if rows == self.history_sig:
             return
-        self.history_sig = signature
+        self.history_sig = rows
+        self.rebuilds['history'] += 1
         _clear(self.history_body)
         if not rows:
             self.history_body.append(label('Nothing has played yet.', ['section-note'], wrap=True))

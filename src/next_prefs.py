@@ -9,7 +9,6 @@ session controller, the connection helpers in ``online_services`` and
 and ``metadata.*`` for recordings. It never shows a secret, never logs one, and
 never sends a command that starts or changes playback.
 """
-import concurrent.futures
 import json
 import os
 from pathlib import Path
@@ -24,6 +23,7 @@ from gi.repository import Adw, GLib, Gtk
 import audio_devices
 import listening_hub as hub
 import next_model
+from next_async import pool, run_async
 import next_twitch
 import next_widgets
 import online_services as online
@@ -77,18 +77,6 @@ CSS = '''
 .next .status-dot.off { background: rgba(255,255,255,.35); }
 .next .prefs-note { color: rgba(255,255,255,.66); font-size: 13px; }
 '''
-
-_provider = None
-
-
-def install_css(display):
-    global _provider
-    if _provider is None:
-        _provider = Gtk.CssProvider()
-        _provider.load_from_string(CSS)
-        Gtk.StyleContext.add_provider_for_display(display, _provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
-    return _provider
-
 
 # ---- what the rows say ------------------------------------------------------
 
@@ -342,7 +330,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self.window = window
         self.closed = False
         self.updating = False
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix='room-preferences')
+        self.executor = pool('room-preferences', 4)
         self.cancel = threading.Event()
         self.twitch_login = None
         self.twitch_validated = False
@@ -353,7 +341,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
         self.pages = {}
         self.set_content_width(700)
         self.set_content_height(600)
-        install_css(window.get_display())
+        next_widgets.install_css(window.get_display(), CSS, 2)   # shared with Track details
         self.pages['connections'] = self.build_connections()
         self.pages['sound'] = self.build_sound()
         self.pages['scene'] = self.build_scene()
@@ -392,15 +380,11 @@ class PreferencesDialog(Adw.PreferencesDialog):
         """Run one bounded operation off the interface thread."""
         if self.closed:
             return
-        future = self.executor.submit(work)
-
-        def complete(work_future):
-            try:
-                result, error = work_future.result(), None
-            except Exception as exc:  # value-free wording for the row
-                result, error = None, str(exc) or 'This did not work; check the connection and try again.'
-            GLib.idle_add(lambda: self.finished(result, error, done, notice, failed) or False)
-        future.add_done_callback(complete)
+        run_async(work, lambda result: self.finished(result, None, done, notice, failed),
+                  # value-free wording for the row
+                  lambda exc: self.finished(None, str(exc) or 'This did not work; check the connection and try again.',
+                                            done, notice, failed),
+                  self.executor)
 
     def finished(self, result, error, done, notice, failed=None):
         if self.closed:

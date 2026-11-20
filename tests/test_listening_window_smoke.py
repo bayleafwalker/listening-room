@@ -275,5 +275,113 @@ class WindowSmoke(unittest.TestCase):
         self.assertEqual((stored['energy'], stored['familiarity']), (energy, familiarity),
                          'a later choice undid an earlier one')
 
+    # ---- partial rebuilds and the worker handoff (WP2-WINDOW) ----------------------------------
+
+    def counts(self, window):
+        found = {}
+        for prefix, owner in (('window.', window), ('rooms.', window.rooms), ('listen.', window.listen)):
+            found.update({prefix + key: value for key, value in owner.rebuilds.items()})
+        return found
+
+    def polls(self, window, count=3):
+        for _ in range(count):
+            window.poll()
+            self.env.pump(.35)
+
+    def tagged(self, root):
+        """Tag every widget under ``root``; a widget that was rebuilt comes back untagged."""
+        tags = []
+        for widget in self.env.widgets(root):
+            if not hasattr(widget, '_smoke_tag'):
+                widget._smoke_tag = next(self.tag_source)
+            tags.append(widget._smoke_tag)
+        return tags
+
+    tag_source = iter(range(1, 1 << 30))
+
+    def test_a_poll_rebuilds_only_the_section_that_changed(self):
+        import o6_env
+        env = self.env
+        window = env.launch(page='listen')
+        env.settle(.6)
+        self.polls(window, 1)
+        before = self.counts(window)
+        shelves = {name: shown[1] for name, shown in window.listen.shelves.items() if shown[1] is not None}
+        tags = {name: self.tagged(widget) for name, widget in shelves.items()}
+        cards = self.tagged(window.rooms.cards)
+        self.polls(window)
+        self.assertEqual(self.counts(window), before, 'a poll that changed nothing drew something')
+        env.service.execute('station.save', {'station': dict(o6_env.RADIO_STATION, name='Smoke partial')})
+        self.polls(window)
+        grown = {key: value - before.get(key, 0) for key, value in self.counts(window).items()
+                 if value != before.get(key, 0)}
+        self.assertEqual(grown, {'listen.shelf.stations': 1}, 'a saved station rebuilt more than Your stations')
+        for name, widget in shelves.items():
+            if name != 'stations':
+                self.assertIs(window.listen.shelves[name][1], widget, '%s was replaced' % name)
+                self.assertEqual(self.tagged(widget), tags[name], '%s was rebuilt' % name)
+        self.assertEqual(self.tagged(window.rooms.cards), cards, 'the room cards were rebuilt')
+        self.assertTrue(env.labels(window.listen.index_body, 'Smoke partial'), 'the new station is not shown')
+        # A playing room: a volume change draws the playing-room surfaces, never the cards or the shelves.
+        env.start_station_room()
+        window.show_now()
+        env.pump(.8)
+        self.polls(window, 1)
+        before = self.counts(window)
+        self.polls(window)
+        self.assertEqual(self.counts(window), before, 'a poll that changed nothing drew something while playing')
+        env.service.execute('room_volume', {'value': 37})
+        self.polls(window)
+        grown = {key for key, value in self.counts(window).items() if value != before.get(key, 0)}
+        self.assertEqual(grown, {'window.now', 'window.mini'})
+        self.assertEqual(round(window.volume.get_value()), 37)
+        env.service.execute('leave', {})
+        env.settle(1.0)
+
+    def test_slow_commands_never_delay_polls(self):
+        import session_client
+        env = self.env
+        window = env.launch(page='rooms')
+        answer = session_client.request
+        release = __import__('threading').Event()
+
+        def slow(action, arguments=None, *rest, **kw):
+            if action == 'variants':
+                release.wait(5)          # a busy controller: every command worker is held
+            return answer(action, arguments, *rest, **kw)
+        try:
+            with mock.patch.object(session_client, 'request', side_effect=slow):
+                for _ in range(5):
+                    window.command('variants', quiet=True)
+                env.pump(.2)
+                mark = len(env.log)
+                env.pump(1.5)
+                polled = [action for action, _args in env.log[mark:] if action == 'inspect']
+                self.assertGreaterEqual(len(polled), 3, 'polls waited behind slow commands')
+        finally:
+            release.set()
+        env.pump(.5)
+
+    def test_one_helper_hands_work_to_threads_and_answers_on_the_main_thread(self):
+        import threading
+        import next_async
+        workers = next_async.pool('smoke-async')
+        seen = []
+        next_async.run_async(lambda: threading.current_thread().name, lambda name: seen.append(
+            ('ok', name, threading.current_thread() is threading.main_thread())), None, workers)
+        next_async.run_async(lambda: 1 / 0, None, lambda error: seen.append(
+            ('err', type(error).__name__, threading.current_thread() is threading.main_thread())), workers)
+        self.env.pump(.4)
+        self.assertEqual(sorted((kind, value.split('_')[0], main) for kind, value, main in seen),
+                         [('err', 'ZeroDivisionError', True), ('ok', 'smoke-async', True)])
+        workers.shutdown()
+        self.assertIsNone(next_async.run_async(lambda: 1, seen.append, None, workers))
+        # Every next_* module hands work over through the helper: no private pools or done-callbacks.
+        source = Path(next_async.__file__).parent
+        private = [path.name for path in sorted(source.glob('next_*.py')) if path.name != 'next_async.py'
+                   and any(word in path.read_text() for word in ('ThreadPoolExecutor', 'add_done_callback'))]
+        self.assertEqual(private, [])
+
+
 if __name__ == '__main__':
     unittest.main(argv=[sys.argv[0]])

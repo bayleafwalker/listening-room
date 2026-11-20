@@ -5,7 +5,7 @@ changes playback are entering a room (Enter room, or Enter / double-click on a
 card) and going Back to the previous room from the toast. Surprise me, filters,
 selection and previews never do.
 """
-import json
+import collections
 import random
 import time
 
@@ -16,8 +16,9 @@ from gi.repository import Adw, Gdk, GLib, Graphene, Gtk
 
 import next_model as model
 import next_rooms_model as rooms
+from next_async import run_async
 from next_mix import ICONS
-from next_widgets import FocalPicture, Scene, label, menu_item, name_it
+from next_widgets import FocalPicture, Scene, install_css, label, menu_item, name_it
 
 CSS = '''
 .next .rooms-chip { min-height: 34px; padding: 0 14px; border-radius: 17px; border: none; box-shadow: none;
@@ -55,19 +56,10 @@ CSS = '''
 .next .preview-enter { min-height: 52px; border-radius: 26px; font-weight: 600; }
 .next .save-line-title { color: rgba(255,255,255,.72); }
 '''
-_css = None
 WIDE_PREVIEW = 740
 SAVE_WAIT_S = 8
 DETAILS_WIDTH = 380
 CARD_WIDTH = 224  # four cards fit from about 1000 px, three from about 740, two below that
-
-
-def install_css(display):
-    global _css
-    if _css is None:
-        _css = Gtk.CssProvider()
-        _css.load_from_string(CSS)
-        Gtk.StyleContext.add_provider_for_display(display, _css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
 
 class RoomsPage:
@@ -77,6 +69,7 @@ class RoomsPage:
         self.entries, self.shown = [], []
         self.legacy = []           # scenes saved in the classic window
         self.key = None
+        self.rebuilds = collections.Counter()   # what was rebuilt: the partial-rebuild tests read it
         self.opened = None
         self.preview_widgets = None
         self.recent_click = None   # (entry, time, window point) of the last single click
@@ -85,7 +78,7 @@ class RoomsPage:
         self.card_for = {}
         self.serial = 0
         self.pending_save = None
-        install_css(Gdk.Display.get_default())
+        install_css(Gdk.Display.get_default(), CSS)
         self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=200)
         self.widget = self.stack
         # The preview covers the card at once, so a quick second click lands on the preview:
@@ -219,16 +212,7 @@ class RoomsPage:
                     self.render(window.snapshot)
             return False
 
-        def done(future):
-            try:
-                value = future.result()
-            except Exception:
-                return
-            GLib.idle_add(apply, value)
-        try:
-            window.executor.submit(get).add_done_callback(done)
-        except RuntimeError:  # executor already shut down
-            pass
+        run_async(get, apply, None, window.executor)
 
     def all_entries(self, snapshot):
         window = self.window
@@ -237,18 +221,27 @@ class RoomsPage:
 
     # ---- render ---------------------------------------------------------------------
 
-    def render(self, snapshot):
-        self.render_hero(snapshot)
-        self.entries = self.all_entries(snapshot)
-        self.shown = rooms.filtered(self.entries, self.mood, snapshot)
-        active = (snapshot.get('active') or {})
-        playing = {active.get('id')} - {None}
-        key = json.dumps([[e['id'], e['name'], e['sub'], e['poster'], e['yours'], e['legacy']] for e in self.shown]
-                         + [sorted(playing), self.mood], default=str)
-        if key != self.key:
-            self.key = key
-            self.fill(playing)
-        self.refresh_preview(snapshot)
+    HERO_READS = frozenset({'active', 'last_session', 'last_entered_at', 'minute'})
+    GRID_READS = frozenset({'active', 'last_session', 'variants', 'recent'})
+
+    def render(self, snapshot, changed=None):
+        """Draw Rooms. ``changed`` is the set of snapshot keys that moved since the last draw (None: all of them);
+        the cards are rebuilt only when the rooms they show change."""
+        if model.touches(changed, self.HERO_READS):
+            self.render_hero(snapshot)
+        if self.key is None or model.touches(changed, self.GRID_READS):
+            self.entries = self.all_entries(snapshot)
+            self.shown = rooms.filtered(self.entries, self.mood, snapshot)
+            active = (snapshot.get('active') or {})
+            playing = {active.get('id')} - {None}
+            key = ([(e['id'], e['name'], e['sub'], e['poster'], e['yours'], e['legacy']) for e in self.shown],
+                   sorted(playing), self.mood)
+            if key != self.key:
+                self.key = key
+                self.fill(playing)
+                self.rebuilds['cards'] += 1
+        if model.touches(changed):
+            self.refresh_preview(snapshot)
         self.settle_save(snapshot)
 
     def settle_save(self, snapshot):

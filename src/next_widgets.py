@@ -1,4 +1,5 @@
 """Small GTK/libadwaita building blocks for the next Listening Room window."""
+import collections
 import os
 
 import gi
@@ -9,7 +10,9 @@ from gi.repository import Adw, Gdk, GLib, Graphene, Gtk
 
 import next_model
 
-_TEXTURES = {}
+TEXTURE_LIMIT = 64          # decoded images kept; the least recently shown goes first
+_TEXTURES = collections.OrderedDict()
+_STYLES = {}                # stylesheet text -> its provider, installed once
 _UNSET = object()
 
 
@@ -30,6 +33,10 @@ def texture_for(path):
         except GLib.Error:
             return None
         _TEXTURES[key] = texture
+        while len(_TEXTURES) > TEXTURE_LIMIT:
+            _TEXTURES.popitem(last=False)
+    else:
+        _TEXTURES.move_to_end(key)
     return texture
 
 
@@ -111,16 +118,16 @@ window.next button.mini-return:focus:focus-visible
 .next .layer-row { padding: 12px 0; border-top: 1px solid rgba(255,255,255,.08); }
 '''
 
-_provider = None
-
-
-def install_css(display):
-    global _provider
-    if _provider is None:
-        _provider = Gtk.CssProvider()
-        _provider.load_from_string(CSS)
-        Gtk.StyleContext.add_provider_for_display(display, _provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-    return _provider
+def install_css(display, css=None, priority=0):
+    """Add a stylesheet (this module's CSS by default) to the display once; later calls return the same
+    provider. ``priority`` is added to GTK's application priority, so later layers can override."""
+    css = CSS if css is None else css
+    provider = _STYLES.get(css)
+    if provider is None:
+        provider = _STYLES[css] = Gtk.CssProvider()
+        provider.load_from_string(css)
+        Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + priority)
+    return provider
 
 
 def tint(accent):

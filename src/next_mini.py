@@ -7,7 +7,6 @@ left-click popover (`run_popover`, started by `listening-roomctl popover`), whic
 Break 10 min, Wind down 30 min and Leave room. Looking at it never changes playback;
 only Pause, Play, Return, the volume, the timer choices and Leave room do.
 """
-import concurrent.futures
 import subprocess
 
 import gi
@@ -17,6 +16,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 import next_model as model
 from next_actions import RoomActions, Ticket, when_finished
+from next_async import error_text, pool, run_async
 from next_widgets import FocalPicture, choose_renderer, show_texture, TimerPopover, accent_css, icon_button, install_css, label, name_it
 
 MINI_CSS = '''
@@ -42,17 +42,6 @@ MINI_CSS = '''
   { outline: 3px solid #111114; outline-offset: -6px; }
 window.mini-window { background: #0e0f12; }
 '''
-
-_mini_provider = None
-
-
-def install_mini_css(display):
-    global _mini_provider
-    if _mini_provider is None:
-        _mini_provider = Gtk.CssProvider()
-        _mini_provider.load_from_string(MINI_CSS)
-        Gtk.StyleContext.add_provider_for_display(display, _mini_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
-    return _mini_provider
 
 
 class MiniPlayer(Gtk.Overlay):
@@ -265,7 +254,7 @@ class MiniWindow(Adw.Window):
         self.set_default_size(480, 250 if extras else 190)
         self.set_size_request(320, 150)
         install_css(Gdk.Display.get_default())
-        install_mini_css(Gdk.Display.get_default())
+        install_css(Gdk.Display.get_default(), MINI_CSS, 1)
         self.toasts = Adw.ToastOverlay()
         self.player = MiniPlayer(host, extras=extras, closable=True)
         self.toasts.set_child(Gtk.WindowHandle(child=self.player))
@@ -300,8 +289,9 @@ class PopoverHost:
         self.snapshot = {}
         self.catalogue, self.presets = [], []
         self.closed = self.polling = self.offline = False
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-        self.urgent = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.executor = pool('mini-player', 2)
+        self.urgent = pool('mini-urgent')
+        self.poll_pool = pool('mini-poll')     # reads only: a slow command never delays a poll
         self.accent = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.accent,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
@@ -318,13 +308,7 @@ class PopoverHost:
             import room_catalogue
             return room_catalogue.rooms()
 
-        def done(f):
-            try:
-                value = f.result()
-            except Exception:
-                return
-            GLib.idle_add(self.loaded, value)
-        self.executor.submit(get).add_done_callback(done)
+        run_async(get, self.loaded, None, self.executor)
         return False
 
     def loaded(self, catalogue):
@@ -342,19 +326,15 @@ class PopoverHost:
             return None
         ticket = Ticket()
         finish = ticket.finish
-        future = (self.urgent if urgent else self.executor).submit(self.request, action, args or {}, 5)
+        def ok(result):
+            finish()
+            self.succeeded(result, done)
 
-        def finished(f):
-            try:
-                result = f.result()
-            except Exception as error:
-                if finish:
-                    GLib.idle_add(lambda: finish() or False)
-                if not quiet:
-                    GLib.idle_add(lambda error=error: self.toast(model.plain_error(error)) or False)
-                return
-            GLib.idle_add(lambda: (finish() if finish else None, self.succeeded(result, done)) and False)
-        future.add_done_callback(finished)
+        def failed(error):
+            finish()
+            if not quiet:
+                self.toast(model.plain_error(error))
+        run_async(lambda: self.request(action, args or {}, 5), ok, failed, self.urgent if urgent else self.executor)
         return ticket
 
     def succeeded(self, result, done):
@@ -386,12 +366,8 @@ class PopoverHost:
             return True
         self.polling = True
 
-        def done(f):
-            try:
-                GLib.idle_add(self.polled, f.result(), None)
-            except Exception as error:
-                GLib.idle_add(self.polled, None, str(error) or type(error).__name__)
-        self.executor.submit(self.request, 'inspect', {}, 3).add_done_callback(done)
+        run_async(lambda: self.request('inspect', {}, 3), lambda snapshot: self.polled(snapshot, None),
+                  lambda error: self.polled(None, error_text(error)), self.poll_pool)
         return True
 
     def polled(self, snapshot, error):
@@ -421,8 +397,8 @@ class PopoverHost:
         self.closed = True
         GLib.source_remove(self.poll_source)
         self.window.player.close()
-        self.executor.shutdown(wait=False, cancel_futures=True)
-        self.urgent.shutdown(wait=False, cancel_futures=True)
+        for workers in (self.executor, self.urgent, self.poll_pool):
+            workers.shutdown(wait=False, cancel_futures=True)
         return False
 
 

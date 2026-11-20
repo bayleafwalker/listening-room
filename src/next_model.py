@@ -20,6 +20,40 @@ def accent(value):
     return value if isinstance(value, str) and re.fullmatch(r'#[0-9a-fA-F]{6}', value) else DEFAULT_ACCENT
 
 
+# ---- what changed between two snapshots (partial rebuilds) -----------------------------------
+
+# Keys the playing-room surfaces (Now, the Mix, the mini player, Listen's bar) never read.
+NOW_IGNORES = frozenset({'stations', 'station_recent', 'station_learned', 'recent', 'config_generation',
+                         'minute', 'last_entered_at'})
+
+
+def snapshot_changes(old, new):
+    """The top-level keys whose values differ, or None when there is nothing to compare with (draw everything).
+
+    The controller clock ('now') moves on every snapshot, so it is left out; a 'minute' key stands in for
+    it when the minute turns, for the few places that say "5 min ago" or "Just now"."""
+    if old is None or new is None or old is new:
+        return None
+    changed = {key for key in set(old) | set(new) if key != 'now' and old.get(key) != new.get(key)}
+    if _minute(old) != _minute(new):
+        changed.add('minute')
+    return changed
+
+
+def _minute(snapshot):
+    now = snapshot.get('now')
+    return int(now // 60) if isinstance(now, (int, float)) else None
+
+
+def touches(changed, reads=None, ignores=frozenset()):
+    """Whether a section must draw: everything changed (None), or a key it reads changed. ``reads`` None means
+    every key except ``ignores``."""
+    if changed is None:
+        return True
+    keys = changed - ignores
+    return bool(keys if reads is None else keys & reads)
+
+
 def launch_view(snapshot):
     """Rooms unless a room is already active. Launching never starts playback."""
     return 'now' if (snapshot or {}).get('active') else 'rooms'
