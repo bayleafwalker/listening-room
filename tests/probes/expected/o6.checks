@@ -1,0 +1,151 @@
+1a the Rooms grid has room cards to click
+1b single click -> preview visible within 150 ms for every card (measured [11.4, 26.0, 22.6, 9.3, 8.2, 23.5] ms)
+1c the GTK thread was never held for more than 150 ms after the first (cold) preview (gaps [281.9, 97.0, 33.4, 13.6, 77.0, 59.3] ms), and never more than 400 ms
+1d single clicks never entered a room (and sent nothing)
+1e still no command after waiting longer than any double-click window
+1f no blocking file/network/decode call from application code on the GTK thread during click -> preview
+1g a second click after the double-click time does not enter
+1h double-click enters exactly once
+1i the room is really entered (controller active)
+1j double-click on the room you are already in sends no enter and shows Now
+1k Enter on a card enters exactly once
+1l every selection (scope chips, Mix, station, mood) updates within 100 ms: {'scope:all': 0.0, 'scope:stations': 5.3, 'scope:radio': 6.0, 'scope:library': 1.7, 'scope:channels': 0.7, 'scope:world': 0.6, 'scope:youtube': 0.6, 'open Mix': 0.3, 'open a station': 1.0}
+1m the GTK thread was never held for more than 120 ms during those selections (worst 64 ms)
+1n no blocking file/network/decode call from application code on the GTK thread while selecting
+1o no controller request was made synchronously on the GTK thread during the whole scenario
+2a browsing every ambience scope and searching sent no start command
+2b ... and nothing reached the audio backend
+2c ... and the room layers are exactly as before
+2d New station opens a dialog
+2e the new-station dialog (all modes, searches, link checks) sent no command
+2f ... and started no sound
+2g opening Twitch setup sent no command
+3a Ambience has a plain Change… button (like Music), not a menu
+3b Music and Ambience use the same kind of change control
+3c Change… opens Listen with an ambience-mode title naming the room
+3d the ambience scopes include sounds, radio, live channels, YouTube and the library
+3e Sounds is the first scope and lists offline sounds with Play as ambience as the primary action
+3f nothing was sent by opening ambience mode
+3g a sound: one ambience command, replacing only the ambience layer
+3h a sound: returns to the Mix over Now
+3g a radio: one ambience command, replacing only the ambience layer
+3h a radio: returns to the Mix over Now
+3g a library item: one ambience command, replacing only the ambience layer
+3h a library item: returns to the Mix over Now
+3g a YouTube result: one ambience command, replacing only the ambience layer
+3h a YouTube result: returns to the Mix over Now
+3g a live channel: one ambience command, replacing only the ambience layer
+3h a live channel: returns to the Mix over Now
+3i Cancel returns to the Mix and sends nothing
+3j the Music change path still opens Listen with Tune in (not ambience mode)
+3k a failing ambience choice keeps the old ambience and shows no raw error
+4a New station opens a form with a name, a start and moods
+4b Create is off before anything is chosen
+4c unsafe or non-stream links are never accepted as a start
+4d an ordinary web page is refused with a reason
+4e a blank name cannot be created (or is given a real default, never blank)
+4f a stream on the user's own network is accepted, and said to be
+4g filling the form sent nothing
+4h Create sends one station.save with the name, the stream and the mood; it is stored
+4i saving did not start playback
+4j it appears under Your stations
+4k the station page has a Tune in
+4l Tune in sends one station.start for it and the room is playing
+4m Rename saves through station.save and the old name is gone
+4n Delete asks first and sends nothing yet
+4o cancelling keeps it
+4p confirming deletes exactly that station
+4q a pre-existing station offers Delete…
+4r ... and asks before deleting it
+4s ... and it is gone
+4t deleting the station that is playing is explained in words (stop or leave first), nothing is deleted, no raw error
+4v choosing a radio result fills the name and sends nothing
+4w a radio seed does not offer the AudioMuse mix
+4x the saved station from a radio result (Ambient Drift) has a usable source
+4y ... and the radio-seeded station appears under Your stations
+4z ... and tunes in (one start; room active unless it needs the AudioMuse service)
+4v choosing a library result fills the name and sends nothing
+4w an album/playlist seed is created
+4x the saved station from a library result (Night collection) has a usable source
+4y ... and the library-seeded station appears under Your stations
+4z ... and tunes in (one start; room active unless it needs the AudioMuse service)
+4v choosing a library result fills the name and sends nothing
+4w a library track offers the AudioMuse mix
+4x the saved station from a library result (Nocturne in C) has a usable source and the AudioMuse mix
+4y ... and the library-seeded station appears under Your stations
+4z ... and tunes in (one start; room active unless it needs the AudioMuse service)
+4v choosing a library result fills the name and sends nothing
+4w an album/playlist seed is created
+4x the saved station from a library result (Evening wind-down) has a usable source
+4y ... and the library-seeded station appears under Your stations
+4z ... and tunes in (one start; room active unless it needs the AudioMuse service)
+4v choosing a channels result fills the name and sends nothing
+4w a channels seed does not offer the AudioMuse mix
+4x the saved station from a channels result (lofigirl) has a usable source
+4y ... and the channels-seeded station appears under Your stations
+4z ... and tunes in (one start; room active unless it needs the AudioMuse service)
+4v choosing a youtube result fills the name and sends nothing
+4w a youtube seed does not offer the AudioMuse mix
+4x the saved station from a youtube result (lofi result 0) has a usable source
+4y ... and the youtube-seeded station appears under Your stations
+4z ... and tunes in (one start; room active unless it needs the AudioMuse service)
+5a with no account and no channels, Listen says "Set up Twitch to see live channels"
+5b the Live channels scope shows the setup entry and no false "No live channels" claim
+5c the entry opens Preferences on the Twitch connection
+5d ... and starts nothing
+5e saved channels without an account are listed and live status is said to be unknown
+5f once set up, live channels are listed and the setup entry is gone
+5g a live channel tunes in as music with one command naming the channel
+5h Live channels offers Play as ambience when set up
+5i a live channel plays as ambience through one ambience command
+5j when Twitch cannot be reached the list does not claim there is nothing live
+5k a pasted Twitch link still offers the link sheet (works without an account)
+6a the YouTube scope says how it works before any search
+6b the search ran yt-dlp with ytsearch, the query as one argument, and no API key
+6c a query cannot inject a command or an option
+6d results show title, channel and duration, with Tune in
+6e each result has a menu with Play as ambience and Open elsewhere
+6f YouTube search is inert
+6g the GTK thread was not blocked by the search subprocess (worst gap 24 ms)
+6h a slow search shows that it is searching, with a Stop
+6i Stop kills the yt-dlp process
+6j and no result appears afterwards
+6k a newer query replaces an older slow one: only the newest results show, the old process is gone
+6l a failing yt-dlp says the search did not finish (no raw error, no crash)
+6m a pasted YouTube link still offers the link sheet
+6n the link sheet offers Play and Play as ambience
+6o Tune in on a result sends one link command to play it as music
+6p without yt-dlp the YouTube scope says to install it, truthfully
+6q ... and does not pretend to search or hang on Searching
+6r Preferences says the same about yt-dlp
+6s the new-station YouTube search also says yt-dlp is missing
+7a pressing Enter room shows "Connecting to <room>…" on Now within 150 ms (9 ms)
+7c repeated presses (Enter room, enter, return) send exactly one command
+7d when the room is up the connecting card clears and Now shows it
+7e four presses of Tune in send one start and Now says Connecting
+7f a failed start names what failed in plain words, with no error codes or exception names
+7g ... and offers Try again and a way back
+7h the previous room is intact in the controller and its name is still the active one
+7i ... and the window says it is still there
+7j Try again (after the cause is gone) sends one start and the new room plays
+7k the failure card is gone once it worked
+7l a second failure shows its message, and Back dismisses it
+7m a failed Tune in explains itself in plain words and offers Try again, with no raw error
+7n a backend that cannot start the new music says so in plain words and keeps the old music playing
+7o ... and does not tell the listener they entered a room whose music did not start
+8a with no ambience the row says "No ambience"
+8b ... with no level slider and no Mute
+8c ... and a primary "Choose ambience" button
+8d ... and no Stop or options menu for something that is not playing
+8e ... and does not describe a chosen "stream" or "none"
+8f choosing an ambience gives feedback: a toast naming it, with Undo
+8g the pressed control is off while its command runs, and exactly one command was sent
+8h the ambience layer now has a source
+8i Undo returns to no ambience and the Mix shows "No ambience" again
+8j Undo after replacing a local ambience restores the same source
+8j Undo after replacing a radio ambience restores the same source
+8k no healthy layer offers Try again; each offers Stop
+8l after the music layer fails only its menu offers Try again
+8l after the picture layer fails only its menu offers Try again
+8l after the atmosphere layer fails only its menu offers Try again
+8m once the layers recover, Try again is gone again

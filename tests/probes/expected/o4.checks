@@ -1,0 +1,173 @@
+# KNOWN FAILURE: "5i [ORIGINAL, superseded by R1]" is the original oracle, kept verbatim with its original failure;
+# the revised check that replaced it (R1) passes. It stays visible here on purpose.
+1.0 Ctrl+, opens an Adw.PreferencesDialog
+1a unconfigured: every provider says "Not set up"
+1a unconfigured: no "Connected"/verified wording anywhere in the dialog
+1b configured-but-unchecked: no provider claims a working connection
+1b configured-but-unchecked: says it is not checked yet
+1c failed check: the page itself says the check failed (not connected)
+1c failed check: the Connections row reflects the failure, not "Added · not checked yet"
+1c failed check is not recorded as a working check
+1d check OK: every provider now says something specific and truthful
+1d AudioMuse never claims analysis works
+1d "Connected"/"verified" appear only after a stored successful check
+1e changing the server address drops the old "library ready" claim
+1e2 after a failed re-test the AudioMuse row no longer says the web service answers
+1f capability chips: all seven vocabulary terms present
+1f chip assignment: Plays on speakers only on Music Assistant; Station mixes only on AudioMuse
+1g connection browsing/status/test/save sent no playback command and made no backend effect
+R1a failed test: row says the check failed and is not "not checked yet"/working
+R1b a successful test right after a failure replaces it
+R2a success then a changed endpoint: back to "not checked yet", no stale claim
+R2a the stored success was removed from disk
+R2b saving identical settings keeps a valid success
+R2c success then a changed token file: claim withdrawn
+R3a failure then a changed endpoint: the old failure is not pinned to the new address
+R4a out-of-band success newer than a recorded failure wins
+R4b a failure newer than an earlier success wins (and the success is withdrawn)
+R5a re-saving a token withdraws an earlier success (the new token is untested)
+R5b saving with a blank token field keeps the saved token and its success
+R5c a failure followed by a fresh token does not keep claiming the old token failed
+R5d the sentinel never appears after the re-saves
+R6 reopening Preferences after a failed test never shows a stale working claim
+R7 repeated Ctrl+, keeps one Preferences dialog
+R7 after closing, Ctrl+, opens a fresh working dialog
+R8a wrapped test_connection still returns the same result shape and records the check
+R8b a failing check re-raises the original ConnectionError with its message (classic shows it unchanged)
+R8c ...and withdraws the earlier stored success
+R8d an unknown service still raises its own error
+R9 none of the repair scenarios sent a playback command
+1h secrets: entries cleared after Save/Sign in and no widget text, tooltip or accessible name ever holds one
+1h secrets: nothing in the whole dialog tree contains the sentinel
+1h acoustid entry cleared and key not displayed
+1h secret only ever sent to the controller as the AcoustID key (nothing else carries it)
+1h nothing wrote the secret to stdout/stderr of the dialog code
+1i secrets land only in 0600 private files (never connections.json or world-readable)
+1j saving/testing/sign-in/key sent no playback command
+2a Pause if it disconnects and Lower room audio each apply immediately via the settings command
+2a controller state matches the toggles
+2b choosing an output applies immediately through settings
+2c Test sound plays the quiet test on the chosen output and sends no controller command
+2d Pause other players is stored locally (hub state) and sends no controller command
+3a placement, Moving picture and Keep controls each go through the settings command
+3b controller accepted and holds keep_controls
+3c keep_controls persisted to session.json
+3d unknown settings keys are still refused
+3e keep_controls appears in the snapshot Now reads
+3f Reduced motion applies immediately and turns Moving picture off/insensitive
+3g none of Sound/Scene changes touched playback (no room/layer commands)
+3h with keep_controls off, Now fades (fades() true)
+3h Now controls fade when keep_controls is off
+3i with keep_controls on, fades() is false
+3i with keep_controls on, controls are never dimmed after idle
+3j turning Keep controls visible on while controls are faded brings them back without pointer input
+4a KDE Connect install flow, Waybar and launcher lines are present
+4b Install with no phone chosen installs nothing and says to find a phone first
+4c Install is an explicit step (finding phones installs nothing)
+4d Install runs only after the click, for the chosen phone
+4e Waybar status: absent
+4e Waybar status: present
+4e Waybar status: configured without the module
+4f phone page sent no playback command
+5a AcoustID row default says no key and matching by name still works
+5b saving the key goes through metadata.configure_acoustid (private storage) and is reported saved, not shown
+5b the real key file is mode 0600
+5c an environment override is shown as an override, and the key value is not shown
+5c the pure status text for the override never includes the value
+5d Remove clears the key (metadata.configure_acoustid with empty value)
+5e a current job is listed with a Cancel button
+5f Cancel uses metadata.cancel and the job gets its cancel flag
+5g bulk Enrich queues metadata jobs only (no playback command beyond setup)
+5h Enrich upcoming sends no playback command
+!5i [ORIGINAL, superseded by R1] the Recordings page offers Enrich for shown AND upcoming tracks (classic had both)
+5i-R1 Recordings offers bulk Enrich for upcoming tracks and for the prepared library queue
+5i-R1 both bulk Enrich actions only queue metadata jobs and never start music
+5j export merges pages and import round-trips
+5k import rejects 'not json'
+5k import rejects '[1,2]'
+5k import rejects '{"records": 3}'
+6.0 open_track_details(reference) presents a Track details dialog
+6a overview shows: Overview
+6a overview shows: Nocturne in E flat
+6a overview shows: Fixture Quartet
+6a overview shows: Audio version
+6a overview shows: Identity: MusicBrainzTrack
+6a overview shows: Uncalibrated model score
+6a overview shows: not a probability or human review
+6a overview shows: No human review for this audio version
+6a overview shows: Review validity is checked again before use
+6b scope statement present: Match sends track details to MusicBrainz, or an audio finger
+6b scope statement present: AcoustID needs a configured application key
+6b scope statement present: Identity candidates are suggestions. Confirming an identity 
+6b scope statement present: Listen to the whole exact recording yourself before reviewin
+6b scope statement present: The review applies only to the audio version checked by the 
+6b scope statement present: Reviewing does not start playback.
+6b scope statement present: I listened to the entire exact recording
+6c Enrich sends only metadata.enrich, no playback
+6c Analyze sends only metadata.analyze, no playback
+6c Match sends only metadata.match, no playback
+6d Match with AcoustID and no key set up is refused in the dialog (no command) and explains how to fix it
+6e candidates listed with their provider
+6f Confirm identity with no candidate chosen sends nothing
+6f Confirm identity sends only metadata.confirm_identity with the job and chosen candidate
+6f confirming identity changed the stored identity but sent no playback
+6g review: nothing chosen -> not submitted
+6g review: classification + reviewer but NO acknowledgement -> not submitted
+6g review: acknowledgement but blank reviewer -> not submitted
+6g review: no classification chosen -> not submitted
+6h a complete review sends exactly one metadata.review with acknowledged=True, the record identity and classification
+6h review sends no playback command
+6h acknowledgement is reset after a saved review
+6i controller refuses an unacknowledged review
+6j non-Jellyfin item: Enrich disabled
+6j non-Jellyfin item: Match disabled
+6j non-Jellyfin item: Analyze disabled
+6j non-Jellyfin item: save review disabled and no metadata command written
+6k opening Track details with no reference does not crash
+6l the whole of Track details sent no playback command or backend effect
+6m Track details: no forbidden vocabulary
+D 1200x800 Track details: no clipped control, no horizontal scroll
+C 1200x800 Track details: every control has an accessible name
+C Track details can be closed (Esc / close button)
+D 800x700 Track details: no clipped control, no horizontal scroll
+C 800x700 Track details: every control has an accessible name
+C Track details can be closed (Esc / close button)
+D 1200x800 connection page jellyfin: no clipped control, no horizontal scroll
+D 1200x800 connection page twitch: no clipped control, no horizontal scroll
+D 1200x800 connection page music_assistant: no clipped control, no horizontal scroll
+D 1200x800 connection page audiomuse: no clipped control, no horizontal scroll
+D 1200x800 connection page listenbrainz: no clipped control, no horizontal scroll
+D 1200x800 connection page home_assistant: no clipped control, no horizontal scroll
+D 1200x800 Preferences page connections: no clipped control, no horizontal scroll
+D 1200x800 Preferences page sound: no clipped control, no horizontal scroll
+D 1200x800 Preferences page scene: no clipped control, no horizontal scroll
+D 1200x800 Preferences page phone: no clipped control, no horizontal scroll
+D 1200x800 Preferences page recordings: no clipped control, no horizontal scroll
+D 1200x800 Preferences page about: no clipped control, no horizontal scroll
+D 1200x800 connection status lines are not truncated by ellipsis
+D 800x700 connection page jellyfin: no clipped control, no horizontal scroll
+D 800x700 connection page twitch: no clipped control, no horizontal scroll
+D 800x700 connection page music_assistant: no clipped control, no horizontal scroll
+D 800x700 connection page audiomuse: no clipped control, no horizontal scroll
+D 800x700 connection page listenbrainz: no clipped control, no horizontal scroll
+D 800x700 connection page home_assistant: no clipped control, no horizontal scroll
+D 800x700 Preferences page connections: no clipped control, no horizontal scroll
+D 800x700 Preferences page sound: no clipped control, no horizontal scroll
+D 800x700 Preferences page scene: no clipped control, no horizontal scroll
+D 800x700 Preferences page phone: no clipped control, no horizontal scroll
+D 800x700 Preferences page recordings: no clipped control, no horizontal scroll
+D 800x700 Preferences page about: no clipped control, no horizontal scroll
+D 800x700 connection status lines are not truncated by ellipsis
+C every interactive control in Preferences has an accessible name (label text or LABEL property)
+C every sensitive interactive control is keyboard focusable
+B no forbidden vocabulary on any Preferences page or connection page
+B Preferences uses the plan terms (Moving picture, Keep controls visible, Pause other players)
+C pressing Ctrl+, while Preferences is open does not stack a second Preferences dialog
+C Preferences is reachable from the main menu
+C Ctrl+, is listed in the keyboard shortcuts
+C Preferences dialog can be closed (Esc / close button)
+D reduced motion: Moving picture row is switched off/insensitive in Preferences
+D reduced motion: no spinner animating in Preferences
+hook: only next_window.py and room_session.py touched among shared modules (O4 range 5763fd8^..8714b09 (tests/fixtures/o4-range.diff))
+hook: room_session.py edits only append keep_controls to two existing lines (O4 range 5763fd8^..8714b09 (tests/fixtures/o4-range.diff))
+hook: next_window.py change is small (<= 30 lines changed, informational)
