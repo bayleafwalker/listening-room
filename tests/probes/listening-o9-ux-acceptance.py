@@ -646,6 +646,17 @@ with env:
         pump(1.0)
         bad, seen = untitled_or_black('l4-tune-in-after-saved-room')
         check('L16 a later Tune in with no room active (last room was that saved one) is neither black nor untitled', not bad, seen)
+        # Strengthened after the repair (2026-11-20): the offered name itself is not generic, and a saved room
+        # with a real name but no scene keeps its name and still is not black.
+        check('L15b Save as my room offers what plays, not a generic name', offered and not next_model.generic_name(offered)
+              if hasattr(next_model, 'generic_name') else offered not in (None, '', 'Your listening room'), offered)
+        env.service.execute('save', {'name': 'Acceptance Den'})
+        settle(1.5)
+        pump(1.5)
+        title = window.room_name.get_text()
+        bad, seen = untitled_or_black('l5-named-saved-room-without-scene')
+        check('L17 a saved room with its own name and no scene shows that name over a scene that is not black',
+              title == 'Acceptance Den' and seen[1] > 25, seen)
 
     # =========================================================================== H: Hyprland placement (criterion 7)
     @section('H')
@@ -748,6 +759,91 @@ with env:
                   opened == 'here', 'scene opened with placement=%r; last_session placement=%r' % (
                       opened, (controller.last_session or {}).get('picture', {}).get('placement')))
             controller.close()
+        # Strengthened after the repair (2026-11-20): saved rooms migrate too, once, and explicit choices are kept.
+        def prepared(stored, variants=None):
+            folder = base / ('m%d' % time.monotonic_ns())
+            folder.mkdir(parents=True)
+            (folder / 'session.json').write_text(json.dumps(stored))
+            if variants is not None:
+                (folder / 'room-variants.json').write_text(json.dumps(variants))
+            return folder
+
+        def boot(folder):
+            controller = room_session.Controller(env.backend.__class__(), folder)
+            state = (dict(controller.settings), copy.deepcopy(controller.last_session), controller.variants())
+            controller.close()
+            return state
+        recipe = copy.deepcopy(last) if last else {'id': 'r', 'room_id': None, 'name': 'Old room',
+                                                    'music': {'source_id': 'x'}, 'picture': {'enabled': True}}
+        recipe.setdefault('picture', {})['placement'] = '9'
+        variant = dict(copy.deepcopy(recipe), id='variant-acceptance', name='Old saved room')
+        folder = prepared({'version': 1, 'settings': {'placement': '9'}, 'last_session': recipe}, [variant])
+        settings, last_room, variants = boot(folder)
+        check('H12 an implicit 9 in the last room and in saved rooms moves to Here on upgrade',
+              last_room['picture']['placement'] == 'here' and variants[0]['picture']['placement'] == 'here',
+              (last_room['picture'], [v['picture'] for v in variants]))
+        stored = json.loads((folder / 'session.json').read_text())
+        stored['last_session']['picture']['placement'] = '9'      # chosen later, per room (the Mix toggle)
+        (folder / 'session.json').write_text(json.dumps(stored))
+        later = json.loads((folder / 'room-variants.json').read_text())
+        later[0]['picture']['placement'] = '9'
+        (folder / 'room-variants.json').write_text(json.dumps(later))
+        settings, last_room, variants = boot(folder)
+        check('H13 the migration runs once: a 9 chosen after it survives the next restart',
+              last_room['picture']['placement'] == '9' and variants[0]['picture']['placement'] == '9',
+              (last_room['picture'], [v['picture'] for v in variants]))
+        folder = prepared({'version': 1, 'settings': {'placement': 'pin', 'placement_chosen': True}, 'last_session': recipe},
+                          [variant])
+        settings, last_room, variants = boot(folder)
+        check('H14 with a placement chosen before the upgrade (legacy mark) recipes are not touched and the choice stays',
+              settings['placement'] == 'pin' and last_room['picture']['placement'] == '9'
+              and variants[0]['picture']['placement'] == '9', (settings, last_room['picture']))
+        check('H15 the legacy mark leaves the settings the snapshot shows', 'placement_chosen' not in settings, settings)
+        settings, _last, _v = boot(folder)
+        check('H16 ... and the choice survives a second restart after the mark moved', settings['placement'] == 'pin', settings)
+        check('H17 the running controller\'s snapshot settings carry no internal placement bookkeeping',
+              not any(k.startswith('placement_') for k in env.service.execute('inspect', {}).get('settings', {})),
+              env.service.execute('inspect', {}).get('settings'))
+
+    # =========================================================================== P: polling (O6 follow-up repair)
+    @section('P')
+    def polling():
+        env.start_station_room()
+        window = env.launch(page=None)
+        pump(.8)
+        real = session_client.request
+
+        def slow(action, arguments=None, *rest, **kw):
+            if action == 'inspect':
+                time.sleep(1.0)
+            return real(action, arguments, *rest, **kw)
+        with mock.patch.object(session_client, 'request', side_effect=slow):
+            pump(1.5)
+            mark = len(env.log)
+            for _ in range(30):
+                window.poll()
+            serial = getattr(window, 'polls_sent', 0)
+            pump(4.0)
+            inspects = len([a for a, _ in env.log[mark:] if a == 'inspect'])
+        check('P1 thirty poll requests during slow reads are coalesced: at most one read in flight, bounded re-sends',
+              1 <= inspects <= 6, inspects)
+        check('P2 a poll requested while one was in flight is answered by a later read',
+              hasattr(window, 'fresh_since') and window.fresh_since(serial), (serial, getattr(window, 'snapshot_poll', None)))
+        pump(2.0)
+        mark = len(env.log)
+        pump(3.0)
+        idle = len([a for a, _ in env.log[mark:] if a == 'inspect'])
+        check('P3 with fast reads and no requests, polling stays at the timer rate (no back-to-back re-sends)',
+              idle <= int(3.0 / (next_window_module.POLL_MS / 1000.)) + 2, (idle, next_window_module.POLL_MS))
+        with mock.patch.object(session_client, 'request', side_effect=ConnectionRefusedError(111, 'Connection refused')):
+            before = getattr(window, 'snapshot_poll', 0)
+            for _ in range(10):
+                window.poll()
+            pump(2.0)
+            check('P4 failed reads never mark the shown snapshot fresh', getattr(window, 'snapshot_poll', 0) == before,
+                  (before, getattr(window, 'snapshot_poll', None)))
+        pump(1.5)
+        check('P5 polling recovers after failures', window.offline_bar is not None and not window.offline_bar.get_reveal_child())
 
     # =========================================================================== W: widths (criterion 8)
     @section('W')
@@ -801,6 +897,24 @@ with env:
                 window.sheet.set_open(False)
             window.close()
             pump(1.0)
+        # Strengthened after the repair (2026-11-20): a short window with the Mix open keeps the toast on screen.
+        window = env.launch(width=640, height=520, page=None)
+        window.show_now()
+        pump(.8)
+        window.open_mix()
+        pump(1.2)
+        window.toast('An acceptance toast in a short window')
+        pump(.9)
+        size = (window.get_width(), window.get_height())
+        tboxes = [bounds(t, window) for t in toast_widgets(window)]
+        check('W9 in a short 640x520 window with the Mix open the toast is fully on screen',
+              tboxes and all(t[1] >= 0 and t[1] + t[3] <= size[1] for t in tboxes), (tboxes, size))
+        pump(3.0)
+        check('W10 ... and the window does not grow', (window.get_width(), window.get_height()) == size,
+              ((window.get_width(), window.get_height()), size))
+        window.sheet.set_open(False)
+        window.close()
+        pump(.6)
         env.service.execute('leave', {})
         settle(1.0)
         window = env.launch(width=360, height=640, page=None)
