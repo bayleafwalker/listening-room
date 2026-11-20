@@ -45,13 +45,14 @@ HERE = Path(__file__).resolve()
 FLAGS = {
     '--child': {'default': ''},                  # internal: 'checks' or 'stress'
     '--seed': {'type': int, 'default': 0},
-    '--children': {'type': int, 'default': 12},  # stress children
-    '--cycles': {'type': int, 'default': 6},    # stress cycles per child
+    '--children': {'type': int, 'default': 26},  # stress children: 26 x 8 = 208 cycles
+    '--cycles': {'type': int, 'default': 8},    # stress cycles per child
     '--reopen-every': {'type': int, 'default': 3},
-    '--jobs': {'type': int, 'default': 3},       # stress children run at once on the shared display
+    '--jobs': {'type': int, 'default': 4},       # stress children run at once on the shared display
     '--load': {'type': int, 'default': 0},       # extra busy CPU workers for the whole run
     '--child-timeout': {'type': float, 'default': 0.},   # 0: 150 s + 60 s per cycle
     '--skip-checks': {'action': 'store_true'},
+    '--leak-cycles': {'type': int, 'default': 40},  # measured preview open/close cycles in the leak child
     '--gstreamer': {'default': 'auto'},          # auto: add the flake's GStreamer when the shell lacks it; off
 }
 GST_PACKAGES = ('gstreamer.out', 'gst-plugins-base', 'gst-plugins-good', 'gst-plugins-bad', 'gst-libav')
@@ -142,7 +143,7 @@ def run_parent(args):
         # Each child gets its own session bus: two NextApps on one bus would make the second a remote instance.
         command = ['dbus-run-session', '--', sys.executable, str(HERE), '--child', mode, '--seed', str(seed), '--source', args.source,
                    '--output', str(output / ('%s-%03d' % (mode, seed))), '--cycles', str(args.cycles),
-                   '--reopen-every', str(args.reopen_every), '--gstreamer', 'off']
+                   '--reopen-every', str(args.reopen_every), '--leak-cycles', str(args.leak_cycles), '--gstreamer', 'off']
         handle = open(log, 'w')
         process = subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT, env=environment,
                                    preexec_fn=no_core_dumps)
@@ -193,19 +194,19 @@ def run_parent(args):
     print('renderer: %s  load average at start: %.2f %.2f %.2f  cpus: %d  extra busy workers: %d' % (
         os.environ.get('GSK_RENDERER'), *load_samples[0], os.cpu_count(), args.load), flush=True)
     try:
-        if not args.skip_checks:
-            item = finish(child('checks', 0), args.child_timeout)
+        for mode, label in (() if args.skip_checks else (('checks', 'behavioural'), ('leak', 'lifetime'))):
+            item = finish(child(mode, 0), args.child_timeout)
             for line in item['text'].splitlines():
                 if line.startswith('INFO '):
                     print(line, flush=True)
                 elif line.startswith(('PASS ', 'FAIL ')):
                     check(line[5:].split('  ')[0], line.startswith('PASS '), line[5:].partition('  ')[2])
             crashed = not isinstance(item['code'], int) or item['code'] < 0
-            check('checks: the behavioural child finished without crashing', not crashed,
-                  'exit %s at %s\n%s' % (item['code'], item['last_step'], item['text'][-2500:]))
-            check('checks: the behavioural child reported its oracles and exited 0',
+            check('%s: the %s child finished without crashing' % (mode, label), not crashed,
+                  'exit %s at %s\n%s' % (item['code'], item['last_step'], item['text'][-1500:]))
+            check('%s: the %s child reported its oracles and exited 0' % (mode, label),
                   item['code'] == 0 and 'CHECKS-DONE 0 failed' in item['text'],
-                  'exit %s\n%s' % (item['code'], item['text'][-2500:]))
+                  'exit %s\n%s' % (item['code'], item['text'][-1500:]))
 
         results, running, seeds = [], [], list(range(1, args.children + 1))
         while seeds or running:
@@ -332,6 +333,8 @@ def run_child(mode):
 
         if mode == 'stress':
             stress(env, args, step, cards, click, on_preview, to_rooms, loop_rooms, wait_idle)
+        elif mode == 'leak':
+            lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms)
         else:
             behaviour(env, step, cards, click, on_preview, to_rooms, loop_rooms, wait_idle)
         for window in list(env.app.get_windows()):
@@ -429,6 +432,123 @@ def stress(env, args, step, cards, click, on_preview, to_rooms, loop_rooms, wait
     step('done')
     window.close()
     pump(.3)
+
+
+def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
+    """Preview open/close with scene video must not accumulate Scenes, media, threads, fds or memory.
+
+    Bounds, measured after `--leak-cycles` (40) cycles against a baseline taken after 8 warm-up previews
+    (every loop room once, so poster textures and plugin loading are paid for), with no preview open:
+    live Scenes <= 2 (the room scene plus one preview page awaiting removal), live Gtk.MediaFiles <= 1
+    at the baseline and the end (both counted by GObject finalization, and by a
+    gc census of Python wrappers), threads <= baseline + 6, fds <= baseline + 12, RSS <= baseline + 64 MB.
+    Main leaks about 9 MB, 3 threads and 13 fds per preview, i.e. ~360 MB, ~120 threads, ~520 fds here."""
+    import gc
+    import next_widgets
+    Gtk, GLib = env.Gtk, env.GLib
+    pump = env.pump
+    failures = [0]
+
+    def check(name, ok, detail=''):
+        failures[0] += 0 if ok else 1
+        print(('PASS ' if ok else 'FAIL ') + name + ('' if ok else '  ' + str(detail)[:400]), flush=True)
+
+    alive = {'scene': 0, 'media': 0}
+    handles = []
+
+    def track(kind, obj):
+        alive[kind] += 1
+
+        def gone(*_):
+            alive[kind] -= 1
+        handles.append(obj.weak_ref(gone))   # called when the GObject is finalized, not when Python drops it
+        return obj
+
+    scene_init = next_widgets.Scene.__init__
+
+    def counting_init(self, *a, **k):
+        scene_init(self, *a, **k)
+        track('scene', self)
+    next_widgets.Scene.__init__ = counting_init
+    new_media = Gtk.MediaFile.new_for_filename
+    Gtk.MediaFile.new_for_filename = staticmethod(lambda *a, **k: track('media', new_media(*a, **k)))
+
+    def status(key):
+        return int(next(line.split()[1] for line in open('/proc/self/status') if line.startswith(key + ':')))
+
+    def sample(label):
+        for _ in range(3):
+            gc.collect()
+            pump(.5)
+        census = {name: 0 for name in ('Scene', 'MediaFile')}
+        for obj in gc.get_objects():
+            if isinstance(obj, next_widgets.Scene):
+                census['Scene'] += 1
+            elif isinstance(obj, Gtk.MediaFile):
+                census['MediaFile'] += 1
+        point = {'scenes': alive['scene'], 'media': alive['media'], 'scene_wrappers': census['Scene'],
+                 'media_wrappers': census['MediaFile'], 'threads': status('Threads'),
+                 'fds': len(os.listdir('/proc/self/fd')), 'rss_mb': round(status('VmRSS') / 1024., 1)}
+        print('INFO lifetime %s: %s' % (label, json.dumps(point)), flush=True)
+        return point
+
+    def preview_cycle(child, dwell):
+        click(window, child)
+        pump(dwell)        # long enough for the loop to start playing
+        window.key_pressed(None, env.Gdk.KEY_Escape, 0, 0)
+        pump(.35)
+
+    step('launch')
+    window = env.launch(page='rooms')
+    to_rooms(window)
+    pump(.5)
+    rooms = loop_rooms(window)
+    check('lifetime: rooms with scene loops to preview', len(rooms) >= 2, len(rooms))
+    step('warm-up')
+    for child in rooms[:8]:
+        preview_cycle(child, .8)
+    played = []
+    click(window, rooms[0])
+    pump(1.5)
+    widgets = window.rooms.preview_widgets
+    played.append(bool(widgets and widgets['scene'].playing_motion))
+    window.key_pressed(None, env.Gdk.KEY_Escape, 0, 0)
+    pump(2.)
+    base = sample('baseline after %d warm-up previews' % (min(8, len(rooms)) + 1))
+    halfway = None
+    for cycle in range(args.leak_cycles):
+        step('leak cycle %d' % cycle)
+        preview_cycle(rooms[cycle % len(rooms)], (.5, .8, 1.2)[cycle % 3])
+        if (cycle + 1) % 10 == 0 and cycle + 1 < args.leak_cycles:   # partial data survives a crash
+            point = sample('after %d cycles' % (cycle + 1))
+            halfway = point if cycle + 1 <= args.leak_cycles // 2 or halfway is None else halfway
+    pump(3.)
+    end = sample('after %d cycles' % args.leak_cycles)
+    click(window, rooms[1 % len(rooms)])
+    pump(1.5)
+    widgets = window.rooms.preview_widgets
+    played.append(bool(widgets and widgets['scene'].playing_motion))
+    window.key_pressed(None, env.Gdk.KEY_Escape, 0, 0)
+    pump(.5)
+    per = lambda key: (end[key] - base[key]) / float(args.leak_cycles)
+    print('INFO lifetime growth per preview: %.2f MB RSS, %.2f threads, %.2f fds, %.2f Scenes, %.2f MediaFiles' % (
+        per('rss_mb'), per('threads'), per('fds'), per('scenes'), per('media')), flush=True)
+    check('lifetime: the scene loop really played in a preview before and after the cycles (not vacuous)',
+          all(played), played)
+    check('lifetime: live Scene GObjects stay flat over %d previews (<= 2: the room scene and at most one '
+          'preview page awaiting removal)' % args.leak_cycles, end['scenes'] <= 2 and base['scenes'] <= 2, (base['scenes'], halfway and halfway['scenes'], end['scenes']))
+    check('lifetime: Scene wrappers stay flat (gc census <= 2)', end['scene_wrappers'] <= 2, (base['scene_wrappers'], end['scene_wrappers']))
+    check('lifetime: at most one live Gtk.MediaFile with no preview open (finalization count)',
+          end['media'] <= 1 and base['media'] <= 1, (base['media'], halfway and halfway['media'], end['media']))
+    check('lifetime: MediaFile wrappers stay flat (gc census <= 1)', end['media_wrappers'] <= 1,
+          (base['media_wrappers'], end['media_wrappers']))
+    check('lifetime: threads stay flat (<= baseline + 6)', end['threads'] <= base['threads'] + 6,
+          (base['threads'], halfway and halfway['threads'], end['threads']))
+    check('lifetime: fds stay flat (<= baseline + 12)', end['fds'] <= base['fds'] + 12,
+          (base['fds'], halfway and halfway['fds'], end['fds']))
+    check('lifetime: RSS stays flat (<= baseline + 64 MB)', end['rss_mb'] <= base['rss_mb'] + 64,
+          (base['rss_mb'], halfway and halfway['rss_mb'], end['rss_mb']))
+    print('CHECKS-DONE %d failed' % failures[0], flush=True)
 
 
 def behaviour(env, step, cards, click, on_preview, to_rooms, loop_rooms, wait_idle):
