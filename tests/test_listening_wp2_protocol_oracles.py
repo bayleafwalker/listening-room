@@ -329,6 +329,18 @@ class Rig:
             return execute(action, args, *rest, **kwargs)
         self.service.execute = logged_execute
         self.server, self.fd = session_service.make_server(self.path, self.service)
+        # REVISED (phase 2): track accepted connections so stop() can end them the way a controller
+        # process exit does. Reason: shutdown()+server_close() close only the listening socket; in-process
+        # handler threads kept old subscribe streams open, so a "restart" never reached clients (the client
+        # waits up to three 15 s heartbeats), unlike the real service, whose exit closes every connection.
+        self.accepted = []
+        get_request = self.server.get_request
+
+        def tracked_get_request():
+            connection, address = get_request()
+            self.accepted.append(connection)
+            return connection, address
+        self.server.get_request = tracked_get_request
         assert self.server is not None, 'socket lock already held'
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .05}, daemon=True)
         self.thread.start()
@@ -346,6 +358,11 @@ class Rig:
             return
         self.stopped = True
         self.server.shutdown()
+        for connection in self.accepted:  # REVISED (phase 2), see __init__; ORIGINAL: no such loop
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         self.server.server_close()
         try:
             self.controller.close()
@@ -589,7 +606,11 @@ class SubscribeOracles(Base):
         snap = self.first_snapshot(subscriber, 1)
         self.assertEqual(snap['room_volume'], 64)
         self.assertLessEqual(BASELINE_SNAPSHOT_KEYS, set(snap), 'streamed snapshot lacks inspect keys')
-        self.assertLessEqual(set(inspected) - {'now'}, set(snap) | {'revision', 'rev'})
+        # ORIGINAL (phase 1): self.assertLessEqual(set(inspected) - {'now'}, set(snap) | {'revision', 'rev'})
+        # REVISED (phase 2): the protocol version is connection metadata, not room state; the stream carries
+        # it in its envelope, not inside each snapshot. Every state key must still be streamed.
+        protocol_keys = {'revision', 'rev', 'version', 'protocol_version', 'protocol'}
+        self.assertLessEqual(set(inspected) - {'now'} - protocol_keys, set(snap))
         self.assertIsNotNone(subscriber.snapshots()[0][2], 'streamed snapshot carries no integer revision')
 
     def test_each_change_streams_one_line_with_a_higher_revision(self):
@@ -683,7 +704,11 @@ def client_api():
             kwargs['stop_event'] = stop
         callback_name = next((p for p in parameters if p in ('callback', 'on_snapshot', 'on_update', 'handler')), None)
         if callback_name:
-            kwargs[callback_name] = lambda snap, *_: on_snapshot(snap)
+            # ORIGINAL (phase 1): kwargs[callback_name] = lambda snap, *_: on_snapshot(snap)
+            # REVISED (phase 2, ADAPT): the callback receives an Update(snapshot, revision, session, connected,
+            # error) namedtuple; hand on its snapshot (connected=False updates carry None and are skipped).
+            kwargs[callback_name] = lambda update, *_: (on_snapshot(getattr(update, 'snapshot', update))
+                                                        if getattr(update, 'snapshot', update) is not None else None)
             result = candidate(**kwargs)
             if hasattr(result, 'close') and not inspect.isgenerator(result):
                 stop_waiter = threading.Thread(target=lambda: (stop.wait(), result.close()), daemon=True)
@@ -756,8 +781,15 @@ class ClientApiOracles(Base):
             self.assertIsNotNone(t, 'client did not reconnect to the restarted controller (or ignored its lower revision)')
             popen.assert_not_called()
             run.assert_not_called()
+        # ORIGINAL (phase 1):
+        # mutating = {name for name in rig.action_names() | restarted.action_names() if not READ_ONLY.match(name)}
+        # self.assertEqual(mutating, set(), 'the client API sent actions that could start playback')
+        # REVISED (phase 2): the log also holds the test's own room_volume request (an oracle bug, not the
+        # client's). Exclude exactly that one request and require it was the only room_volume.
         mutating = {name for name in rig.action_names() | restarted.action_names() if not READ_ONLY.match(name)}
-        self.assertEqual(mutating, set(), 'the client API sent actions that could start playback')
+        self.assertEqual(mutating - {'room_volume'}, set(), 'the client API sent actions that could start playback')
+        self.assertEqual([a for a in rig.actions + restarted.actions if a == ('execute', 'room_volume')],
+                         [('execute', 'room_volume')], 'the client API sent room_volume')
         self.assertIsNone(restarted.controller.active)
         self.assertFalse([c for c in restarted.backend.calls if c[0].startswith('start')])
 
