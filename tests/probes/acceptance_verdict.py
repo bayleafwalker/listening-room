@@ -5,7 +5,9 @@
 
 RESULTS_DIR holds the probe's results file (the ``*acceptance*.json`` it writes: a list of
 ``{criterion, pass}`` records, or a dict holding that list). ``expected/NAME.checks`` lists one
-check name per line; values a name embeds (timings, counts in (), [] or {}) are ignored when comparing. A line starting with ``!`` is a known failure, kept visible on purpose
+check name per line; an entry may declare the measured part of its name with ``@@``
+(for example ``... (worst gap @@ ms)``); that span matches anything and the rest of the name must match exactly.
+Nothing else is ignored: thresholds, scenario inputs and markers in a name are part of its identity. A line starting with ``!`` is a known failure, kept visible on purpose
 (the superseded "5i [ORIGINAL]" check in O4); comment lines start with ``# ``.
 
 The run passes when:
@@ -15,6 +17,7 @@ The run passes when:
 Checks that are new, not listed, are reported and allowed if they pass, so adding a check to
 a probe needs no edit here. ``--record`` rewrites the list from the run, keeping comment lines. Every failing check is
 recorded as a known failure and printed, so review the diff: a ``!`` line needs a comment saying why.
+Entries that use ``@@`` are kept as written.
 """
 from collections import Counter
 import json
@@ -23,18 +26,6 @@ import re
 import sys
 
 HERE = Path(__file__).resolve().parent
-
-
-def stable(name):
-    """A check's name without the values it measured, so timings never change its identity.
-
-    Drops [...] and {...} groups, then (...) groups, that contain a digit, and collapses
-    spaces. The words and IDs that say what is checked stay, so a vanished or renamed check
-    is still found.
-    """
-    name = re.sub(r'\[[^\]]*\d[^\]]*\]|\{[^}]*\d[^}]*\}', '', name)
-    name = re.sub(r'\([^()]*\d[^()]*\)', '', name)
-    return re.sub(r'\s+', ' ', name).strip()
 
 
 def load_results(directory):
@@ -47,10 +38,20 @@ def load_results(directory):
     results = []
     for item in data:
         if isinstance(item, dict):
-            results.append((stable(item.get('criterion', item.get('name'))), bool(item.get('pass', item.get('ok')))))
+            results.append((item.get('criterion', item.get('name')), bool(item.get('pass', item.get('ok')))))
         else:
-            results.append((stable(item[0]), bool(item[1])))
+            results.append((item[0], bool(item[1])))
     return results
+
+
+WILDCARD = '@@'
+
+
+def pattern(entry):
+    """The regex for an entry that declares measured spans with ``@@``, else None."""
+    if WILDCARD not in entry:
+        return None
+    return re.compile('.*?'.join(re.escape(part) for part in entry.split(WILDCARD)), re.S)
 
 
 def load_expected(path):
@@ -60,12 +61,24 @@ def load_expected(path):
         for line in path.read_text().splitlines():
             if line.startswith('# ') or line == '#':
                 comments.append(line)
-            elif line.startswith('!'):
-                known[stable(line[1:])] += 1
-                names[stable(line[1:])] += 1
-            elif line:
-                names[stable(line)] += 1
+                continue
+            entry = line[1:] if line.startswith('!') else line
+            if not entry:
+                continue
+            names[entry] += 1
+            if line.startswith('!'):
+                known[entry] += 1
     return names, known, comments
+
+
+def identify(name, names, patterns):
+    """The expected entry a result belongs to: its exact name, else the first ``@@`` entry matching all of it."""
+    if name in names and WILDCARD not in name:
+        return name
+    for entry, regex in patterns.items():
+        if regex.fullmatch(name):
+            return entry
+    return name
 
 
 def main(argv):
@@ -77,6 +90,8 @@ def main(argv):
     expected_file = HERE / 'expected' / f'{name}.checks'
     results = load_results(directory)
     names, known, comments = load_expected(expected_file)
+    patterns = {entry: pattern(entry) for entry in names if pattern(entry)}
+    results = [(identify(check, names, patterns), ok) for check, ok in results]
     passed, failed = Counter(), Counter()
     for check, ok in results:
         (passed if ok else failed)[check] += 1
