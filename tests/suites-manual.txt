@@ -1,0 +1,6 @@
+# Suites under tests/ that do not run by default. Every other tests/test_*.py runs in the
+# package checkPhase and in `scripts/listening-dev.sh test`. Format: FILE REASON.
+# Run these with `scripts/listening-dev.sh test FILE` or `scripts/listening-dev.sh test --all`.
+test_listening_o7_oracles.py renders every sound bed and measures it (about 2.5 minutes of CPU); run it when a sound or the bed renderer changes
+test_listening_o8_oracles.py decodes every built room video, so it needs the built assets and ffmpeg
+test_listening_o9_scenes_oracles.py compares the built videos with a pre-O9 baseline build (LISTENING_O9_BASELINE_ASSETS); skips parts without one

@@ -5,6 +5,18 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Internal
+- One suite list: `tests/run_suites.py` runs every `tests/test_*.py` for both the package
+  check and `scripts/listening-dev.sh test`; exceptions are named with reasons in
+  `tests/suites-manual.txt`. The WP1 and WP3 oracle suites now run in the package check.
+- Acceptance probe expectations live in `tests/probes/expected/` and are judged by check
+  name (`acceptance_verdict.py`) instead of pass counts in the dev script.
+- `nix/package.nix` has one launcher helper; the dev shell reuses the package's Python.
+- CONTRIBUTING covers the asset render cost and adding a test or probe; SECURITY lists
+  what the app deliberately trusts. The classic-era `listening-hub-audio`/`-mix` probes
+  are reviewed: `-audio` (live network streams) is archived under `tests/probes/archive-classic/`
+  with its reasons; `-mix` stays as a manual real-systemd check.
+
 ### Added
 - Objective checks for the sounds (spectrum, event structure, distinctness, loop
   seam, level, determinism): `tests/test_listening_atmosphere_character.py`.
