@@ -24,6 +24,11 @@ def _deliver(callback, value):
     return False        # an idle source runs once, whatever the callback returns
 
 
+def call_on_main(callback, value):
+    """Hand ``value`` from any thread (a subscription's, say) to ``callback`` on the main loop."""
+    GLib.idle_add(_deliver, callback, value)
+
+
 def run_async(fn, on_ok=None, on_err=None, pool=None):
     """Run ``fn()`` on ``pool``; then ``on_ok(result)`` or ``on_err(exception)`` on the main loop.
 

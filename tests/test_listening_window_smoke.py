@@ -375,6 +375,141 @@ class WindowSmoke(unittest.TestCase):
         env.service.execute('leave', {})
         env.settle(1.0)
 
+    # ---- pushed snapshots (WP2-WINDOW criterion 5) ---------------------------------------------
+
+    def fake_stream(self):
+        """A stand-in for session_client.subscribe: the test pushes updates from another thread."""
+        import collections
+        import threading
+        update = collections.namedtuple('Update', 'snapshot revision session connected error')
+        streams = []
+
+        class FakeSubscription:
+            def __init__(self, callback):
+                self.callback, self.closed, self.revision = callback, False, 0
+
+            def close(self):
+                self.closed = True
+
+            def push(self, snapshot=None, connected=True):
+                self.revision += 1
+                item = update(snapshot, self.revision, 'fixture', True, None) if connected else \
+                    update(None, None, None, False, 'fixture: the stream went away')
+                thread = threading.Thread(target=self.callback, args=(item,))
+                thread.start()
+                thread.join()
+
+        def subscribe(callback, fields=None, path=None, start=False, backoff=(.25, 10.)):
+            self.assertFalse(start, 'the window must never start the controller through the stream')
+            streams.append(FakeSubscription(callback))
+            return streams[-1]
+        return streams, subscribe
+
+    def inspects(self, mark):
+        return len([action for action, _args in self.env.log[mark:] if action == 'inspect'])
+
+    def test_pushed_snapshots_reach_the_window_promptly_and_polling_is_only_a_fallback(self):
+        import session_client
+        env = self.env
+        env.start_station_room()
+        streams, subscribe = self.fake_stream()
+        with mock.patch.object(session_client, 'subscribe', side_effect=subscribe, create=True), \
+                mock.patch.object(env.next_window, 'FALLBACK_POLL_MS', 1500):
+            window = env.launch(page=None)
+            self.assertEqual(len(streams), 1, 'the window did not subscribe')
+            stream = streams[0]
+            stream.push(env.service.execute('inspect', {}))
+            env.pump(.4)
+            mark = len(env.log)
+            env.pump(2.0)
+            self.assertEqual(self.inspects(mark), 0, 'the window kept polling while the stream was up')
+            # A change made elsewhere arrives by push, promptly.
+            env.service.execute('room_volume', {'value': 23})
+            stream.push(env.service.execute('inspect', {}))
+            started = time.monotonic()
+            while round(window.volume.get_value()) != 23 and time.monotonic() - started < 2:
+                env.pump(.005)
+            elapsed = time.monotonic() - started
+            self.assertEqual(round(window.volume.get_value()), 23)
+            self.assertLess(elapsed, .25, 'a pushed change took %.3f s to reach Now' % elapsed)
+            # The stream goes down: one read at once, then polls no more often than the fallback interval.
+            mark = len(env.log)
+            stream.push(connected=False)
+            env.pump(4.0)
+            self.assertIn(self.inspects(mark), (3, 4), 'fallback polling at 1.5 s for 4 s')
+            # It comes back: polling stops again.
+            env.service.execute('room_volume', {'value': 41})
+            stream.push(env.service.execute('inspect', {}))
+            env.pump(.4)
+            self.assertEqual(round(window.volume.get_value()), 41)
+            mark = len(env.log)
+            env.pump(2.0)
+            self.assertEqual(self.inspects(mark), 0)
+            window.close()
+            env.pump(.3)
+            self.assertTrue(stream.closed, 'closing the window left the stream open')
+        env.service.execute('leave', {})
+        env.settle(1.0)
+
+    def test_a_read_sent_before_a_push_never_replaces_it_or_counts_as_fresh(self):
+        import session_client
+        env = self.env
+        env.start_station_room()
+        streams, subscribe = self.fake_stream()
+        real = session_client.request
+        with mock.patch.object(session_client, 'subscribe', side_effect=subscribe, create=True):
+            window = env.launch(page=None)
+            stream = streams[0]
+            stream.push(env.service.execute('inspect', {}))
+            env.pump(.4)
+
+            def stale(action, arguments=None, *rest, **kw):
+                answer = real(action, arguments, *rest, **kw)
+                if action == 'inspect' and stale.first:
+                    stale.first = False
+                    time.sleep(.6)            # read now, answered after a newer push
+                return answer
+            stale.first = True
+            with mock.patch.object(session_client, 'request', side_effect=stale):
+                mark = window.polls_sent
+                window.poll()
+                env.pump(.1)
+                env.service.execute('room_volume', {'value': 64})
+                stream.push(env.service.execute('inspect', {}))
+                env.pump(.2)
+                self.assertEqual(round(window.volume.get_value()), 64)
+                self.assertFalse(window.fresh_since(mark), 'a push counted as a fresh read')
+                env.pump(1.0)
+            self.assertEqual(round(window.volume.get_value()), 64, 'the older read replaced the pushed snapshot')
+            self.assertTrue(window.fresh_since(mark + 1), 'no read sent after the push landed')
+            window.close()
+        env.service.execute('leave', {})
+        env.settle(1.0)
+
+    def test_the_popover_mini_player_takes_pushed_snapshots_too(self):
+        import next_mini
+        import session_client
+        env = self.env
+        env.start_station_room()
+        streams, subscribe = self.fake_stream()
+        host = next_mini.PopoverHost(env.app, session_client.request, launch=lambda arguments: None, subscribe=subscribe)
+        try:
+            env.pump(.6)
+            stream = streams[0]
+            env.service.execute('room_volume', {'value': 52})
+            stream.push(env.service.execute('inspect', {}))
+            env.pump(.2)
+            self.assertEqual(host.snapshot.get('room_volume'), 52)
+            mark = len(env.log)
+            env.pump(2.5)
+            self.assertEqual(self.inspects(mark), 0, 'the popover kept polling while the stream was up')
+        finally:
+            host.window.close()
+            env.pump(.3)
+        self.assertTrue(streams[0].closed)
+        env.service.execute('leave', {})
+        env.settle(1.0)
+
     # ---- partial rebuilds and the worker handoff (WP2-WINDOW) ----------------------------------
 
     def counts(self, window):

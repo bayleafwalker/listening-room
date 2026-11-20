@@ -22,7 +22,7 @@ import listening_hub as hub
 import session_client
 import next_model as model
 from next_actions import RoomActions, Ticket
-from next_async import error_text, pool, run_async
+from next_async import call_on_main, error_text, pool, run_async
 from next_mini import MINI_CSS, MiniPlayer, MiniWindow
 from next_mix import MixSheet
 from next_rooms import RoomsPage
@@ -31,6 +31,7 @@ from next_widgets import (FocalPicture, choose_renderer, show_texture, OutputPop
 
 APP_ID = 'app.kotona.ListeningRoom'
 POLL_MS = 900
+FALLBACK_POLL_MS = 5000      # while a stream that worked is down; a controller with no stream is polled at POLL_MS
 IDLE_MS = 4000
 BREAKPOINT = 1000
 MINI_WIDTH = 560  # below this the mini layout replaces the window
@@ -112,7 +113,11 @@ class NextWindow(Adw.ApplicationWindow):
         self.connect('map', self.watch_surface)
         self.add_tick_callback(self.adapt)
         GLib.idle_add(self.load_static)
-        self.poll_source = GLib.timeout_add(POLL_MS, self.poll)
+        self.stream, self.stream_up, self.stream_seen = None, False, False   # pushed snapshots (subscribe)
+        self.push_mark = 0             # polls_sent when the last pushed snapshot arrived
+        self.polled_at = 0.
+        self.poll_source = GLib.timeout_add(POLL_MS, self.timed_poll)
+        self.subscribe()
         self.poll()
 
     # ---- structure --------------------------------------------------------
@@ -1197,6 +1202,42 @@ class NextWindow(Adw.ApplicationWindow):
         run_async(get, apply, None, self.executor)
         return False
 
+    # ---- snapshots: pushed while the stream is up, polled otherwise ------------------------------
+
+    def subscribe(self):
+        """Take snapshots from the controller's stream when it has one; polling stays as the fallback."""
+        subscribe = getattr(session_client, 'subscribe', None)
+        if subscribe is None:
+            return
+        try:
+            self.stream = subscribe(lambda update: call_on_main(self.pushed, update))
+        except Exception as error:     # no stream: the window polls, as with an older controller
+            print('listening-room: no snapshot stream: %s' % error_text(error), file=sys.stderr)
+
+    def pushed(self, update):
+        """A snapshot (or an outage) from the stream, on the main loop."""
+        if self.closed:
+            return
+        if not update.connected:
+            self.stream_up = False
+            self.poll()                 # the stream is down: read now, then every FALLBACK_POLL_MS
+            return
+        self.stream_up = self.stream_seen = True
+        # A poll sent before this push may have read older state; its answer must not replace this one.
+        self.push_mark = self.polls_sent
+        self.show_snapshot(update.snapshot)
+
+    def timed_poll(self):
+        """The poll timer: nothing while the stream is up, every FALLBACK_POLL_MS while a stream that worked is
+        down, and every POLL_MS with a controller that has no stream."""
+        if self.closed:
+            return False
+        if self.stream_up:
+            return True
+        if self.stream_seen and (time.monotonic() - self.polled_at) * 1000 < FALLBACK_POLL_MS:
+            return True
+        return self.poll()
+
     def poll(self):
         if self.closed:
             return False
@@ -1204,6 +1245,7 @@ class NextWindow(Adw.ApplicationWindow):
             self.poll_again = True      # the read in flight may predate what the caller just changed
             return True
         self.polling = True
+        self.polled_at = time.monotonic()
         self.polls_sent += 1
         serial = self.polls_sent
         run_async(lambda: session_client.request('inspect', {}, 3),
@@ -1237,12 +1279,22 @@ class NextWindow(Adw.ApplicationWindow):
             self.set_offline(error)
             return False
         if self.offline:
-            self.set_offline(None)
+            self.set_offline(None)      # the service answered, whatever this read is worth
         if serial and serial < self.snapshot_poll:
             return False        # an older read than the one shown never replaces it
+        if serial and serial <= self.push_mark:
+            # A pushed snapshot arrived after this read was sent: which is newer is unknown, so neither
+            # replace it nor count as fresh; ask again, and the next read is sent after the push.
+            GLib.idle_add(lambda: self.poll() and False)
+            return False
         self.snapshot_poll = max(self.snapshot_poll, serial)
-        self.render(snapshot)
+        self.show_snapshot(snapshot)
         return False
+
+    def show_snapshot(self, snapshot):
+        if self.offline:
+            self.set_offline(None)
+        self.render(snapshot)
 
     def set_offline(self, error):
         """While the room service does not answer: a persistent banner, and nothing that looks live."""
@@ -1385,6 +1437,8 @@ class NextWindow(Adw.ApplicationWindow):
                 GLib.source_remove(source)
         self.listen.close()
         self.scene.close()
+        if self.stream is not None:
+            self.stream.close()
         for workers in (self.executor, self.urgent, self.poll_pool):
             workers.shutdown(wait=False, cancel_futures=True)
         return False

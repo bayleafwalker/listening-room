@@ -8,6 +8,7 @@ Break 10 min, Wind down 30 min and Leave room. Looking at it never changes playb
 only Pause, Play, Return, the volume, the timer choices and Leave room do.
 """
 import subprocess
+import time
 
 import gi
 gi.require_version('Gtk', '4.0')
@@ -16,7 +17,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 import next_model as model
 from next_actions import RoomActions, Ticket, when_finished
-from next_async import error_text, pool, run_async
+from next_async import call_on_main, error_text, pool, run_async
 from next_widgets import FocalPicture, choose_renderer, show_texture, TimerPopover, accent_css, icon_button, install_css, label, name_it
 
 MINI_CSS = '''
@@ -281,8 +282,11 @@ class MiniWindow(Adw.Window):
 class PopoverHost:
     """What the Waybar popover needs: its own polling, commands and toasts."""
     POLL_MS = 1000
+    FALLBACK_POLL_MS = 5000
 
-    def __init__(self, app, request, launch=None):
+    def __init__(self, app, request, launch=None, subscribe=None):
+        """``subscribe`` (session_client.subscribe) gives pushed snapshots; without it, or while its stream is
+        down, the host polls: every POLL_MS when it never had a stream, every FALLBACK_POLL_MS after an outage."""
         self.app = app
         self.request = request
         self.launch = launch or (lambda arguments: subprocess.Popen(['listening-room'] + arguments))
@@ -299,9 +303,32 @@ class PopoverHost:
         self.window = MiniWindow(app, self, extras=True, auto_close=True)
         self.window.connect('close-request', self.on_close)
         self.window.present()
-        self.poll_source = GLib.timeout_add(self.POLL_MS, self.poll)
+        self.stream, self.stream_up, self.stream_seen, self.polled_at = None, False, False, 0.
+        self.poll_source = GLib.timeout_add(self.POLL_MS, self.timed_poll)
         GLib.idle_add(self.load_static)
         self.poll()
+        if subscribe is not None:
+            try:
+                self.stream = subscribe(lambda update: call_on_main(self.pushed, update))
+            except Exception:
+                self.stream = None      # polling, as with a controller that has no stream
+
+    def pushed(self, update):
+        if self.closed:
+            return
+        if not update.connected:
+            self.stream_up = False
+            self.poll()
+            return
+        self.stream_up = self.stream_seen = True
+        self.polled(update.snapshot, None)
+
+    def timed_poll(self):
+        if self.closed:
+            return False
+        if self.stream_up or (self.stream_seen and (time.monotonic() - self.polled_at) * 1000 < self.FALLBACK_POLL_MS):
+            return True
+        return self.poll()
 
     def load_static(self):
         def get():
@@ -365,6 +392,7 @@ class PopoverHost:
         if self.polling:
             return True
         self.polling = True
+        self.polled_at = time.monotonic()
 
         run_async(lambda: self.request('inspect', {}, 3), lambda snapshot: self.polled(snapshot, None),
                   lambda error: self.polled(None, error_text(error)), self.poll_pool)
@@ -396,6 +424,8 @@ class PopoverHost:
             return False
         self.closed = True
         GLib.source_remove(self.poll_source)
+        if self.stream is not None:
+            self.stream.close()
         self.window.player.close()
         for workers in (self.executor, self.urgent, self.poll_pool):
             workers.shutdown(wait=False, cancel_futures=True)
@@ -404,9 +434,11 @@ class PopoverHost:
 
 def run_popover(argv, request=None):
     """`listening-roomctl popover`: the Waybar left-click controls. One instance at a time."""
+    subscribe = None
     if request is None:
         import session_client
         request = session_client.request
+        subscribe = getattr(session_client, 'subscribe', None)
     choose_renderer()
     app = Adw.Application(application_id='app.kotona.ListeningPopover')
     state = {}
@@ -418,7 +450,7 @@ def run_popover(argv, request=None):
         if state.get('host') is not None and not state['host'].closed:
             state['host'].window.present()
             return
-        state['host'] = PopoverHost(app, request)
+        state['host'] = PopoverHost(app, request, subscribe=subscribe)
     app.connect('startup', startup)
     app.connect('activate', activate)
     return app.run(argv)

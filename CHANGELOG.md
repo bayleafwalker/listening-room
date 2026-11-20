@@ -74,6 +74,21 @@ All notable changes are recorded here. The format follows
   a quick second click, double-click or Enter still enters.
 - Try again appears in a Mix row's menu only when that layer failed.
 - Favourites, the World radio cache and Twitch channels are read off the GTK thread.
+- The window does work in proportion to what changed: each surface draws only when
+  something it shows changed, Rooms no longer builds a key every poll, and Listen
+  rebuilds only the shelf whose contents changed. A poll that changes nothing draws
+  nothing (`tests/probes/wp2w-rebuild-probe.py` counts it).
+- The window and the mini player take snapshots from the controller's stream when it
+  has one; polling is the fallback (every 5 s while a stream that worked is down;
+  a controller without a stream is polled as before). Polls have a worker of their own,
+  so a slow command never delays them, and all thread handoffs go through one helper.
+- One stylesheet helper instead of four copies; the art cache keeps at most 64 images.
+- Now says a room's name once: a room named after its station shows the track
+  under the name, not the station again. Now's cards never cover the room's name
+  and chip: in a short window they step aside while the card shows, and a failed
+  start leaves no "Connecting" chip behind.
+- Undo of a default placement change in Preferences no longer counts as choosing a
+  placement.
 
 ## [2.3.1] - 2026-11-18
 
