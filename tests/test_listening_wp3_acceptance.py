@@ -6,6 +6,10 @@ expected wording, unit commands, timeouts and HTTP behaviour are the baseline's.
 (a fake mpv JSON-IPC server on a private Unix socket behind a fake `systemd-run`), HTTP goes to a
 loopback server, and no real unit, audio or network is touched.
 
+Exception: PictureWithoutHyprlandOracles cover the follow-up fix bc5a59a (a picture opens without
+Hyprland; placement then says it needs Hyprland). Its no-Hyprland case fails on the baseline and on
+848eaea by design; its two with-Hyprland cases pass there and pin that behaviour as unchanged.
+
 Run: scripts/listening-dev.sh test test_listening_wp3_acceptance.py
 """
 import contextlib
@@ -340,6 +344,81 @@ class LoadFailureOracles(Runtime):
         self.assertEqual([args for args, _ in fake.unit_calls()], [
             ['systemctl', '--user', 'stop', 'listening-hub-ambience.service'],
             ['systemctl', '--user', 'show', 'listening-hub-ambience.service', '--property=LoadState', '--value']])
+
+
+class PictureWithoutHyprlandOracles(Runtime):
+    """Follow-up bc5a59a: a picture opens without Hyprland and placement says it needs it."""
+
+    def start(self, hyprctl):
+        fake = self.fake()
+
+        def run(args, **kwargs):
+            if args[0] == 'hyprctl':
+                return hyprctl(args)
+            return fake.run(args, **{k: v for k, v in kwargs.items() if k == 'check'})
+        calls = []
+
+        def recording(args, **kwargs):
+            calls.append(list(args))
+            return run(args, **kwargs)
+        patches = (mock.patch.object(ambience.subprocess, 'run', recording),
+                   mock.patch.object(ambience, 'STATE_HOME', Path(self.tmp.name) / 'picture-state'),
+                   mock.patch.object(ambience.shutil, 'which', side_effect=lambda name: '/fake/' + name))
+        with contextlib.ExitStack() as stack:
+            for patch in patches:
+                stack.enter_context(patch)
+            began = time.monotonic()
+            try:
+                result = ambience.start('https://example.org/clip.mp4', mode='ambience', placement='pin')
+            except ambience.AmbienceError as error:
+                result = error
+            elapsed = time.monotonic() - began
+            try:
+                ambience.place('here', 'ambience')
+                placed = None
+            except ambience.AmbienceError as error:
+                placed = str(error)
+        return result, elapsed, placed, calls
+
+    def test_start_succeeds_quickly_and_placement_explains_without_hyprctl(self):
+        def missing(args):
+            raise FileNotFoundError(2, 'No such file or directory', 'hyprctl')
+
+        def failing(args):
+            return SimpleNamespace(returncode=1, stdout='', stderr='HYPRLAND_INSTANCE_SIGNATURE not set')
+
+        def garbage(args):
+            return SimpleNamespace(returncode=0, stdout='not json', stderr='')
+        for name, hyprctl in (('missing', missing), ('failing', failing), ('garbage', garbage)):
+            with self.subTest(hyprctl=name):
+                result, elapsed, placed, calls = self.start(hyprctl)
+                self.assertIsInstance(result, dict, result)
+                self.assertLess(elapsed, 1.5, 'must not wait out the 3 s mapping deadline')
+                self.assertEqual([c for c in calls if c[:2] == ['hyprctl', 'dispatch']], [])
+                self.assertEqual(placed, 'Placement needs Hyprland')
+
+    def test_with_hyprland_the_start_still_places_the_window(self):
+        client = {'class': ambience.APP_IDS['ambience'], 'address': '0x321', 'workspace': {'id': 2}}
+
+        def hyprland(args):
+            if args[1] == 'clients':
+                return SimpleNamespace(returncode=0, stdout=json.dumps([client]), stderr='')
+            if args[1] == 'activeworkspace':
+                return SimpleNamespace(returncode=0, stdout=json.dumps({'id': 2}), stderr='')
+            return SimpleNamespace(returncode=0, stdout='ok', stderr='')
+        result, elapsed, placed, calls = self.start(hyprland)
+        self.assertIsInstance(result, dict, result)
+        self.assertIsNone(placed)
+        self.assertTrue([c for c in calls if c[:2] == ['hyprctl', 'dispatch'] and 'pin' in c[2]])
+
+    def test_with_hyprland_but_no_window_yet_the_mapping_wait_remains(self):
+        def empty(args):
+            return SimpleNamespace(returncode=0, stdout='[]', stderr='')
+        result, elapsed, placed, calls = self.start(empty)
+        self.assertIsInstance(result, ambience.AmbienceError)
+        self.assertEqual(str(result), 'Open a video window first')
+        self.assertGreaterEqual(elapsed, 2.9)
+        self.assertEqual(placed, 'Open a video window first')
 
 
 # --------------------------------------------------------------------------- stop commands
