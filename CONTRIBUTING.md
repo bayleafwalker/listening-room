@@ -50,7 +50,9 @@ lines and writes its `*acceptance*.json` results into `--output`.
 failure that is not a known one fails, and so does a check that disappeared. New passing
 checks need no edit. After a deliberate change, `scripts/listening-dev.sh acceptance OUTDIR --record`
 rewrites `tests/probes/expected/<name>.checks`. A known failure is a line starting with
-`!`; the one today is the superseded "5i [ORIGINAL]" check in O4, which stays visible.
+`!` with a comment line above it saying why. Today O4 keeps the superseded "5i [ORIGINAL]" check, and O3 keeps
+its "hub test list registers the O2 and O3 suites" check, which looked for suite names in `nix/package.nix` and awaits a
+replacement.
 
 `tests/probes/listening-hub-mix.py` is a manual real-systemd/mpv check for a development
 machine, not part of the loop. Retired probes live in `tests/probes/archive-classic/`.
