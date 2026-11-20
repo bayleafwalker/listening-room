@@ -1,6 +1,6 @@
 1a the Rooms grid has room cards to click
-1b single click -> preview visible within 150 ms for every card (measured [11.4, 26.0, 22.6, 9.3, 8.2, 23.5] ms)
-1c the GTK thread was never held for more than 150 ms after the first (cold) preview (gaps [281.9, 97.0, 33.4, 13.6, 77.0, 59.3] ms), and never more than 400 ms
+1b single click -> preview visible within 150 ms for every card (measured ms)
+1c the GTK thread was never held for more than 150 ms after the first (cold) preview (gaps ms), and never more than 400 ms
 1d single clicks never entered a room (and sent nothing)
 1e still no command after waiting longer than any double-click window
 1f no blocking file/network/decode call from application code on the GTK thread during click -> preview
@@ -9,8 +9,8 @@
 1i the room is really entered (controller active)
 1j double-click on the room you are already in sends no enter and shows Now
 1k Enter on a card enters exactly once
-1l every selection (scope chips, Mix, station, mood) updates within 100 ms: {'scope:all': 0.0, 'scope:stations': 5.3, 'scope:radio': 6.0, 'scope:library': 1.7, 'scope:channels': 0.7, 'scope:world': 0.6, 'scope:youtube': 0.6, 'open Mix': 0.3, 'open a station': 1.0}
-1m the GTK thread was never held for more than 120 ms during those selections (worst 64 ms)
+1l every selection (scope chips, Mix, station, mood) updates within 100 ms:
+1m the GTK thread was never held for more than 120 ms during those selections
 1n no blocking file/network/decode call from application code on the GTK thread while selecting
 1o no controller request was made synchronously on the GTK thread during the whole scenario
 2a browsing every ambience scope and searching sent no start command
@@ -86,7 +86,7 @@
 4z ... and tunes in (one start; room active unless it needs the AudioMuse service)
 4v choosing a youtube result fills the name and sends nothing
 4w a youtube seed does not offer the AudioMuse mix
-4x the saved station from a youtube result (lofi result 0) has a usable source
+4x the saved station from a youtube result has a usable source
 4y ... and the youtube-seeded station appears under Your stations
 4z ... and tunes in (one start; room active unless it needs the AudioMuse service)
 5a with no account and no channels, Listen says "Set up Twitch to see live channels"
@@ -106,7 +106,7 @@
 6d results show title, channel and duration, with Tune in
 6e each result has a menu with Play as ambience and Open elsewhere
 6f YouTube search is inert
-6g the GTK thread was not blocked by the search subprocess (worst gap 24 ms)
+6g the GTK thread was not blocked by the search subprocess
 6h a slow search shows that it is searching, with a Stop
 6i Stop kills the yt-dlp process
 6j and no result appears afterwards
@@ -119,7 +119,7 @@
 6q ... and does not pretend to search or hang on Searching
 6r Preferences says the same about yt-dlp
 6s the new-station YouTube search also says yt-dlp is missing
-7a pressing Enter room shows "Connecting to <room>…" on Now within 150 ms (9 ms)
+7a pressing Enter room shows "Connecting to <room>…" on Now within 150 ms
 7c repeated presses (Enter room, enter, return) send exactly one command
 7d when the room is up the connecting card clears and Now shows it
 7e four presses of Tune in send one start and Now says Connecting
