@@ -19,6 +19,7 @@ import wave
 source = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[2] / 'src'
 sys.path.insert(0, str(source))
 import listening_hub as hub
+import player_core as core
 import audio_layers as layer
 
 mpv = shutil.which('mpv')
@@ -27,7 +28,7 @@ if not mpv:
 identity = 'listening-mix-probe-' + uuid.uuid4().hex
 radio_unit = identity + '-radio.service'
 overlay_unit = identity + '-overlay.service'
-real_run = hub.run
+real_run = core.run
 
 def isolated_run(args, **kwargs):
     # Restrict replacements to exact unit arguments; no normal unit is touched.
@@ -35,7 +36,7 @@ def isolated_run(args, **kwargs):
                     '--unit=listening-hub-radio': '--unit=' + radio_unit}
     return real_run([replacements.get(arg, arg) for arg in args], **kwargs)
 
-hub.run = isolated_run
+core.run = isolated_run
 layer.UNIT = overlay_unit
 # This bypass is restricted to this local transport/lifecycle probe. Production
 # Twitch URL validation and Twitch/Helix behaviour are not exercised here.
@@ -44,11 +45,11 @@ layer._url = lambda url: url
 with tempfile.TemporaryDirectory(prefix='listening-mix-') as directory:
     work = Path(directory)
     os.environ['XDG_STATE_HOME'] = str(work / 'state-home')
-    hub.STATE = work / 'hub-state'
-    hub.RUNTIME = work / 'runtime'
-    hub.RUNTIME.mkdir(mode=0o700)
-    hub.SOCKET = hub.RUNTIME / 'radio.sock'
-    layer._runtime = lambda: hub.RUNTIME / 'overlay.sock'
+    core.STATE = work / 'hub-state'
+    core.RUNTIME = work / 'runtime'
+    core.RUNTIME.mkdir(mode=0o700)
+    core.SOCKET = core.RUNTIME / 'radio.sock'
+    layer._runtime = lambda: core.RUNTIME / 'overlay.sock'
     shim = work / 'mpv'
     shim.write_text('#!' + sys.executable + '\nimport os, sys\nos.execv(' + repr(mpv) + ', [' + repr(mpv) + ', "--ao=null"] + sys.argv[1:])\n')
     shim.chmod(0o700)
@@ -90,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='listening-mix-') as directory:
     try:
         initial_master = master()
         radio(urls[0])
-        hub.selected_target = lambda target_id=None: {'id': 'radio'}
+        core.selected_target = lambda target_id=None: {'id': 'radio'}
         hub.set_volume(31, target_id='radio')
         hub.mute(target_id='radio')
         layer.start_layer(urls[0], timeout=15)

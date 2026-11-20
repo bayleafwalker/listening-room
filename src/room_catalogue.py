@@ -1,8 +1,8 @@
 """Room recipes compose existing sources and views; browsing has no effects."""
 from pathlib import Path
 
-import listening_hub as hub
 import ambience
+import player_core as hub
 
 
 RECIPES = (

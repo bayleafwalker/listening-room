@@ -53,8 +53,10 @@ All notable changes are recorded here. The format follows
   share one mpv plumbing module (`mpv_ipc`: spawn, load handshake, IPC, stop)
   instead of three copies; the provider HTTP clients open requests through one
   no-redirect helper (`http_fetch`) with their timeouts and size limits kept;
-  the unused `room_catalogue.launch_room`, `quiet_room`, `stop_room` and
-  `twitch_channels.collections` are gone.
+  the player core moved from `listening_hub` (now the rofi CLI, re-exporting
+  the core's names) to `player_core`; the unused `room_catalogue.launch_room`,
+  `quiet_room`, `stop_room`, `twitch_channels.collections` and
+  `listening_hub.start_youtube_audio` / `start_twitch_audio` are gone.
 
 ## [2.3.1] - 2026-11-18
 

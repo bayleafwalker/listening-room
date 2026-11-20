@@ -22,18 +22,19 @@ os.environ['PATH'] = ':'.join(dict.fromkeys(bins)) + ':' + os.environ['PATH']
 sys.path.insert(0,str(source))
 os.environ['LISTENING_HUB_CATALOG'] = str(source/'catalogue.json')
 import listening_hub as hub
-real_run = hub.run
+import player_core as core
+real_run = core.run
 identity = 'listening-audio-probe-'+str(os.getpid())
 def run(args, **kwargs):
     return real_run([arg.replace('listening-hub-radio',identity) for arg in args], **kwargs)
-hub.run = run
+core.run = run
 
 with tempfile.TemporaryDirectory(prefix='listening-audio-probe-') as directory:
     work = Path(directory)
-    hub.STATE = work/'state'
-    hub.RUNTIME = work/'runtime'
-    hub.RUNTIME.mkdir(mode=0o700)
-    hub.SOCKET = hub.RUNTIME/'radio.sock'
+    core.STATE = work/'state'
+    core.RUNTIME = work/'runtime'
+    core.RUNTIME.mkdir(mode=0o700)
+    core.SOCKET = core.RUNTIME/'radio.sock'
     mpv = shutil.which('mpv')
     assert mpv
     shim = work/'mpv'
@@ -59,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix='listening-audio-probe-') as directory:
             run(['systemctl','--user','stop','listening-hub-radio.service'])
             print('PASS: direct stream decoded with null audio output:',source_id,flush=True)
         if os.environ.get('CHECK_YOUTUBE'):
-            hub.start_youtube_audio('https://www.youtube.com/watch?v=VaLgmb5aGjo')
+            core.start_radio({'id': 'youtube-video', 'name': 'YouTube audio', 'url': core.youtube_video_url('https://www.youtube.com/watch?v=VaLgmb5aGjo')}, ytdlp=shutil.which('yt-dlp'))
             decoded()
             assert hub.ipc(['get_property','vid']) in (False,None,'no')
             print('PASS: public YouTube video decoded as audio without browser/account access',flush=True)

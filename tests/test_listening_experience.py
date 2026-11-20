@@ -9,6 +9,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 import ambience
 import listening_hub as hub
+import player_core as core
 import roomctl
 
 
@@ -29,7 +30,7 @@ class DesktopTests(unittest.TestCase):
         start.assert_not_called()
 
     def test_media_discovery_excludes_own_mpris_identity(self):
-        with patch.object(hub, 'run') as run:
+        with patch.object(core, 'run') as run:
             run.return_value.returncode=0
             run.return_value.stdout='ListeningRoom\nListeningRoom.instance1\nfirefox.instance2\n'
             self.assertEqual(hub.players(), ['firefox.instance2'])

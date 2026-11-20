@@ -284,7 +284,7 @@ def start_layer(url, volume=None, timeout=35, cancel_event=None):
 
 def start_source(source, volume=None, timeout=35, cancel_event=None):
     """Play a validated direct source in the independently owned audio lane."""
-    import listening_hub as hub
+    import player_core as hub
     source = dict(source)
     if source.get('reference'):
         import online_services

@@ -18,9 +18,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import audio_devices
 import listening_hub as hub
 import mpv_ipc
+import player_core
 import room_session as sessions
 import session_service
 from test_listening_session import FakeBackend
+
+class patch_hub:
+    """Patch a name both where room_session reads it (listening_hub) and where the player core does."""
+
+    def __init__(self, name, new=None, **kwargs):
+        value = mock.MagicMock(**kwargs) if new is None else new
+        self.patches = [mock.patch.object(module, name, value) for module in (hub, player_core)]
+
+    def start(self):
+        return [patch.start() for patch in self.patches][0]
+
+    def stop(self):
+        for patch in reversed(self.patches):
+            patch.stop()
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *_exc):
+        self.stop()
+
 
 STATION = {'id': 's1', 'name': 'One', 'sources': [{'kind': 'radio', 'source_id': 'piano', 'name': 'Piano'}]}
 COMMUNICATION = [{'index': 7, 'corked': False, 'properties': {'media.role': 'Communication'}}]
@@ -36,7 +58,7 @@ class Environment(unittest.TestCase):
             'XDG_CACHE_HOME': str(Path(self.tmp.name) / 'cache')})
         environment.start()
         self.addCleanup(environment.stop)
-        state = mock.patch.object(hub, 'STATE', Path(self.tmp.name) / 'hub-state')
+        state = patch_hub('STATE', Path(self.tmp.name) / 'hub-state')
         state.start()
         self.addCleanup(state.stop)
         self.now = 1000.
@@ -141,9 +163,9 @@ class ObserveCostTests(Environment):
         answers = {'volume': 40, 'mute': False, 'pause': False, 'idle-active': False, 'media-title': 'Song'}
         reads, writes = [], []
         real_load, real_save = hub.load_json, hub.save_json
-        with mock.patch.object(hub, 'ipc', side_effect=lambda command, **kw: answers[command[-1]]), \
-                mock.patch.object(hub, 'load_json', side_effect=lambda p, d: reads.append(Path(p).name) or real_load(p, d)), \
-                mock.patch.object(hub, 'save_json', side_effect=lambda p, v: writes.append(Path(p).name) or real_save(p, v)):
+        with patch_hub('ipc', side_effect=lambda command, **kw: answers[command[-1]]), \
+                patch_hub('load_json', side_effect=lambda p, d: reads.append(Path(p).name) or real_load(p, d)), \
+                patch_hub('save_json', side_effect=lambda p, v: writes.append(Path(p).name) or real_save(p, v)):
             backend = sessions.Backend()
             layers = backend.layers()
             self.assertEqual(layers['music']['status'], 'Playing')
@@ -162,9 +184,9 @@ class ObserveCostTests(Environment):
         reads = []
         real_load = hub.load_json
         sockets = []
-        with mock.patch.object(hub, 'RUNTIME', Path(self.tmp.name)), mock.patch.object(hub, 'SOCKET', Path(self.tmp.name) / 'radio.sock'), \
-                mock.patch.object(hub, 'ipc', side_effect=lambda command, **kw: sockets.append(kw.get('socket_path')) or False), \
-                mock.patch.object(hub, 'load_json', side_effect=lambda p, d: reads.append(Path(p).name) or real_load(p, d)):
+        with patch_hub('RUNTIME', Path(self.tmp.name)), patch_hub('SOCKET', Path(self.tmp.name) / 'radio.sock'), \
+                patch_hub('ipc', side_effect=lambda command, **kw: sockets.append(kw.get('socket_path')) or False), \
+                patch_hub('load_json', side_effect=lambda p, d: reads.append(Path(p).name) or real_load(p, d)):
             backend = sessions.Backend()
             backend.layers()
             backend.media_details()
@@ -244,7 +266,7 @@ class IpcConnectionTests(unittest.TestCase):
         self.assertEqual(self.server.connections, 3)
 
     def test_a_refresh_opens_fewer_connections_than_one_per_property(self):
-        with mock.patch.object(hub, 'SOCKET', self.path):
+        with patch_hub('SOCKET', self.path):
             with mpv_ipc.shared():
                 for name in ('pause', 'volume', 'mute', 'volume', 'mute'):
                     hub.ipc(['get_property', name], socket_path=self.path)
@@ -255,7 +277,7 @@ class SnapshotCacheTests(Environment):
     def reads(self):
         names = []
         real = hub.load_json
-        patch = mock.patch.object(hub, 'load_json', side_effect=lambda p, d: names.append(Path(p).name) or real(p, d))
+        patch = patch_hub('load_json', side_effect=lambda p, d: names.append(Path(p).name) or real(p, d))
         patch.start()
         self.addCleanup(patch.stop)
         return names
