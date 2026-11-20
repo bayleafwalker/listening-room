@@ -836,14 +836,45 @@ with env:
         check('P3 with fast reads and no requests, polling stays at the timer rate (no back-to-back re-sends)',
               idle <= int(3.0 / (next_window_module.POLL_MS / 1000.)) + 2, (idle, next_window_module.POLL_MS))
         with mock.patch.object(session_client, 'request', side_effect=ConnectionRefusedError(111, 'Connection refused')):
-            before = getattr(window, 'snapshot_poll', 0)
+            sent_before = getattr(window, 'polls_sent', 0)   # a read already in flight may still land fresh
             for _ in range(10):
                 window.poll()
             pump(2.0)
-            check('P4 failed reads never mark the shown snapshot fresh', getattr(window, 'snapshot_poll', 0) == before,
-                  (before, getattr(window, 'snapshot_poll', None)))
+            check('P4 failed reads never mark the shown snapshot fresh (nothing sent after the failure began counts)',
+                  getattr(window, 'snapshot_poll', 0) <= sent_before, (sent_before, getattr(window, 'snapshot_poll', None)))
         pump(1.5)
         check('P5 polling recovers after failures', window.offline_bar is not None and not window.offline_bar.get_reveal_child())
+        # A quick station choice whose save is slower than the page's 3 s pending timeout (a busy controller):
+        # the page must not fall back to the pre-save station meanwhile, or a next choice builds on it (o3 4p).
+        import next_station
+        window.close()
+        pump(.3)
+        window = env.launch(page='listen')
+        station = next(item for item in env.controller.stations() if item['name'] == 'Morning lift')
+        window.listen.show_station(station)
+        pump(.6)
+        mood = next(m for m in next_station.MOODS if m['key'] == 'energy')
+        before = next_station.choices(window.listen.station)['energy']
+        index = next(i for i, (text, _v) in enumerate(mood['choices']) if text != before)
+        chosen = mood['choices'][index][0]
+
+        def slow_save(action, arguments=None, *rest, **kw):
+            if action == 'station.save':
+                time.sleep(4.0)
+            return real(action, arguments, *rest, **kw)
+        with mock.patch.object(session_client, 'request', side_effect=slow_save):
+            window.listen.mood_groups['energy'].set_active(index)
+            seen = []
+            deadline = time.monotonic() + 3.8
+            while time.monotonic() < deadline:
+                pump(.1)
+                seen.append(next_station.choices(window.listen.station)['energy'])
+            pump(1.5)
+        settle(.5)
+        check('P6 while a slow save (4 s) is in flight the page keeps the chosen value, never the pre-save one',
+              seen and all(value == chosen for value in seen), sorted(set(seen)) + ['chosen=' + chosen])
+        stored = next_station.choices(next(item for item in env.controller.stations() if item['id'] == station['id']))
+        check('P7 ... and the slow save lands', stored['energy'] == chosen, stored)
 
     # =========================================================================== W: widths (criterion 8)
     @section('W')
