@@ -1227,6 +1227,8 @@ class NextWindow(Adw.ApplicationWindow):
             return False
         if self.offline:
             self.set_offline(None)
+        if serial and serial < self.snapshot_poll:
+            return False        # an older read than the one shown never replaces it
         self.snapshot_poll = max(self.snapshot_poll, serial)
         self.render(snapshot)
         return False

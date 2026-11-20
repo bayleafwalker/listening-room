@@ -151,7 +151,6 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.station_sig = None
         self.fallback_sig = None
         self.pending_station = self.saved_mark = None
-        self.pending_timer = None
         self.focus_key = None
         self.focus_targets = {}
         self.reviewed = {}
@@ -1994,9 +1993,6 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.render_station()
         future = self.save_executor.submit(session_client.request, 'station.save', {'station': station}, 5)
         future.add_done_callback(lambda done: GLib.idle_add(self.save_finished, serial, done, toast, undo))
-        if self.pending_timer:
-            GLib.source_remove(self.pending_timer)
-        self.pending_timer = GLib.timeout_add(3000, self.pending_expired)
 
     def save_finished(self, serial, future, toast, undo):
         if self.closed:
@@ -2006,7 +2002,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         except Exception as problem:
             if serial == getattr(self, 'save_serial', serial):
                 self.window.failed(str(problem) or type(problem).__name__)
-                self.pending_expired()
+                self.save_failed()
             return False
         self.station_saved(serial, result, toast, undo)
         self.window.poll()
@@ -2015,9 +2011,6 @@ class ListenPage(ServicesMixin, SourcesMixin):
     def station_saved(self, serial, result, toast, undo):
         latest = serial == getattr(self, 'save_serial', serial)
         if latest:
-            if self.pending_timer:
-                GLib.source_remove(self.pending_timer)
-                self.pending_timer = None
             self.pending_station = None
             saved = (result or {}).get('station')
             if isinstance(saved, dict) and saved.get('id') == self.station_id:
@@ -2035,8 +2028,9 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if isinstance(self.station, dict):
             self.save_station(undo(self.station))
 
-    def pending_expired(self):
-        self.pending_timer = None
+    def save_failed(self):
+        # The shown change stays until the latest save answers, never on a timer: clearing it while a slow
+        # save is still running lets the next poll hand back the old station (o3 4p and 4s2).
         self.pending_station = None
         self.refresh_station()
         return False
@@ -2236,8 +2230,5 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if self.volume_timer:
             GLib.source_remove(self.volume_timer)
             self.volume_timer = None
-        if self.pending_timer:
-            GLib.source_remove(self.pending_timer)
-            self.pending_timer = None
         self.save_executor.shutdown(wait=False, cancel_futures=True)
         self.executor.shutdown(wait=False, cancel_futures=True)

@@ -206,6 +206,7 @@ class WindowSmoke(unittest.TestCase):
         window.listen.show_station(station)
         env.pump(.6)
         stale = dict(window.snapshot)        # what a poll already in flight would still return
+        stale_serial = window.polls_sent     # ... and that poll was sent before the save
         groups = window.listen.mood_groups
 
         def choose(key):
@@ -219,12 +220,57 @@ class WindowSmoke(unittest.TestCase):
                 env.pump(.05)
             return mood['choices'][index][0]
 
-        # No poll goes out meanwhile, so the only read that lands is one sent before the save finished.
+        # The window's poll timer still runs; the stale read is labelled with the poll that fetched it.
         with mock.patch.object(window, 'poll', lambda: True):
             energy = choose('energy')
-            window.render_poll(stale, None, window.polls_sent)
+            window.render_poll(stale, None, stale_serial)
             familiarity = choose('familiarity')
         env.settle(.5)
+        stored = next_station.choices(next(s for s in env.controller.stations() if s['id'] == station['id']))
+        self.assertEqual((stored['energy'], stored['familiarity']), (energy, familiarity),
+                         'a later choice undid an earlier one')
+
+    def test_a_slow_save_keeps_the_choice_shown_and_the_next_choice_builds_on_it(self):
+        """A save slower than any timeout the page might use (a busy controller) must not let a poll put the old
+        station back, and a second choice made meanwhile must keep the first."""
+        import next_station
+        import session_client
+        env = self.env
+        env.start_station_room()
+        window = env.launch(page='listen')
+        station = next(s for s in env.controller.stations() if s['name'] == 'Morning lift')
+        window.listen.show_station(station)
+        env.pump(.6)
+        groups = window.listen.mood_groups
+        real = session_client.request
+
+        def pick(key):
+            current = next_station.choices(window.listen.station)[key]
+            mood = next(m for m in next_station.MOODS if m['key'] == key)
+            index = next(i for i, (text, _value) in enumerate(mood['choices'])
+                         if text != current and i != groups[key].get_active())
+            groups[key].set_active(index)
+            return mood['choices'][index][0]
+
+        def slow(action, arguments=None, *rest, **kw):
+            if action == 'station.save':
+                time.sleep(3.5)
+            return real(action, arguments, *rest, **kw)
+
+        with mock.patch.object(session_client, 'request', side_effect=slow):
+            energy = pick('energy')
+            seen = []
+            deadline = time.monotonic() + 3.3
+            while time.monotonic() < deadline:
+                window.poll()
+                env.pump(.1)
+                seen.append(next_station.choices(window.listen.station)['energy'])
+            familiarity = pick('familiarity')
+            deadline = time.monotonic() + 12
+            while window.listen.pending_station is not None and time.monotonic() < deadline:
+                env.pump(.1)
+        env.settle(.5)
+        self.assertEqual(set(seen), {energy}, 'the page fell back to the pre-save station during a slow save')
         stored = next_station.choices(next(s for s in env.controller.stations() if s['id'] == station['id']))
         self.assertEqual((stored['energy'], stored['familiarity']), (energy, familiarity),
                          'a later choice undid an earlier one')
