@@ -553,6 +553,27 @@ class WindowSmoke(unittest.TestCase):
         env.service.execute('leave', {})
         env.settle(1.0)
 
+    def test_the_popover_stays_open_when_it_loses_focus_and_a_second_click_closes_it(self):
+        import next_mini
+        import session_client
+        env = self.env
+        state = {}
+        host = next_mini.popover_activated(state, env.app, session_client.request)
+        env.pump(.8)
+        window = host.window
+        window.is_active = lambda: False      # no window manager here: say another window took the focus
+        window.notify('is-active')
+        env.pump(.6)
+        self.assertFalse(host.closed, 'losing focus closed the popover')
+        self.assertTrue(window.get_visible(), 'losing focus hid the popover')
+        self.assertIsNone(next_mini.popover_activated(state, env.app, session_client.request))
+        env.pump(.6)
+        self.assertTrue(host.closed, 'a second click did not close the popover')
+        again = next_mini.popover_activated(state, env.app, session_client.request)
+        self.assertIsNot(again, host, 'a click after closing did not open it again')
+        again.window.close()
+        env.pump(.4)
+
     # ---- partial rebuilds and the worker handoff (WP2-WINDOW) ----------------------------------
 
     def counts(self, window):

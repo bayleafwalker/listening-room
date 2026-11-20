@@ -214,7 +214,8 @@ window shows it instead (AdwBreakpoint), and Expand (or widening the window) goe
 single instance: a second `listening-room` with `--mini`, `--inside`, `--preview-link` or a
 `listening-room://open` URI is delivered to the running window. `listening-roomctl popover`
 (Waybar left-click) is the same component with Break 10 min, Wind down 30 min and Leave room;
-it closes on Esc or when it loses focus. Desk mode is retired. Menu › Other players… lists
+it closes on Esc, its close control, Open the room window or a second Waybar click, and stays
+open when it loses focus. Desk mode is retired. Menu › Other players… lists
 players outside the room (browsers, Jellyfin, KDE Connect) with transport and volume, and
 system volume with Mute.
 

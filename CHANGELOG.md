@@ -101,6 +101,9 @@ All notable changes are recorded here. The format follows
   start leaves no "Connecting" chip behind.
 - Undo of a default placement change in Preferences no longer counts as choosing a
   placement.
+- The Waybar popover stays open when it loses focus (with focus-follows-mouse it closed
+  as soon as the pointer left it). Esc, its close control and Open the room window close
+  it, and a second Waybar click closes it too.
 
 ## [2.3.1] - 2026-11-18
 

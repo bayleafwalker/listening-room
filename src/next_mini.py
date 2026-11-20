@@ -248,7 +248,7 @@ class MiniKeys:
 
 class MiniWindow(Adw.Window):
     """The mini player as its own small window (Ctrl+M, the Waybar popover)."""
-    def __init__(self, app, host, extras=False, auto_close=False):
+    def __init__(self, app, host, extras=False):
         super().__init__(application=app, title='Room controls' if extras else 'Mini player')
         self.add_css_class('next')
         self.add_css_class('mini-window')
@@ -260,16 +260,9 @@ class MiniWindow(Adw.Window):
         self.player = MiniPlayer(host, extras=extras, closable=True)
         self.toasts.set_child(Gtk.WindowHandle(child=self.player))
         self.set_content(self.toasts)
+        # It stays open when it loses focus (with focus-follows-mouse it would close as soon as the pointer
+        # left it): Esc, its close control and Open the room window close it, and so does a second Waybar click.
         MiniKeys.install(self, self.player, escape=self.close)
-        self.was_active = False
-        if auto_close:
-            self.connect('notify::is-active', self.activity)
-
-    def activity(self, *_):
-        if self.is_active():
-            self.was_active = True
-        elif self.was_active and self.get_visible():
-            self.close()
 
     def toast(self, title, undo_label=None, undo=None):
         toast = Adw.Toast(title=title, timeout=5)
@@ -300,7 +293,7 @@ class PopoverHost:
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.accent,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
         self.actions = RoomActions(self.send, self.toast, lambda: self.snapshot)
-        self.window = MiniWindow(app, self, extras=True, auto_close=True)
+        self.window = MiniWindow(app, self, extras=True)
         self.window.connect('close-request', self.on_close)
         self.window.present()
         self.stream, self.stream_up, self.stream_seen, self.polled_at = None, False, False, 0.
@@ -432,6 +425,16 @@ class PopoverHost:
         return False
 
 
+def popover_activated(state, app, request, subscribe=None):
+    """A Waybar left-click: open the popover, or close it when it is already open (one instance, a toggle)."""
+    host = state.get('host')
+    if host is not None and not host.closed:
+        host.window.close()
+        return None
+    state['host'] = PopoverHost(app, request, subscribe=subscribe)
+    return state['host']
+
+
 def run_popover(argv, request=None):
     """`listening-roomctl popover`: the Waybar left-click controls. One instance at a time."""
     subscribe = None
@@ -446,11 +449,6 @@ def run_popover(argv, request=None):
     def startup(_app):
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
-    def activate(_app):
-        if state.get('host') is not None and not state['host'].closed:
-            state['host'].window.present()
-            return
-        state['host'] = PopoverHost(app, request, subscribe=subscribe)
     app.connect('startup', startup)
-    app.connect('activate', activate)
+    app.connect('activate', lambda _app: popover_activated(state, app, request, subscribe))
     return app.run(argv)
