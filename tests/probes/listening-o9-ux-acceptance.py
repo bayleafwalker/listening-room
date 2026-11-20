@@ -875,6 +875,40 @@ with env:
               seen and all(value == chosen for value in seen), sorted(set(seen)) + ['chosen=' + chosen])
         stored = next_station.choices(next(item for item in env.controller.stations() if item['id'] == station['id']))
         check('P7 ... and the slow save lands', stored['energy'] == chosen, stored)
+        # Added 2026-11-20 after the pending timer was removed: a save the controller never answers must still end.
+        # A real unix socket that accepts and never replies, reached through the real session_client.request.
+        import socket as socket_module
+        import tempfile as tempfile_module
+        original_request = env.patches[0].temp_original
+        silent_dir = tempfile_module.mkdtemp(prefix='acc-silent-')
+        silent_path = os.path.join(silent_dir, 'silent.sock')
+        server = socket_module.socket(socket_module.AF_UNIX, socket_module.SOCK_STREAM)
+        server.bind(silent_path)
+        server.listen(4)
+        accepted = []
+        threading.Thread(target=lambda: [accepted.append(server.accept()) for _ in range(4)], daemon=True).start()
+        before = next_station.choices(window.listen.station)['energy']
+        index = next(i for i, (text, _v) in enumerate(mood['choices']) if text != before)
+
+        def silent(action, arguments=None, *rest, **kw):
+            if action == 'station.save':
+                with mock.patch.object(session_client, 'socket_path', return_value=silent_path):
+                    return original_request(action, arguments, *rest, **kw)
+            return real(action, arguments, *rest, **kw)
+        started = time.monotonic()
+        with mock.patch.object(session_client, 'request', side_effect=silent):
+            window.listen.mood_groups['energy'].set_active(index)
+            ended = wait(lambda: window.listen.pending_station is None, 20)
+        took = time.monotonic() - started
+        pump(1.0)
+        server.close()
+        check('P8 a save the controller never answers ends (bounded by the request timeout) instead of staying pending',
+              ended and took < 15, round(took, 1))
+        stored = next_station.choices(next(item for item in env.controller.stations() if item['id'] == station['id']))
+        check('P9 ... the page then shows what is really stored, with a plain failure toast',
+              next_station.choices(window.listen.station)['energy'] == stored['energy']
+              and toast_texts(window) and not any('unavailable:' in t or 'timed out' in t for t in toast_texts(window)),
+              (next_station.choices(window.listen.station)['energy'], stored['energy'], toast_texts(window)))
 
     # =========================================================================== W: widths (criterion 8)
     @section('W')
