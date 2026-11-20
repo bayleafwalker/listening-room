@@ -17,7 +17,8 @@ Used by the package checkPhase (nix/package.nix) and ``scripts/listening-dev.sh 
 
 A test file that does not match ``test_listening_*.py``, a manual entry without a reason or
 for a file that does not exist, and an ``--except`` name that is not a suite are errors, so
-a suite can neither be forgotten nor silently dropped. All selected suites run; the exit
+a suite can neither be forgotten nor silently dropped. Every suite runs with ``netguard`` installed:
+a connection to a non-loopback address fails the test. All selected suites run; the exit
 status is 1 if any failed.
 """
 from pathlib import Path
@@ -26,6 +27,11 @@ import sys
 
 TESTS = Path(__file__).resolve().parent
 MANUAL_FILE = TESTS / 'suites-manual.txt'
+
+
+# Run a suite as __main__ with the network guard installed (tests/netguard.py).
+GUARDED = ('import runpy, sys; sys.path.insert(0, %r); import netguard; netguard.install(); '
+           'sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name="__main__")' % str(TESTS))
 
 
 def manual_suites():
@@ -87,7 +93,7 @@ def main(argv):
     failed = []
     for name in selected:
         print('==', name, flush=True)
-        if subprocess.run([sys.executable, str(TESTS / name)]).returncode:
+        if subprocess.run([sys.executable, '-c', GUARDED, str(TESTS / name)]).returncode:
             failed.append(name)
     if failed:
         print('FAILED suites: ' + ', '.join(failed), file=sys.stderr)
