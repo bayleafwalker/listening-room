@@ -564,6 +564,15 @@ class SeamClippingLoudnessDeterminism(unittest.TestCase):
         for identity in IDS:
             self.assertLess(rms_db(beds()[identity]), -12.0, identity)
 
+    def test_beds_keep_adequate_absolute_level(self):
+        # R5 companion: matching perceptually must not quietly lower the whole set. The beds are ambience, played through
+        # a slider that defaults to 20 percent, so the set needs real level. Floors sit about 3 dB under the O9-SOUND
+        # implementation (A-weighted about 39.5-39.9 in this file's units, raw RMS -32.2 to -16.0 dBFS).
+        perceived = {i: a_weighted_level(beds()[i]) for i in IDS}
+        self.assertGreater(float(np.median(list(perceived.values()))), 36.5, perceived)
+        for identity in IDS:
+            self.assertGreater(rms_db(beds()[identity]), -35.0, identity)
+
     def test_perceived_loudness_spread_is_bounded(self):
         # A-weighted level: the deep beds carry most of their RMS where hearing is insensitive. The spread is bounded so no
         # bed is much louder or much quieter to the ear than the rest at one volume setting.
