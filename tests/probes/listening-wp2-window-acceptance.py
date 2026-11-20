@@ -1022,6 +1022,106 @@ with env:
             next_window_module.POLL_MS = 250
 
 
+    # =========================================================================== W: the Waybar popover (decision 2026-11-20)
+    # A user report ("It doesn't crash, but window closes when losing focus", Hyprland, follow_mouse=1) led to the
+    # decision: the popover does not close because it lost focus; it is one instance at a time, and a second Waybar
+    # left-click (`listening-roomctl popover` again) while it is open closes it. Each click is a real process running
+    # roomctl.popover(), on this probe's private display and D-Bus, against a session socket served in-process. The
+    # child reports its visible toplevel windows from a timer it adds itself (no reliance on implementer names).
+    @section('W')
+    def waybar_popover():
+        import session_service
+        folder = Path(tempfile.mkdtemp(prefix='acc-popover-'))
+        os.chmod(folder, 0o700)
+        sock = folder / 'session.sock'
+        server, lock = session_service.make_server(sock, env.service)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        fakebin = folder / 'bin'
+        fakebin.mkdir()
+        (fakebin / 'systemctl').write_text('#!/bin/sh\nexit 0\n')   # never reach a user manager, whatever happens
+        os.chmod(fakebin / 'systemctl', 0o755)
+        child_env = dict(os.environ, LISTENING_SESSION_SOCKET=str(sock), GDK_BACKEND='x11', GSK_RENDERER='cairo',
+                         PYTHONPATH=os.pathsep.join([str(SOURCE), str(REPO / 'tests')]),
+                         PATH=str(fakebin) + os.pathsep + os.environ.get('PATH', ''))
+        child_env.pop('WAYLAND_DISPLAY', None)
+        child_env.pop('HYPRLAND_INSTANCE_SIGNATURE', None)
+        script = (
+            'import sys, threading\n'
+            'import gi\n'
+            'gi.require_version("Gtk", "4.0")\n'
+            'from gi.repository import GLib, Gtk\n'
+            'def report():\n'
+            '    shown = [w for w in Gtk.Window.list_toplevels() if w.get_visible()]\n'
+            '    print("WINDOWS %d" % len(shown), flush=True)\n'
+            '    return True\n'
+            'GLib.timeout_add(200, report)\n'
+            'sys.argv = ["listening-roomctl", "popover"]\n'
+            'import roomctl\n'
+            'code = roomctl.popover()\n'
+            'print("EXIT %r" % (code,), flush=True)\n')
+        procs = []
+
+        def click():
+            proc = subprocess.Popen([sys.executable, '-c', script], env=child_env, cwd=str(folder),
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            lines = []
+            threading.Thread(target=lambda: [lines.append((time.monotonic(), line.strip())) for line in proc.stdout],
+                             daemon=True).start()
+            procs.append((proc, lines))
+            return proc, lines
+
+        def shown(lines, since=0.):
+            counts = [int(text.split()[1]) for t, text in lines if text.startswith('WINDOWS') and t >= since]
+            return counts[-1] if counts else None
+
+        def until(predicate, seconds):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                if predicate():
+                    return True
+                pump(.1)
+            return bool(predicate())
+        try:
+            first, first_lines = click()
+            opened = until(lambda: shown(first_lines) == 1, 15)
+            check('W0 fixture: a Waybar left-click opens one popover window', opened, first_lines[-4:])
+            pump(1.0)
+            mark = time.monotonic()
+            second, second_lines = click()
+            until(lambda: second.poll() is not None, 10)
+            pump(1.0)
+            most_first = max([int(x.split()[1]) for t, x in first_lines if x.startswith('WINDOWS') and t >= mark] or [0])
+            most_second = max([int(x.split()[1]) for _t, x in second_lines if x.startswith('WINDOWS')] or [0])
+            check('W1 one instance at a time: the second click opens no second popover and its process ends promptly',
+                  second.poll() is not None and most_second == 0 and most_first <= 1,
+                  {'second exit': second.poll(), 'second max windows': most_second, 'first max windows': most_first,
+                   'second output': [x for _t, x in second_lines][-4:]})
+            closed = until(lambda: first.poll() is not None or shown(first_lines, time.monotonic() - .3) == 0, 4)
+            check('W2 a second left-click while the popover is open closes it (a toggle)', closed,
+                  {'first running': first.poll() is None, 'first windows now': shown(first_lines)})
+            pump(1.0)
+            third, third_lines = click()
+            again = until(lambda: shown(third_lines) == 1 or (first.poll() is None and shown(first_lines) == 1), 15)
+            total = (shown(third_lines) or 0) + ((shown(first_lines) or 0) if first.poll() is None else 0)
+            check('W3 after it closed, the next left-click opens it again (exactly one popover)', again and total == 1,
+                  {'third windows': shown(third_lines), 'first windows': shown(first_lines), 'first running': first.poll() is None})
+        finally:
+            for proc, _lines in procs:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+            server.shutdown()
+            server.server_close()
+            os.close(lock)
+        runbook = (REPO / 'docs' / 'runbooks' / 'listening-room-session.md').read_text()
+        flat = ' '.join(runbook.split())
+        sentences = [s for s in re.split(r'(?<=[.!?])\s+', flat)
+                     if re.search(r'\bclos', s, re.I) and re.search(r'\b(los(e|es|ing)|lost)\s+(the\s+|its\s+)?focus', s, re.I)]
+        check('W4 the runbook no longer says the popover closes when it loses focus', not sentences, sentences[:2])
+
     # =========================================================================== G: checks (criterion 6)
     @section('G')
     def hygiene():
