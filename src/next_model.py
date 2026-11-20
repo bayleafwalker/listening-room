@@ -274,6 +274,21 @@ def shown_name(snapshot, catalogue=()):
     return active.get('name')
 
 
+def now_text(snapshot, catalogue=()):
+    """(name, line, detail) for Now: the room's title and what plays, never saying the same name twice. A room
+    named after its station shows the track (or nothing more) under the name, not the station again."""
+    name = shown_name(snapshot, catalogue) or ''
+    line, detail = now_line(snapshot)
+
+    def same(text):
+        return bool(text) and text.strip().casefold() == name.strip().casefold()
+    if same(detail):
+        detail = ''
+    if same(line):
+        line, detail = detail, ''
+    return name, line, detail
+
+
 def suggested_name(snapshot):
     """What Save as my room offers: the room's own name, else what plays."""
     name = ((snapshot or {}).get('active') or {}).get('name')

@@ -1705,6 +1705,13 @@ class Controller:
         return {'message': 'Room lighting will slowly move from dusk to night'}
 
     def apply_settings(self, values):
+        # {'undo': True} among the values marks an Undo: the values put back what a change replaced, so the
+        # placement "chosen" mark goes back to what it was before that change instead of being set. Old clients
+        # never send it; it is not a setting and is never stored.
+        restore = False
+        if isinstance(values, dict) and 'undo' in values:
+            values = dict(values)
+            restore = values.pop('undo') is True
         allowed = {'placement', 'still', 'reduced_motion', 'preferred_output', 'pause_on_disconnect',
                    'duck_on_call', 'preferred_display', 'display', 'lighting_sequence', 'keep_controls'}
         if not isinstance(values, dict) or set(values) - allowed:
@@ -1728,7 +1735,11 @@ class Controller:
             self.settings = dict(previous, **values)
             chosen_before = self.placement_chosen
             if 'placement' in values:
-                self.placement_chosen = True
+                if restore:
+                    self.placement_chosen = getattr(self, '_placement_chosen_undo', chosen_before)
+                else:
+                    self._placement_chosen_undo = chosen_before   # what an Undo of this change restores
+                    self.placement_chosen = True
             try:
                 self._persist()
             except (OSError, ValueError):

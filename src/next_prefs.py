@@ -863,10 +863,13 @@ class PreferencesDialog(Adw.PreferencesDialog):
             None)
 
     def apply_settings(self, values, message, undo_values):
+        # An Undo says so ('undo': True among the values): putting the previous value back is not a new choice,
+        # so undoing a placement change does not count as choosing a placement (O9).
         self.window.command('settings', {'values': values},
                             done=lambda _r: self.toast(
                                 message, 'Undo' if undo_values is not None else None,
-                                (lambda: self.window.command('settings', {'values': undo_values})) if undo_values else None))
+                                (lambda: self.window.command('settings', {'values': dict(undo_values, undo=True)}))
+                                if undo_values else None))
 
     # ---- Scene and motion ---------------------------------------------------
 

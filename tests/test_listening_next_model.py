@@ -61,6 +61,17 @@ class SnapshotChangeTests(unittest.TestCase):
         self.assertTrue(model.touches({'stations', 'layers'}, ignores=model.NOW_IGNORES))
 
 
+class NowTextTests(unittest.TestCase):
+    def snapshot(self, title='', artist=''):
+        return {'active': {'id': 'adhoc', 'name': 'Your listening room', 'music': {'name': 'Groove Radio'}},
+                'layers': {'music': {'status': 'Playing', 'station': 'Groove Radio', 'title': title, 'artist': artist}}}
+
+    def test_a_room_named_after_its_station_says_the_name_once(self):
+        self.assertEqual(model.now_text(self.snapshot()), ('Groove Radio', '', ''))
+        self.assertEqual(model.now_text(self.snapshot('Night Drive')), ('Groove Radio', 'Night Drive', ''))
+        self.assertEqual(model.now_text(self.snapshot('Night Drive', 'Someone')), ('Groove Radio', 'Night Drive', 'Someone'))
+
+
 class LaunchTests(unittest.TestCase):
     def test_an_active_room_opens_now_otherwise_rooms(self):
         self.assertEqual(model.launch_view(snapshot()), 'now')

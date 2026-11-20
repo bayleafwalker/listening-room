@@ -275,6 +275,106 @@ class WindowSmoke(unittest.TestCase):
         self.assertEqual((stored['energy'], stored['familiarity']), (energy, familiarity),
                          'a later choice undid an earlier one')
 
+    def test_a_second_choice_made_while_a_slow_save_answers_late_is_saved_too(self):
+        """The controller applies a choice but answers late; a second choice made meanwhile (another mood, or the
+        same mood again) must be shown, sent and stored, and the first must stay shown until then."""
+        for first_key, second_key in (('energy', 'familiarity'), ('familiarity', 'familiarity')):
+            with self.subTest(first=first_key, second=second_key):
+                self.second_choice_during_a_late_save(first_key, second_key)
+
+    def second_choice_during_a_late_save(self, first_key, second_key):
+        import next_station
+        import session_client
+        env = self.env
+        env.start_station_room()
+        window = env.launch(page='listen')
+        station = next(s for s in env.controller.stations() if s['name'] == 'Morning lift')
+        window.listen.show_station(station)
+        env.pump(.6)
+        groups = window.listen.mood_groups
+        real = session_client.request
+
+        def pick(key):
+            current = next_station.choices(window.listen.station)[key]
+            mood = next(m for m in next_station.MOODS if m['key'] == key)
+            index = next(i for i, (text, _value) in enumerate(mood['choices'])
+                         if text != current and i != groups[key].get_active())
+            groups[key].set_active(index)
+            return mood['choices'][index][0]
+
+        def late(action, arguments=None, *rest, **kw):
+            answer = real(action, arguments, *rest, **kw)
+            if action == 'station.save':
+                time.sleep(4)             # applied at once, answered late
+            return answer
+
+        mark = len(env.log)
+        with mock.patch.object(session_client, 'request', side_effect=late):
+            first = pick(first_key)
+            seen = []
+            for _ in range(8):
+                window.poll()
+                env.pump(.1)
+                seen.append(next_station.choices(window.listen.station)[first_key])
+            second = pick(second_key)
+            self.assertEqual(next_station.choices(window.listen.station)[second_key], second)
+            deadline = time.monotonic() + 15
+            while window.listen.pending_station is not None and time.monotonic() < deadline:
+                window.poll()
+                env.pump(.1)
+        env.settle(.5)
+        saves = [args['station'] for action, args in env.log[mark:] if action == 'station.save']
+        self.assertEqual(len(saves), 2, 'the second choice was never sent')
+        self.assertEqual(set(seen), {first}, 'the first choice was not shown until the second')
+        stored = next_station.choices(next(s for s in env.controller.stations() if s['id'] == station['id']))
+        want = {first_key: first, second_key: second}
+        self.assertEqual({key: stored[key] for key in want}, want, 'a choice was lost')
+        self.assertEqual({key: next_station.choices(window.listen.station)[key] for key in want}, want)
+        window.close()
+        env.service.execute('leave', {})
+        env.settle(1.0)
+
+    def test_the_start_card_never_covers_the_chip_or_the_room_name_in_a_short_window(self):
+        import session_client
+        env = self.env
+        env.start_station_room()          # a room is up: its chip and name are what the card could cover
+        window = env.launch(width=1000, height=460, page='rooms')
+        station = next(s for s in env.controller.stations() if s['name'] == 'Morning lift')
+        answer = session_client.request
+
+        def late(action, *rest, **kw):
+            if action == 'station.start':
+                time.sleep(2.5)
+            return answer(action, *rest, **kw)
+
+        def bounds(widget):
+            if not widget.get_mapped():
+                return None
+            ok, rect = widget.compute_bounds(window)
+            return (rect.get_x(), rect.get_y(), rect.get_width(), rect.get_height())
+
+        def overlap(a, b):
+            return bool(a and b) and a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+        with mock.patch.object(env.next_window, 'START_GRACE_S', 1.0), \
+                mock.patch.object(session_client, 'request', side_effect=late):
+            window.start('station.start', {'id': station['id']}, 'Morning lift')
+            for state in ('connecting', 'failed'):
+                deadline = time.monotonic() + 4
+                while (window.pending or {}).get('state') != state and time.monotonic() < deadline:
+                    env.pump(.05)
+                env.pump(.3)
+                card = bounds(window.pending_card)
+                self.assertIsNotNone(card, 'the %s card is not shown' % state)
+                for widget in (window.chip, window.room_name):
+                    self.assertFalse(overlap(card, bounds(widget)), 'the %s card covers %r' % (state, widget.get_text()))
+            window.dismiss_pending()
+            env.pump(3.0)
+        env.settle(.5)
+        self.assertTrue(window.room_name.get_mapped(), 'the room name did not come back after the card')
+        window.close()
+        env.service.execute('leave', {})
+        env.settle(1.0)
+
     # ---- partial rebuilds and the worker handoff (WP2-WINDOW) ----------------------------------
 
     def counts(self, window):

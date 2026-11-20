@@ -152,6 +152,28 @@ class Controller(unittest.TestCase):
         controller.close()
         self.assertEqual(self.controller().snapshot()['settings']['placement'], '9')
 
+    def test_undo_of_a_placement_change_does_not_count_as_choosing_one(self):
+        controller = self.controller()
+        controller.apply_settings({'placement': '9'})
+        self.assertTrue(controller.placement_chosen)
+        controller.apply_settings({'placement': 'here', 'undo': True})
+        self.assertFalse(controller.placement_chosen, 'the Undo counted as a choice')
+        self.assertEqual(controller.settings['placement'], 'here')
+        self.assertNotIn('undo', controller.snapshot()['settings'])
+        controller.close()
+        stored = json.loads((self.directory / 'session.json').read_text())
+        self.assertEqual(stored['placement']['chosen'], False)
+        self.assertNotIn('undo', stored['settings'])
+        # A choice made before stays chosen through an Undo of a later change.
+        controller = self.controller()
+        controller.apply_settings({'placement': 'pin'})
+        controller.apply_settings({'placement': 'pip'})
+        controller.apply_settings({'placement': 'pin', 'undo': True})
+        self.assertTrue(controller.placement_chosen)
+        # Without the flag (old clients) a placement is a choice, as before.
+        controller.apply_settings({'placement': 'here'})
+        self.assertTrue(controller.placement_chosen)
+
     def test_an_old_stored_default_of_workspace_9_moves_to_here(self):
         self.directory.mkdir(parents=True)
         (self.directory / 'session.json').write_text(json.dumps({'version': 1, 'settings': {'placement': '9', 'still': True}}))

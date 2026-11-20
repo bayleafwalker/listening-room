@@ -38,6 +38,7 @@ FULL_SIZE = (1000, 720)
 START_GRACE_S = 8  # how long a start command may take before Now is abandoned
 TOAST_GAP = 12                  # between a toast and what it sits above
 NOW_CONTROLS_CLEARANCE = 140    # Now's control row (play, volume, Mix) and its bottom padding
+CARD_GAP = 16                   # at least this much between the start card and the room's name and chip
 MINI_CONTROLS_CLEARANCE = 96    # the mini layout's control row
 TOAST_ROOM = 120                # window height kept free for a toast above the open Mix
 MUSIC_STARTS = ('music', 'online', 'link', 'station.start', 'station.replay')  # starts that replace a room's music
@@ -91,7 +92,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.config_generation = None  # library connections and favourites, as the controller last saw them
         self.browse_narrow = False     # Browse rooms was chosen in the narrow (mini) layout
         self.listen_first = False      # the active room began with Tune in, not with a room
-        self.toast_margin = self.toast_key = None
+        self.toast_margin = self.toast_key = self.pending_key = None
         self.room_key = self.cards_key = self.sources_key = None
         self.volume_timer = self.idle_timer = None
         self.selected_room = self.surface = None
@@ -343,6 +344,7 @@ class NextWindow(Adw.ApplicationWindow):
         for widget in (chips, self.room_name, line, self.choose_scene):
             text.append(widget)
         column.append(text)
+        self.now_overlay, self.now_column, self.now_text = overlay, column, text
         self.controls = Gtk.CenterBox()
         self.mix_button = Gtk.Button(halign=Gtk.Align.START)
         self.mix_button.add_css_class('glass')
@@ -576,7 +578,10 @@ class NextWindow(Adw.ApplicationWindow):
             self.play.set_child(Gtk.Spinner(spinning=True))
             self.room_name.set_text(pending['name'])
             self.chip.set_text('Connecting')
+            self.chip.set_visible(True)
             self.changed_chip.set_visible(False)
+            self.banner.set_visible(False)      # the last room's layer news is not about this start
+            self.marker.set_visible(False)
             self.choose_scene.set_visible(False)
             self.now_line.set_text('')
             self.now_detail.set_visible(False)
@@ -584,6 +589,8 @@ class NextWindow(Adw.ApplicationWindow):
                 self.scene.show_room({'still': pending['art'], 'poster': pending['art'], 'loop': None}, False)
         else:
             previous = (self.snapshot.get('active') or {}).get('name')
+            if not previous:
+                self.chip.set_visible(False)    # nothing is connecting any more; render_now brings it back
             self.pending_title.set_text('Couldn’t start ' + pending['name'])
             self.pending_detail.set_text(pending.get('error', '') + (' ' + previous + ' is still there.' if previous else ''))
             self.play.set_icon_name('media-playback-start-symbolic')
@@ -605,15 +612,18 @@ class NextWindow(Adw.ApplicationWindow):
             return
         ad_hoc = model.ad_hoc(snapshot, self.catalogue)
         self.chip.set_text('Not connected' if self.offline else info['chip'])
-        # A room started from Listen, or saved under a generic name, is named after what plays.
-        self.room_name.set_text(model.shown_name(snapshot, self.catalogue))
+        self.chip.set_visible(True)
+        # A room started from Listen, or saved under a generic name, is named after what plays; the line
+        # under it then says the track, never the same name again.
+        name, line, detail = model.now_text(snapshot, self.catalogue)
+        self.room_name.set_text(name)
         self.changed_chip.set_visible(model.room_changed(snapshot, self.catalogue))
         assets = model.scene_assets(snapshot.get('active'), self.presets)
         own_scene = bool(assets.get('still') or assets.get('loop'))
         self.choose_scene.set_visible((ad_hoc or self.listen_first or not own_scene) and bool(self.layer_options('picture')))
-        self.now_line.set_text(info['line'])
-        self.now_detail.set_text('· ' + info['detail'] if info['detail'] else '')
-        self.now_detail.set_visible(bool(info['detail']))
+        self.now_line.set_text(line)
+        self.now_detail.set_text('· ' + detail if detail else '')
+        self.now_detail.set_visible(bool(detail))
         self.mix_summary.set_text(info['summary'])
         self.play.set_icon_name('media-playback-pause-symbolic' if info['state'] == 'playing' else 'media-playback-start-symbolic')
         name_it(self.play, 'Pause the room' if info['state'] == 'playing' else 'Play the room')
@@ -1092,7 +1102,44 @@ class NextWindow(Adw.ApplicationWindow):
             (widget.add_css_class if compact else widget.remove_css_class)('compact')
         self.fit_controls(width)
         self.place_toasts()
+        self.place_pending()
         return GLib.SOURCE_CONTINUE
+
+    def place_pending(self):
+        """Now's cards (the start card, or a layer's failure banner) never sit over the room's name and chip
+        ("Connecting"): a card moves up into the space above them, and in a window too short even for that, the
+        name and chip step aside while the card says the same thing. Measured rather than read from allocations,
+        and redone only when its inputs change."""
+        overlay = self.now_overlay
+        card = self.pending_card if self.pending_card.get_visible() else self.banner if self.banner.get_visible() else None
+        words = (self.pending_title, self.pending_detail, self.banner_title, self.banner_detail)
+        # While a card shows, what Now's text says (and which of its rows show) moves the room for it.
+        text_rows = (self.room_name, self.now_line, self.now_detail, self.chip, self.changed_chip, self.choose_scene)
+        key = (card, self.offline, overlay.get_width(), overlay.get_height(),
+               card is not None and tuple(label.get_text() for label in words),
+               card is not None and tuple((row.get_visible(), getattr(row, 'get_text', row.get_label)())
+                                          for row in text_rows))
+        if key == self.pending_key or not overlay.get_height():
+            return
+        self.pending_key = key
+        top = 140 if self.offline else 70     # below the offline banner when it shows
+        for other in (self.pending_card, self.banner):
+            if other is not card:
+                other.set_margin_top(top)
+        self.now_text.set_visible(True)       # measured as shown: a hidden box measures as nothing
+        if card is None:
+            return
+        width, height = overlay.get_width(), overlay.get_height()
+        card_width = min(card.measure(Gtk.Orientation.HORIZONTAL, -1)[1], width - 32)
+        card_height = card.measure(Gtk.Orientation.VERTICAL, card_width)[1]
+        column_width = width - self.now_column.get_margin_start() - self.now_column.get_margin_end()
+        controls = self.controls.measure(Gtk.Orientation.VERTICAL, column_width)[1]
+        text = self.now_text.measure(Gtk.Orientation.VERTICAL, column_width)[1]
+        text_top = height - self.now_column.get_margin_bottom() - controls - self.now_column.get_spacing() - text
+        margin = min(top, text_top - CARD_GAP - card_height)
+        fits = margin >= 8
+        card.set_margin_top(margin if fits else top)
+        self.now_text.set_visible(fits)
 
     def fit_controls(self, width):
         """Now's control row at medium widths: drop the Mix summary, then shorten the volume slider, so the
@@ -1209,11 +1256,12 @@ class NextWindow(Adw.ApplicationWindow):
                        self.listen.bar_volume):
             widget.set_sensitive(not offline and (widget is not self.play or not self.pending))
         # The banner sits over Now's top edge: stale layer news goes, and the start card moves below it.
-        self.pending_card.set_margin_top(140 if offline else 70)
+        self.pending_key = None         # place_pending moves the start card below the banner
         if offline:
             self.banner.set_visible(False)
             self.marker.set_visible(False)
             self.chip.set_text('Not connected')
+            self.chip.set_visible(True)
             self.now_line.set_text('The room service isn’t running')
             self.now_detail.set_visible(False)
         elif self.snapshot.get('active') and not self.pending:
