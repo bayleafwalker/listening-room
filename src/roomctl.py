@@ -2,6 +2,7 @@
 import argparse
 import html
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -25,6 +26,32 @@ def status(snapshot):
     caption = name + (' · ' + ' + '.join(playing) if playing else '')
     return {'text': html.escape(caption), 'tooltip': html.escape(caption + '\nClick for room controls; right-click to browse'),
             'class': 'playing' if playing else 'paused' if active else 'stopped', 'alt': 'room'}
+
+
+def follow_status(output=None, subscription=None):
+    """`status --follow`: one Waybar JSON line whenever the status changes.
+
+    Waybar runs it once with `exec` and no `interval`. It waits for the controller
+    and never starts it, like `status`; while it is unreachable the line reads stopped.
+    """
+    output = output or sys.stdout
+    subscription = subscription or session_client.Subscription(fields=['active', 'layers', 'station'])
+    last = None
+    try:
+        for update in subscription:
+            line = json.dumps(status(update.snapshot or {}), ensure_ascii=False)
+            if line != last:
+                output.write(line + '\n')
+                output.flush()
+                last = line
+    except BrokenPipeError:   # Waybar closed the pipe; keep shutdown from writing to it again
+        if output is sys.stdout:
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        subscription.close()
+    return 0
 
 
 def remote_commands():
@@ -69,8 +96,13 @@ metadata-review accepts those IDs plus classification (instrumental, vocal, spok
 metadata-export writes all provenance pages as one JSON document to stdout. metadata-import takes a JSON file path; imported reviews and audio hashes are never trusted. Both allow up to 10,000 records and 32 MiB.''', formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=['inspect','status','enter','return','quiet','resume','leave','stop','save','menu','popover','remote-commands','link','volume','stations','tune','replay','station-save','station-update','play-next','metadata-list','metadata-jobs','metadata-enrich','metadata-match','metadata-analyze','metadata-confirm-identity','metadata-cancel','metadata-review','metadata-revoke','metadata-export','metadata-import'])
     parser.add_argument('value', nargs='?', help='ID or JSON object for the chosen action; metadata-review requires origin, item_id, classification, reviewer, and acknowledged=true')
+    parser.add_argument('--follow', action='store_true', help='with status: print a new line whenever the status changes')
     args = parser.parse_args()
+    if args.follow and args.action != 'status':
+        parser.error('--follow works with status only')
     try:
+        if args.action == 'status' and args.follow:
+            return follow_status()
         if args.action == 'status':
             try: snapshot = session_client.request('inspect', timeout=.4, start=False)
             except (ValueError, OSError): snapshot = {}
