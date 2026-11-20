@@ -110,6 +110,15 @@ if _mode in ('record', 'replay') and _store and _probe:
         with open(os.path.join(slot, 'meta.json')) as handle:
             meta = json.load(handle)
         out = _output_dir()
+        # The runner's own log may sit in --output (it was recorded as a changed file); never overwrite the file
+        # this process's stdout or stderr already writes to.
+        streams = set()
+        for fd in (1, 2):
+            try:
+                st = os.fstat(fd)
+                streams.add((st.st_dev, st.st_ino))
+            except OSError:
+                pass
         if out:
             os.makedirs(out, exist_ok=True)
             files = os.path.join(slot, 'files')
@@ -117,6 +126,12 @@ if _mode in ('record', 'replay') and _store and _probe:
                 for name in names:
                     source = os.path.join(base, name)
                     target = os.path.join(out, os.path.relpath(source, files))
+                    try:
+                        st = os.stat(target)
+                        if (st.st_dev, st.st_ino) in streams:
+                            continue
+                    except OSError:
+                        pass
                     os.makedirs(os.path.dirname(target), exist_ok=True)
                     shutil.copyfile(source, target)
         for name, fd in (('stdout', 1), ('stderr', 2)):
@@ -229,6 +244,11 @@ def copy_repo(repo, extra=()):
     (target / 'tests' / 'sitecustomize.py').write_text(HOOK)
     for rel, text in extra:
         (target / rel).write_text(text)
+    # Its own git repository: the dev script's `nix build .#...` and `nix develop "$repo"` must resolve to this copy,
+    # never to a repository above the temporary directory, and the hook and canary must be part of the flake source.
+    for argv in (['git', 'init', '-q'], ['git', 'add', '-A'],
+                 ['git', '-c', 'user.name=wp4-oracles', '-c', 'user.email=wp4@example.invalid', 'commit', '-qm', 'throwaway copy']):
+        run(argv, cwd=target)
     return target
 
 
