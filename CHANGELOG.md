@@ -6,6 +6,14 @@ All notable changes are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
+- The session controller pushes changes: a `subscribe` action streams one JSON line
+  per snapshot change over the private socket (heartbeat every 15 s when idle), and
+  `session_client.Subscription` / `subscribe()` give clients an iterator or callback
+  that reconnects with backoff and never starts playback. `inspect` reports the
+  protocol `version` (2). MPRIS updates from the same feed.
+- `listening-roomctl status --follow` prints a Waybar line whenever the status
+  changes, so the Waybar module runs one process with `exec` and no `interval`
+  (the README snippet is updated; plain `status` still works for polling).
 - Objective checks for the sounds (spectrum, event structure, distinctness, loop
   seam, level, determinism): `tests/test_listening_atmosphere_character.py`.
 - Ambience in the Mix: Change… on the Ambience row opens Listen in an ambience
@@ -41,6 +49,10 @@ All notable changes are recorded here. The format follows
   Radio shelf, without a restart (the snapshot carries `config_generation`).
 
 ### Changed
+- The controller's actions are declared once in a registry (handler, whether it runs
+  at once or queues, argument types) that drives both dispatch and the socket
+  service. Unknown actions and wrongly typed arguments now fail at once with a
+  plain error instead of being queued.
 - Sounds: the rain under distant thunder is now clearly audible between the
   rolls, and the six offline sounds are matched on A-weighted (perceived)
   loudness instead of raw RMS, so thunder is no longer far quieter than rain.

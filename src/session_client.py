@@ -1,11 +1,15 @@
 """Bounded client for the private graphical-session listening controller."""
 import argparse
+import collections
 import json
+import logging
 import os
 from pathlib import Path
+import random
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 MAX_MESSAGE = 1024 * 1024
@@ -96,6 +100,129 @@ def request(action, args=None, timeout=3, start=True):
         return _exchange(path, action, args, timeout)
     except (OSError, json.JSONDecodeError) as error:
         raise SessionUnavailable('Listening controller unavailable: ' + str(error)) from error
+
+
+Update = collections.namedtuple('Update', 'snapshot revision session connected error')
+Update.__doc__ = """One subscription event.
+
+connected=True: `snapshot` is the controller snapshot (only the requested `fields` when
+given) at `revision`. Revisions increase within one controller `session`; a gap means
+changes were coalesced or filtered out, and a new `session` means the controller restarted.
+connected=False: the controller is unreachable; `error` says why and the rest are None.
+"""
+
+
+class Subscription:
+    """Iterate controller snapshots as they change, reconnecting until close().
+
+    for update in Subscription(fields=['active', 'layers']):
+        ...
+
+    Yields an Update whenever the snapshot (or its `fields` projection) changes, and
+    one connected=False Update per outage. While unreachable it retries with jittered
+    exponential backoff (`backoff` = first and longest delay in seconds). It never
+    starts playback: with start=True it calls ensure_service(), which starts only idle
+    infrastructure; by default it only waits for the controller. A silent connection
+    is dropped after three missed heartbeats. close() is safe from any thread and ends
+    the iteration.
+    """
+    def __init__(self, fields=None, path=None, start=False, backoff=(.25, 10.)):
+        self.fields = list(fields) if fields is not None else None
+        self.path = path
+        self.start = start
+        self.backoff = backoff
+        self._closed = threading.Event()
+        self._lock = threading.Lock()
+        self._socket = None
+
+    def close(self):
+        self._closed.set()
+        with self._lock:
+            if self._socket is not None:
+                try:
+                    self._socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    def __iter__(self):
+        delay, online = self.backoff[0], None
+        while not self._closed.is_set():
+            try:
+                path = Path(self.path or socket_path())
+                if self.start:
+                    ensure_service(path)
+                for update in self._stream(path):
+                    delay, online = self.backoff[0], True
+                    yield update
+                error = 'The listening controller closed its connection'
+            except (OSError, ValueError) as failure:
+                error = str(failure) or type(failure).__name__
+            if self._closed.is_set():
+                return
+            if online is not False:
+                online = False
+                yield Update(None, None, None, False, error)
+            self._closed.wait(delay * random.uniform(.8, 1.2))
+            delay = min(delay * 2, self.backoff[1])
+
+    def _stream(self, path):
+        # A controller older than protocol 2 would queue an unknown `subscribe`
+        # and report it as a room error, so ask for its version first.
+        if not isinstance(_exchange(path, 'inspect', {}, 1).get('version'), int):
+            raise SessionUnavailable('The listening controller is older than this client; restart listening-session.service')
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with self._lock:
+            if self._closed.is_set():
+                connection.close()
+                return
+            self._socket = connection
+        try:
+            connection.settimeout(1)
+            connection.connect(str(path))
+            args = {} if self.fields is None else {'fields': self.fields}
+            connection.sendall(json.dumps({'action': 'subscribe', 'args': args}).encode() + b'\n')
+            connection.settimeout(45)
+            buffer = bytearray()
+            while not self._closed.is_set():
+                newline = buffer.find(b'\n')
+                if newline < 0:
+                    if len(buffer) > MAX_MESSAGE:
+                        raise SessionUnavailable('Listening session response is too large')
+                    part = connection.recv(65536)
+                    if not part:
+                        return
+                    buffer.extend(part)
+                    continue
+                message = json.loads(buffer[:newline])
+                del buffer[:newline + 1]
+                if not message.get('ok'):
+                    raise SessionUnavailable(message.get('error') or 'The listening subscription failed')
+                result = message.get('result') or {}
+                if result.get('event') == 'snapshot':
+                    connection.settimeout(3 * result.get('heartbeat', 15))
+                    yield Update(result['snapshot'], result['revision'], result['session'], True, None)
+        finally:
+            with self._lock:
+                self._socket = None
+            connection.close()
+
+
+def subscribe(callback, fields=None, path=None, start=False, backoff=(.25, 10.)):
+    """Call `callback(update)` for each Subscription update on a daemon thread.
+
+    Returns the Subscription; close() stops it. The callback runs on that thread, so
+    a GTK client hands updates to its main loop (GLib.idle_add). Exceptions from the
+    callback are logged and the subscription continues.
+    """
+    subscription = Subscription(fields, path, start, backoff)
+    def run():
+        for update in subscription:
+            try:
+                callback(update)
+            except Exception:
+                logging.getLogger('listening-room-session').exception('subscription callback failed')
+    threading.Thread(target=run, name='listening-subscription', daemon=True).start()
+    return subscription
 
 
 def main():
