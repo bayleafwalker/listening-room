@@ -1077,7 +1077,14 @@ def s2_sound_scene():
     # scene
     show_page(dialog, 'scene')
     n2 = len(COMMANDS)
-    dialog.placement_row.set_selected(1); settle(.7)
+    # ORIGINAL (superseded by R6): dialog.placement_row.set_selected(1); settle(.7)
+    # REVISION R6 (coordinator decision 2026-11-20, bound to O9-UX criterion 7): on Hyprland the default
+    # placement is now "Here" (index 1), so selecting index 1 no longer changes anything and no placement
+    # settings command can fire. 3a still demands a placement settings command; it now selects a placement
+    # that differs from the current one so that the choice is a real change.
+    current_placement = dialog.placement_row.get_selected()
+    n_placements = dialog.placement_row.get_model().get_n_items()
+    dialog.placement_row.set_selected((current_placement + 1) % n_placements); settle(.7)
     dialog.moving_switch.set_active(not dialog.moving_switch.get_active()); settle(.7)
     dialog.visible_switch.set_active(True); settle(.7)
     sc2 = [p['values'] for a, p in COMMANDS[n2:] if a == 'settings']
