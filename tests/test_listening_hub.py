@@ -134,7 +134,7 @@ class HubTests(unittest.TestCase):
         hub.ensure_baseline()
         hub.update_state(selected='radio', radio_name='Still playing', pause_others_on_radio_start=True)
         hub.ensure_baseline()
-        with mock.patch.object(core, 'player_command') as control, mock.patch.object(hub, 'play') as play:
+        with mock.patch.object(core, 'player_command') as control, mock.patch.object(core, 'play') as play:
             hub.restore_profile('default')
         self.assertFalse(hub.preferences()['pause_others_on_radio_start'])
         self.assertEqual(hub.state()['selected'], 'radio')

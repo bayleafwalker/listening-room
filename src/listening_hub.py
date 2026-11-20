@@ -13,12 +13,13 @@ import subprocess
 import sys
 
 from player_core import (  # noqa: F401  (re-exported)
-    CATALOG, RUNTIME, SOCKET, STATE, HubError, all_info, ambience_module, clean, ensure_baseline,
-    favorites, ipc, load_json, mute, notify, play, play_scene, playback_url, player_command, player_volume,
-    players, preferences, private_favorite, profiles, radio_audio_state, radio_info, radio_socket,
-    radio_unit, recent_search, remove_favorite, restore_profile, run, save_favorite, save_json,
-    save_profile, save_scene, scenes, search_radio, selected_target, set_volume, sources, start_radio,
-    state, system_volume, target, transport, update_state, valid_url, volume_value, youtube_video_url)
+    BUILTIN_SCENES, CATALOG, COUNTRY_CODES, PREFERENCE_KEYS, RUNTIME, SOCKET, STATE, HubError,
+    all_info, ambience_module, clean, ensure_baseline, favorites, ipc, load_json, mute, notify, play,
+    play_scene, playback_url, player_command, player_info, player_volume, players, preferences,
+    private_favorite, profiles, radio_audio_state, radio_info, radio_socket, radio_unit, recent_search,
+    remove_favorite, restore_profile, run, save_favorite, save_json, save_profile, save_scene, scenes,
+    search_radio, selected_target, set_volume, sources, start_radio, state, system_volume, target,
+    transport, update_state, valid_url, volume_value, youtube_video_url)
 
 
 def inspect_state():

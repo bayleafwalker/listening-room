@@ -24,7 +24,7 @@ class DesktopTests(unittest.TestCase):
 
     def test_radio_dispatches_through_the_shared_session(self):
         source={'id':'station','name':'Station','kind':'radio','url':'https://example.org/live'}
-        with patch('session_client.request') as dispatch, patch.object(hub,'start_radio') as start:
+        with patch('session_client.request') as dispatch, patch.object(core,'start_radio') as start:
             hub.play(source)
         dispatch.assert_called_once_with('music', {'item':source})
         start.assert_not_called()
