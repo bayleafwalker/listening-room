@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -193,6 +194,40 @@ class WindowSmoke(unittest.TestCase):
         env.pump(1.5)
         self.assertFalse(window.offline_bar.get_reveal_child(), 'the banner stays after the service answers')
 
+
+    def test_a_stale_poll_after_a_save_does_not_undo_it_on_the_next_choice(self):
+        """Quick choices in Listen: a poll sent before a save finished must not hand the page the old station,
+        or the next choice is built on stale preferences and the earlier one is lost (o3 4p and 4s2)."""
+        import next_station
+        env = self.env
+        env.start_station_room()
+        window = env.launch(page='listen')
+        station = next(s for s in env.controller.stations() if s['name'] == 'Morning lift')
+        window.listen.show_station(station)
+        env.pump(.6)
+        stale = dict(window.snapshot)        # what a poll already in flight would still return
+        groups = window.listen.mood_groups
+
+        def choose(key):
+            current = next_station.choices(window.listen.station)[key]
+            mood = next(m for m in next_station.MOODS if m['key'] == key)
+            index = next(i for i, (text, _value) in enumerate(mood['choices'])
+                         if text != current and i != groups[key].get_active())
+            groups[key].set_active(index)
+            deadline = time.monotonic() + 5
+            while window.listen.pending_station is not None and time.monotonic() < deadline:
+                env.pump(.05)
+            return mood['choices'][index][0]
+
+        # No poll goes out meanwhile, so the only read that lands is one sent before the save finished.
+        with mock.patch.object(window, 'poll', lambda: True):
+            energy = choose('energy')
+            window.render_poll(stale, None, window.polls_sent)
+            familiarity = choose('familiarity')
+        env.settle(.5)
+        stored = next_station.choices(next(s for s in env.controller.stations() if s['id'] == station['id']))
+        self.assertEqual((stored['energy'], stored['familiarity']), (energy, familiarity),
+                         'a later choice undid an earlier one')
 
 if __name__ == '__main__':
     unittest.main(argv=[sys.argv[0]])

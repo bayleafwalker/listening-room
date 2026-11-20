@@ -35,6 +35,10 @@ BREAKPOINT = 1000
 MINI_WIDTH = 560  # below this the mini layout replaces the window
 FULL_SIZE = (1000, 720)
 START_GRACE_S = 8  # how long a start command may take before Now is abandoned
+TOAST_GAP = 12                  # between a toast and what it sits above
+NOW_CONTROLS_CLEARANCE = 140    # Now's control row (play, volume, Mix) and its bottom padding
+MINI_CONTROLS_CLEARANCE = 96    # the mini layout's control row
+TOAST_ROOM = 120                # window height kept free for a toast above the open Mix
 MUSIC_STARTS = ('music', 'online', 'link', 'station.start', 'station.replay')  # starts that replace a room's music
 SHORTCUTS = (('Space', 'Pause or play the room'), ('Ctrl+1', 'Rooms'), ('Ctrl+2', 'Listen'), ('Ctrl+3', 'Now'),
              ('Ctrl+F', 'Search Listen'), ('Ctrl+L', 'Add a link'), ('Ctrl+V', 'Add a link from the clipboard, outside text fields'),
@@ -68,7 +72,8 @@ class NextWindow(Adw.ApplicationWindow):
         self.page_name = 'loading'
         self.full_size = FULL_SIZE
         self.snapshot, self.catalogue, self.presets = {}, [], []
-        self.closed = self.updating = self.polling = False
+        self.closed = self.updating = self.polling = self.poll_again = False
+        self.polls_sent = self.snapshot_poll = 0
         self.first = True
         self.want_now = False
         self.want_since = 0.
@@ -82,7 +87,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.config_generation = None  # library connections and favourites, as the controller last saw them
         self.browse_narrow = False     # Browse rooms was chosen in the narrow (mini) layout
         self.listen_first = False      # the active room began with Tune in, not with a room
-        self.toast_margin = None
+        self.toast_margin = self.toast_key = None
         self.room_key = self.cards_key = self.sources_key = None
         self.volume_timer = self.idle_timer = None
         self.selected_room = self.surface = None
@@ -225,7 +230,8 @@ class NextWindow(Adw.ApplicationWindow):
         self.section_bar.set_child(box)
         return self.section_bar
 
-    SECTION_WORDS = {'rooms': 'Rooms', 'listen': 'Listen', 'now': 'Now', 'mini': 'The mini player', 'pending': 'Now'}
+    SECTION_WORDS = {'rooms': 'Rooms', 'listen': 'Listen', 'now': 'Now', 'mini': 'The mini player',
+                     'mini-window': 'The mini player', 'pending': 'Now'}
 
     def guard(self, section, render, *args):
         """Run one surface's render; if it raises, log it and say so inline instead of blanking the window."""
@@ -555,14 +561,13 @@ class NextWindow(Adw.ApplicationWindow):
         self.pending_retry.set_sensitive(failed and not pending['inflight'])
         self.pending_retry.set_tooltip_text('Still waiting for an answer' if failed and pending['inflight'] else None)
         self.show_details(self.pending_details, pending.get('details', '') if failed else '')
+        self.play.set_sensitive(not (self.offline or connecting))
         if not pending:
-            self.play.set_sensitive(not self.offline)
             return
         if connecting:
             self.pending_title.set_text('Connecting to ' + pending['name'] + '…')
             self.pending_detail.set_text('Nothing plays until it is ready.')
             self.play.set_child(Gtk.Spinner(spinning=True))
-            self.play.set_sensitive(False)
             self.room_name.set_text(pending['name'])
             self.chip.set_text('Connecting')
             self.changed_chip.set_visible(False)
@@ -575,7 +580,6 @@ class NextWindow(Adw.ApplicationWindow):
             previous = (self.snapshot.get('active') or {}).get('name')
             self.pending_title.set_text('Couldn’t start ' + pending['name'])
             self.pending_detail.set_text(pending.get('error', '') + (' ' + previous + ' is still there.' if previous else ''))
-            self.play.set_sensitive(not self.offline)
             self.play.set_icon_name('media-playback-start-symbolic')
 
     def when_pending_ends(self, waiter):
@@ -595,10 +599,12 @@ class NextWindow(Adw.ApplicationWindow):
             return
         ad_hoc = model.ad_hoc(snapshot, self.catalogue)
         self.chip.set_text('Not connected' if self.offline else info['chip'])
-        # A room started from Listen is named after what plays, never "untitled".
-        self.room_name.set_text(model.room_title(snapshot) if ad_hoc else info['name'])
+        # A room started from Listen, or saved under a generic name, is named after what plays.
+        self.room_name.set_text(model.shown_name(snapshot, self.catalogue))
         self.changed_chip.set_visible(model.room_changed(snapshot, self.catalogue))
-        self.choose_scene.set_visible((ad_hoc or self.listen_first) and bool(self.layer_options('picture')))
+        assets = model.scene_assets(snapshot.get('active'), self.presets)
+        own_scene = bool(assets.get('still') or assets.get('loop'))
+        self.choose_scene.set_visible((ad_hoc or self.listen_first or not own_scene) and bool(self.layer_options('picture')))
         self.now_line.set_text(info['line'])
         self.now_detail.set_text('· ' + info['detail'] if info['detail'] else '')
         self.now_detail.set_visible(bool(info['detail']))
@@ -626,11 +632,11 @@ class NextWindow(Adw.ApplicationWindow):
             self.shown = shown
             self.kick_idle()  # a change worth seeing brings the controls back
         motion = model.motion_allowed(snapshot, self.system_animations)
-        assets = model.scene_assets(snapshot.get('active'), self.presets)
-        if ad_hoc and not (assets.get('still') or assets.get('loop')):
+        if not own_scene:   # never a black room, saved or ad hoc
             assets = model.fallback_scene(snapshot, self.presets, self.catalogue)
         self.scene.show_room(assets, motion)
         self.mix.update(snapshot)
+        self.toast_key = None           # the Mix's rows may have changed: place toasts again
         self.render_timers(info['timers'])
 
     def render_timers(self, running):
@@ -1118,21 +1124,32 @@ class NextWindow(Adw.ApplicationWindow):
         self.volume.set_size_request({'wide': 170, 'medium': 120, 'narrow': 84}[tier], -1)
 
     def place_toasts(self):
-        """Toasts sit where they cover no control: above Now's control row or above the open Mix, above
-        the mini layout's controls and Listen's now-playing bar, at the bottom elsewhere.
+        """Toasts sit where they cover no control: above Now's control row or the open Mix, above the mini
+        layout's controls and Listen's now-playing bar, and at the bottom elsewhere.
 
-        Every margin comes from content that does not depend on the window's height: a margin that
-        followed the height would grow the window through the toast's own size request."""
+        Recomputed only when what it depends on changes, not on every frame. The open Mix's margin uses
+        its natural height for the current width, and stays TOAST_ROOM short of the window's height:
+        a margin that followed the height without that bound would grow the window through the toast's
+        own size request."""
         page = self.current_page()
-        if page == 'now':
-            # The Mix's natural height, capped: its allocation follows the window and would feed back.
-            margin = min(self.mix.measure(Gtk.Orientation.VERTICAL, -1)[1], 360) + 48 if self.sheet.get_open() else 140
+        sheet = page == 'now' and self.sheet.get_open()
+        listen_bar = (page == 'browse' and self.browse.get_visible_child_name() == 'listen'
+                      and self.listen.bar.get_visible())
+        key = (page, sheet, listen_bar and self.listen.bar.get_height(), self.get_width(), self.get_height())
+        if key == self.toast_key:
+            return
+        self.toast_key = key
+        if sheet:
+            mix = self.mix.measure(Gtk.Orientation.VERTICAL, self.get_width())[1]
+            margin = max(0, min(mix, self.get_height() - TOAST_ROOM)) + TOAST_GAP
+        elif page == 'now':
+            margin = NOW_CONTROLS_CLEARANCE
         elif page == 'mini':
-            margin = 96
-        elif page == 'browse' and self.browse.get_visible_child_name() == 'listen' and self.listen.bar.get_visible():
-            margin = self.listen.bar.get_height() + 12
+            margin = MINI_CONTROLS_CLEARANCE
+        elif listen_bar:
+            margin = self.listen.bar.get_height() + TOAST_GAP
         else:
-            margin = 12
+            margin = TOAST_GAP
         if margin != self.toast_margin:
             self.toast_margin = margin
             self.toast_provider.load_from_string('.next toast { margin-bottom: %dpx; }' % margin)
@@ -1164,17 +1181,24 @@ class NextWindow(Adw.ApplicationWindow):
         if self.closed:
             return False
         if self.polling:
+            self.poll_again = True      # the read in flight may predate what the caller just changed
             return True
         self.polling = True
+        self.polls_sent += 1
+        serial = self.polls_sent
         future = self.executor.submit(session_client.request, 'inspect', {}, 3)
 
         def done(f):
             try:
-                GLib.idle_add(self.render_poll, f.result(), None)
+                GLib.idle_add(self.render_poll, f.result(), None, serial)
             except Exception as error:
-                GLib.idle_add(self.render_poll, None, str(error))
+                GLib.idle_add(self.render_poll, None, str(error), serial)
         future.add_done_callback(done)
         return True
+
+    def fresh_since(self, mark):
+        """True once the shown snapshot was read by a poll sent after ``mark`` (a ``polls_sent`` value)."""
+        return self.snapshot_poll > mark
 
     def inspect_then(self, callback):
         """Read fresh state off the GTK thread, then call ``callback(snapshot)`` (None when unreadable) on it."""
@@ -1188,10 +1212,13 @@ class NextWindow(Adw.ApplicationWindow):
             GLib.idle_add(lambda: (None if self.closed else callback(snapshot)) and False)
         future.add_done_callback(done)
 
-    def render_poll(self, snapshot, error):
+    def render_poll(self, snapshot, error, serial=0):
         self.polling = False
         if self.closed:
             return False
+        if self.poll_again:
+            self.poll_again = False
+            GLib.idle_add(lambda: self.poll() and False)
         if error:
             if self.first:
                 self.first = False
@@ -1200,6 +1227,7 @@ class NextWindow(Adw.ApplicationWindow):
             return False
         if self.offline:
             self.set_offline(None)
+        self.snapshot_poll = max(self.snapshot_poll, serial)
         self.render(snapshot)
         return False
 
@@ -1297,7 +1325,7 @@ class NextWindow(Adw.ApplicationWindow):
                     self.error_toast(snapshot['errors']['music'])
         self.guard('mini', self.mini_player.update, snapshot)
         if self.mini_window is not None:
-            self.guard('mini', self.mini_window.player.update, snapshot)
+            self.guard('mini-window', self.mini_window.player.update, snapshot)
         pending = self.pending
         if pending and pending['state'] == 'connecting' and pending['done'] and not snapshot.get('transition'):
             self.clear_pending()

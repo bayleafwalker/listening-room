@@ -126,6 +126,8 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.favorites_at = 0.
         self.library = []
         self.library_state = 'idle'
+        self.library_stale = False
+        self.library_from = None
         self.library_cancel = None
         self.channels = []
         self.channels_loaded = False
@@ -148,7 +150,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.station_id = None
         self.station_sig = None
         self.fallback_sig = None
-        self.pending_station = None
+        self.pending_station = self.saved_mark = None
         self.pending_timer = None
         self.focus_key = None
         self.focus_targets = {}
@@ -800,16 +802,20 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if self.library_state == 'idle' and self.widget.get_mapped():
             self.library_state = 'checking'
             # Whether a library is connected is a config file read: never on the GTK thread.
-            self.executor.submit(self.library_configured).add_done_callback(
+            self.executor.submit(self.library_identity).add_done_callback(
                 lambda future: GLib.idle_add(self.library_checked, future))
 
     def library_checked(self, future):
         try:
-            configured = bool(future.result())
+            identity = future.result()
         except Exception:
-            configured = False
+            identity = None
+        configured = identity is not None
         if self.closed or self.library_state != 'checking':
             return False
+        if self.recheck_library():
+            return False
+        self.library_from = identity
         self.library_state = 'loading' if configured else 'unavailable'
         if configured:
             self.load_library()
@@ -819,19 +825,41 @@ class ListenPage(ServicesMixin, SourcesMixin):
 
     def config_changed(self):
         """A library was connected (or a favourite saved): look again, so Library appears without a restart."""
-        if self.library_state in ('unavailable', 'failed', 'checking'):
+        if self.library_state in ('checking', 'loading'):
+            self.library_stale = True       # the answer in flight predates the change: ask again after it
+        elif self.library_state in ('unavailable', 'failed'):
             self.library_state = 'idle'
             self.ensure_static_loads()
+        elif self.library_state in ('ready', 'empty'):
+            # Reload only when the library connection itself changed, not for every favourite saved.
+            self.executor.submit(self.library_identity).add_done_callback(
+                lambda future: GLib.idle_add(self.library_identity_checked, future))
         self.favorites_at = 0.
         self.refresh_favorites()
 
     @staticmethod
     def library_configured():
+        return ListenPage.library_identity() is not None
+
+    @staticmethod
+    def library_identity():
+        """Which library is connected (server and user), or None. A config file read: off the GTK thread."""
         try:
             import online_services
-            return bool(online_services.config()['jellyfin'].get('user_id'))
+            jellyfin = online_services.config()['jellyfin']
         except (ImportError, KeyError, OSError, ValueError):
-            return False
+            return None
+        return (jellyfin.get('endpoint'), jellyfin['user_id']) if jellyfin.get('user_id') else None
+
+    def library_identity_checked(self, future):
+        try:
+            identity = future.result()
+        except Exception:
+            identity = None
+        if not self.closed and self.library_state in ('ready', 'empty') and identity != self.library_from:
+            self.library_state = 'idle'
+            self.ensure_static_loads()
+        return False
 
     def load_library(self):
         cancel = threading.Event()
@@ -867,10 +895,21 @@ class ListenPage(ServicesMixin, SourcesMixin):
     def apply_library(self, items, error):
         if self.closed:
             return False
+        if self.recheck_library():
+            return False
         self.library = [item for item in items or [] if isinstance(item, dict)]
         self.library_state = 'failed' if error else ('ready' if self.library else 'empty')
         self.refresh()
         return False
+
+    def recheck_library(self):
+        """True when the connections changed while the library was being checked or loaded: start over."""
+        if not self.library_stale:
+            return False
+        self.library_stale = False
+        self.library_state = 'idle'
+        self.ensure_static_loads()
+        return True
 
     # ---- now-playing bar ---------------------------------------------------
 
@@ -1613,7 +1652,10 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if not self.station_id or self.stack.get_visible_child_name() != 'station':
             return
         stations = {item.get('id'): item for item in self.snapshot.get('stations') or [] if isinstance(item, dict)}
-        if self.pending_station is None and self.station_id in stations:
+        settled = self.saved_mark is None or self.window.fresh_since(self.saved_mark)
+        if settled:
+            self.saved_mark = None
+        if self.pending_station is None and settled and self.station_id in stations:
             self.station = stations[self.station_id]
         if self.station is None:
             return
@@ -1980,6 +2022,9 @@ class ListenPage(ServicesMixin, SourcesMixin):
             saved = (result or {}).get('station')
             if isinstance(saved, dict) and saved.get('id') == self.station_id:
                 self.station = saved
+            # Polls already sent may predate this save: until one sent after it lands, keep the saved
+            # station, or the next quick choice would build on stale preferences and undo this one.
+            self.saved_mark = self.window.polls_sent
         if toast:
             self.window.toast(toast, 'Undo', (lambda: self.undo_change(undo)) if undo else None)
         if latest:
