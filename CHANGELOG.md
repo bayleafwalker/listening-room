@@ -15,7 +15,9 @@ All notable changes are recorded here. The format follows
 - CONTRIBUTING covers the asset render cost and adding a test or probe; SECURITY lists
   what the app deliberately trusts. The classic-era `listening-hub-audio`/`-mix` probes
   are reviewed: `-audio` (live network streams) is archived under `tests/probes/archive-classic/`
-  with its reasons; `-mix` stays as a manual real-systemd check.
+  with its reasons; `-mix` stays as a manual real-systemd check. `listening-session-mpris.py`
+  (real Gio MPRIS on an isolated bus; run with a built package path) is kept and its stale
+  expectation fixed: MPRIS Volume is the room volume, default 1.0.
 
 ### Added
 - Objective checks for the sounds (spectrum, event structure, distinctness, loop
