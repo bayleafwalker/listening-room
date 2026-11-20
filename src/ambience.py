@@ -205,11 +205,21 @@ def state(mode='ambience'):
 
 
 def _window(mode):
+    """The owned picture window, or None (also when hyprctl is missing or fails)."""
     try:
         clients = json.loads(_run(['hyprctl', 'clients', '-j']).stdout)
         return next((client for client in clients if client.get('class') == APP_IDS[mode]), None)
     except ValueError:
         return None
+
+
+def _hyprland():
+    """Whether hyprctl answers. Without it the desktop decides where windows go."""
+    try:
+        json.loads(_run(['hyprctl', 'clients', '-j']).stdout)
+        return True
+    except ValueError:
+        return False
 
 
 def place(where, mode='ambience'):
@@ -218,7 +228,7 @@ def place(where, mode='ambience'):
         raise AmbienceError('Choose workspace 9, Bring here, PiP, or Pin')
     client = _window(mode)
     if not client:
-        raise AmbienceError('Open a video window first')
+        raise AmbienceError('Open a video window first' if _hyprland() else 'Placement needs Hyprland')
     if not re.fullmatch(r'0x[0-9a-fA-F]+', client.get('address', '')):
         raise AmbienceError('Hyprland returned an invalid window address')
     address = json.dumps('address:' + client['address'])
@@ -355,16 +365,18 @@ def _start(value, mode='ambience', placement='9', cancel_event=None, display=Non
         _save(mode, dict(item, placement=placement, **({'audio': audio} if mode == 'video' else {})))
         # Hyprland rules handle the initial placement. This also works when
         # called outside that configured session or when opening here.
-        mapping_deadline = time.monotonic() + 3
-        while _window(mode) is None and time.monotonic() < mapping_deadline:
+        # Without Hyprland the picture stays where the desktop opened it.
+        if _window(mode) is not None or _hyprland():
+            mapping_deadline = time.monotonic() + 3
+            while _window(mode) is None and time.monotonic() < mapping_deadline:
+                cancelled()
+                time.sleep(.1)
+            if placement == 'pin':
+                place('here', mode)
             cancelled()
-            time.sleep(.1)
-        if placement == 'pin':
-            place('here', mode)
-        cancelled()
-        place(placement, mode)
-        if display:
-            place_on_display(display, mode)
+            place(placement, mode)
+            if display:
+                place_on_display(display, mode)
         return state(mode)
     except (OSError, ValueError) as error:
         if not mpv_ipc.stop(_run, unit):

@@ -132,6 +132,42 @@ class AmbienceTests(unittest.TestCase):
             self.assertEqual(run.call_args_list[0].args[0], ['hyprctl', 'dispatch', 'hl.dsp.window.float({action="set",window="address:0x321"})'])
             self.assertEqual(run.call_args_list[1].args[0], ['hyprctl', 'dispatch', 'hl.dsp.window.pin({window="address:0x321"})'])
 
+    def test_picture_starts_and_placement_explains_itself_without_hyprland(self):
+        class Connection:
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def connect(self, _path): pass
+            def settimeout(self, _timeout): pass
+            def sendall(self, _data): pass
+            def recv(self, _size): return b'{"event":"file-loaded"}\n{"event":"playback-restart"}\n'
+
+        def missing(args, **_kwargs):
+            if args[0] == 'hyprctl':
+                raise FileNotFoundError('hyprctl')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        def failing(args, **_kwargs):
+            if args[0] == 'hyprctl':
+                return mock.Mock(returncode=1, stdout='', stderr='HYPRLAND_INSTANCE_SIGNATURE not set')
+            return mock.Mock(returncode=0, stdout='', stderr='')
+
+        answers = {'idle-active': False, 'pause': False, 'media-title': 'Lake'}
+        for name, hyprctl in (('missing', missing), ('failing', failing)):
+            with self.subTest(hyprctl=name), tempfile.TemporaryDirectory() as directory, \
+                    mock.patch.dict(os.environ, {'XDG_RUNTIME_DIR': directory}), \
+                    mock.patch.object(ambience, 'STATE_HOME', Path(directory) / 'state'), \
+                    mock.patch.object(ambience.shutil, 'which', side_effect=lambda tool: '/fixture/' + tool), \
+                    mock.patch.object(ambience.subprocess, 'run', side_effect=hyprctl) as run, \
+                    mock.patch.object(ambience.socket, 'socket', side_effect=lambda *_args: Connection()), \
+                    mock.patch.object(ambience, '_ipc', side_effect=lambda command, mode: answers[command[1]]), \
+                    mock.patch.object(ambience.time, 'sleep') as sleep:
+                result = ambience.start({'id': 'lake', 'name': 'Lake', 'url': 'https://example.org/lake.mp4'}, 'ambience', placement='pin')
+                self.assertEqual(result['status'], 'Playing')
+                sleep.assert_not_called()   # no wait for a window Hyprland will never report
+                self.assertFalse([c.args[0] for c in run.call_args_list if c.args[0][:2] == ['hyprctl', 'dispatch']])
+                with self.assertRaisesRegex(ambience.AmbienceError, 'Placement needs Hyprland'):
+                    ambience.place('here', 'ambience')
+
 
 if __name__ == '__main__':
     unittest.main()
