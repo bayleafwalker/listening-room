@@ -451,6 +451,49 @@ class WindowSmoke(unittest.TestCase):
         env.service.execute('leave', {})
         env.settle(1.0)
 
+    def test_a_change_reaches_the_window_through_the_real_stream_promptly(self):
+        """End to end with the real session_client.subscribe and session_service server on a private socket."""
+        import functools
+        import session_client
+        import session_service
+        import threading
+        env = self.env
+        env.start_station_room()
+        folder = Path(tempfile.mkdtemp(prefix='listening-smoke-stream-'))
+        folder.chmod(0o700)
+        path = folder / 'session.sock'
+        service = session_service.Service(env.controller)
+        server, descriptor = session_service.make_server(path, service)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        subscribe = functools.partial(session_client.subscribe, path=str(path), backoff=(.02, .1))
+        try:
+            with mock.patch.object(session_client, 'subscribe', subscribe):
+                window = env.launch(page=None)
+                deadline = time.monotonic() + 3
+                while not window.stream_up and time.monotonic() < deadline:
+                    env.pump(.05)
+                self.assertTrue(window.stream_up, 'the stream never connected')
+                env.pump(.5)
+                mark = len(env.log)
+                env.service.execute('room_volume', {'value': 29})
+                started = time.monotonic()
+                while round(window.volume.get_value()) != 29 and time.monotonic() - started < 3:
+                    env.pump(.005)
+                elapsed = time.monotonic() - started
+                self.assertEqual(round(window.volume.get_value()), 29)
+                self.assertLess(elapsed, .3, 'the pushed change took %.3f s to reach Now' % elapsed)
+                self.assertEqual(self.inspects(mark), 0, 'the change came by a poll, not the stream')
+                window.close()
+                env.pump(.3)
+        finally:
+            service.close()
+            server.shutdown()
+            server.server_close()
+            path.unlink(missing_ok=True)
+            os.close(descriptor)
+        env.service.execute('leave', {})
+        env.settle(1.0)
+
     def test_a_read_sent_before_a_push_never_replaces_it_or_counts_as_fresh(self):
         import session_client
         env = self.env
