@@ -1754,7 +1754,7 @@ def s13_evidence_and_integration_static():
              'self.rooms.render' in window_source and 'self.listen.update' in window_source, 'integration-R1a/R1b'),
             ('integration: the hub test list registers the O2 and O3 suites',
              'test_listening_rooms_oracles.py' in (repo / 'nix/package.nix').read_text() and 'test_listening_listen.py' in (repo / 'nix/package.nix').read_text(),
-             'tests/probes/wp4-oracles.py suites and canary (the dev loop and the Nix checkPhase run the same traced suites, these two included; an unregistered test is caught or runs)')):
+             'integration-R2 (here) and tests/probes/wp4-oracles.py suites S4/S5 (the Nix checkPhase and the dev loop, traced, run the same suites, these two included)')):
         print('SUPERSEDED [ORIGINAL, superseded by %s] %s %s: source text, not behaviour' % (by, 'PASS' if ok else 'FAIL', name), flush=True)
     # integration-R1: one state change reaches both pages through the window's own poll and render.
     leave_all()
@@ -1777,6 +1777,21 @@ def s13_evidence_and_integration_static():
     window.close()
     pump(.3)
     leave_all()
+    # integration-R2: the O2 and O3 suites are run by the suite runner the dev loop and the package build share
+    # (tests/run_suites.py since WP4): it lists both by default, and running them through it passes. That the build
+    # really invokes the runner is traced in the real checkPhase by tests/probes/wp4-oracles.py suites (S4, S5).
+    import subprocess
+    suites = ['test_listening_rooms_oracles.py', 'test_listening_listen.py']
+    runner = repo / 'tests' / 'run_suites.py'
+    env = dict(os.environ, PYTHONPATH='%s:%s' % (repo / 'src', repo / 'tests'), LISTENING_HUB_SOURCE=str(repo / 'src' / 'listening_hub.py'))
+    for key in ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS'):
+        env.pop(key, None)
+    listed = subprocess.run([sys.executable, str(runner), '--list'], capture_output=True, text=True, timeout=120, env=env) if runner.exists() else None
+    ran = subprocess.run([sys.executable, str(runner)] + suites, capture_output=True, text=True, timeout=900, env=env) if runner.exists() else None
+    check('integration-R2 the shared suite runner lists the O2 and O3 suites by default and they pass when run through it',
+          listed is not None and listed.returncode == 0 and set(suites) <= set(listed.stdout.split())
+          and ran.returncode == 0 and all(('== ' + s) in ran.stdout for s in suites),
+          repr((runner.exists(), listed and listed.stdout[-300:], ran and (ran.returncode, ran.stdout[-300:], ran.stderr[-500:]))))
 
 
 def main():
