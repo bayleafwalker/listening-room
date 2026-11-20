@@ -5,11 +5,6 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
-### Changed
-- Sounds: the rain under distant thunder is now clearly audible between the
-  rolls, and the six offline sounds are matched on A-weighted (perceived)
-  loudness instead of raw RMS, so thunder is no longer far quieter than rain.
-
 ### Added
 - Objective checks for the sounds (spectrum, event structure, distinctness, loop
   seam, level, determinism): `tests/test_listening_atmosphere_character.py`.
@@ -46,6 +41,9 @@ All notable changes are recorded here. The format follows
   Radio shelf, without a restart (the snapshot carries `config_generation`).
 
 ### Changed
+- Sounds: the rain under distant thunder is now clearly audible between the
+  rolls, and the six offline sounds are matched on A-weighted (perceived)
+  loudness instead of raw RMS, so thunder is no longer far quieter than rain.
 - The six offline sounds now sound like their names. Each is synthesized from the
   events that define it instead of a filtered noise bed: dense droplets and
   runnels for rain, a warm roar with crackles, pops and hiss for the fireplace,
