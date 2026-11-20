@@ -123,9 +123,9 @@ in {
   };
   # Waybar custom module:
   programs.waybar.settings.mainBar."custom/listening" = {
-    exec = "${hub}/bin/listening-roomctl status";
+    # One long-running process: it prints a line whenever the room changes.
+    exec = "${hub}/bin/listening-roomctl status --follow";
     return-type = "json";
-    interval = 1;
     on-click = "${hub}/bin/listening-roomctl popover";
     on-click-right = "${hub}/bin/listening-room";
     on-scroll-up = "${hub}/bin/listening-roomctl volume +5";
