@@ -1,5 +1,6 @@
 """Small GTK/libadwaita building blocks for the next Listening Room window."""
 import os
+import time
 
 import gi
 gi.require_version('Gtk', '4.0')
@@ -176,13 +177,19 @@ class FocalPicture(Gtk.Widget):
         self.set_overflow(Gtk.Overflow.HIDDEN)
 
     def set_paintable(self, paintable):
-        if self.invalidated:   # a shared scene loop outlives this picture: never leave a handler on it
+        # The handler lives on the paintable (a cached texture or a shared loop that outlives this
+        # picture): connect only when it can change, pass no closure over self, and never leave one.
+        if self.invalidated:
             self.paintable.disconnect(self.invalidated)
             self.invalidated = 0
         self.paintable = paintable
-        if paintable is not None:
-            self.invalidated = paintable.connect('invalidate-contents', lambda *_: self.queue_draw())
+        if paintable is not None and not paintable.get_flags() & Gdk.PaintableFlags.CONTENTS:
+            self.invalidated = paintable.connect('invalidate-contents', FocalPicture._changed, self)
         self.queue_draw()
+
+    @staticmethod
+    def _changed(_paintable, picture):
+        picture.queue_draw()
 
     def do_measure(self, orientation, for_size):
         return 0, 0, -1, -1
@@ -213,39 +220,132 @@ def gst_ready():
         return False
 
 
-# One Gtk.MediaFile per loop file, shared by every Scene and kept for the life of the process.
-# Clearing or finalizing a Gtk.MediaFile while GStreamer's GstPlay thread is still posting messages
-# (preroll, the position tick, a pause in flight) can make that thread drop the last GstPlay
-# reference itself; GstPlay then frees itself and gst_play_main keeps using it, and the window
-# segfaults (g_object_unref <- gst_play_main). So a loop is created once, only ever paused and
-# played, and never torn down. The catalogue has a fixed, small set of loops, which bounds this.
-_LOOPS = {}       # loop path -> Gtk.MediaFile
-_WANTED = {}      # Gtk.MediaFile -> ids of the Scenes that want it playing now
+# Scene loops and GStreamer. Clearing or finalizing a Gtk.MediaFile drops GTK's reference on its
+# GstPlay. If GstPlay's own thread is posting a message at that moment (preroll, the position tick, a
+# state change, or the stop that clear() itself requests), that thread holds the last reference: the
+# player frees itself on its own thread, gst_play_main keeps using it and the window segfaults
+# (g_object_unref <- gst_play_main). So:
+# - one Gtk.MediaFile per loop file, shared by the Scenes that show it, only played and paused;
+# - a loop no Scene shows is torn down once it is prepared and has been quiet for a while, holding an
+#   extra reference on its GstPlay across clear() and dropping it on this thread seconds later, when
+#   the player is idle, so the last reference is always ours, on the main thread;
+# - if that reference cannot be taken safely (an unverified GTK build), the loop is kept instead;
+# - loops still alive at exit are never finalized (see the source at the end of this block).
+LOOP_QUIET = 1.0          # seconds a hidden loop must be prepared and quiet before teardown
+LOOP_UNPIN = 2.0          # seconds after clear() before the GstPlay reference is dropped
+_LOOPS = {}               # loop path -> _Loop
+_PINNED = []              # GstPlay pointers held across a teardown
+_ctypes = {}
 
 
-def shared_loop(path):
-    media = _LOOPS.get(path)
-    if media is None:
-        media = Gtk.MediaFile.new_for_filename(path)
-        media.set_loop(True)
-        media.set_muted(True)
-        _LOOPS[path] = media
-        _WANTED[media] = set()
-    return media
+class _Loop:
+    def __init__(self, path):
+        self.path = path
+        self.media = Gtk.MediaFile.new_for_filename(path)
+        self.media.set_loop(True)
+        self.media.set_muted(True)
+        self.users, self.wanted = set(), set()   # ids of the Scenes showing it / wanting it to play
+        self.last = time.monotonic()
+        self.notify = self.media.connect('notify', _Loop._touched, self)
+
+    @staticmethod
+    def _touched(_media, _spec, loop):
+        loop.last = time.monotonic()
+
+    def want(self, scene, playing):
+        (self.wanted.add if playing else self.wanted.discard)(id(scene))
+        if self.wanted:
+            self.media.play()
+        else:
+            self.media.pause()
 
 
-def _want(media, scene, playing):
-    wanted = _WANTED[media]
-    (wanted.add if playing else wanted.discard)(id(scene))
-    if wanted:
-        media.play()
-    else:
-        media.pause()
+def shared_loop(path, scene):
+    loop = _LOOPS.get(path)
+    if loop is None:
+        loop = _LOOPS[path] = _Loop(path)
+    loop.users.add(id(scene))
+    return loop
 
 
-# A source that never fires holds _LOOPS from C, so interpreter shutdown does not finalize the loops
-# either (that would be a teardown too); the process exits with them paused.
-GLib.timeout_add_seconds(GLib.MAXINT32, lambda *_: True, _LOOPS)
+def release_loop(loop, scene):
+    loop.want(scene, False)
+    loop.users.discard(id(scene))
+    loop.last = max(loop.last, time.monotonic())
+    if not loop.users and not _ctypes.get('sweeping'):
+        _ctypes['sweeping'] = GLib.timeout_add(250, _sweep)
+
+
+def _sweep():
+    now = time.monotonic()
+    waiting = False
+    for path, loop in list(_LOOPS.items()):
+        if loop.users or loop.path is None:
+            continue
+        media = loop.media
+        if not (media.is_prepared() or media.get_error() is not None) or now - loop.last < LOOP_QUIET:
+            waiting = True
+            continue
+        player = _player(media)
+        if player is None:
+            loop.path = None          # kept for the life of the process instead
+            continue
+        _ctypes['gobject'].g_object_ref(player)
+        _PINNED.append(player)
+        del _LOOPS[path]
+        media.disconnect(loop.notify)
+        media.clear()
+        GLib.timeout_add(int(LOOP_UNPIN * 1000), _unpin, player)
+    if not waiting:
+        _ctypes['sweeping'] = 0
+    return waiting
+
+
+def _unpin(player):
+    _PINNED.remove(player)
+    _ctypes['gobject'].g_object_unref(player)   # the last reference, here: the player stops its thread
+    # A player's threads leave their freed memory in glibc's arenas; hand it back to the system.
+    try:
+        _ctypes['ctypes'].CDLL('libc.so.6').malloc_trim(0)
+    except (KeyError, OSError, AttributeError):
+        pass
+    return False
+
+
+def _player(media):
+    """The GstPlay inside GTK's GStreamer media file, or None unless this GTK build is verified."""
+    if 'gobject' not in _ctypes:
+        _ctypes['gobject'] = None
+        if (Gtk.get_major_version(), Gtk.get_minor_version()) == (4, 24):   # struct layout read for 4.24
+            try:
+                import ctypes
+                lib = ctypes.CDLL('libgobject-2.0.so.0')
+                lib.g_type_name_from_instance.restype = ctypes.c_char_p
+                lib.g_type_name_from_instance.argtypes = [ctypes.c_void_p]
+                lib.g_object_ref.argtypes = lib.g_object_unref.argtypes = [ctypes.c_void_p]
+                get = ctypes.pythonapi.PyCapsule_GetPointer
+                get.restype, get.argtypes = ctypes.c_void_p, [ctypes.py_object, ctypes.c_char_p]
+                _ctypes.update(gobject=lib, capsule=get, ctypes=ctypes)
+            except (OSError, AttributeError):
+                pass
+    lib = _ctypes['gobject']
+    if lib is None:
+        return None
+    ctypes = _ctypes['ctypes']
+    address = _ctypes['capsule'](media.__gpointer__, None)
+    if not (lib.g_type_name_from_instance(address) or b'').startswith(b'GtkGstMediaFile'):
+        return None
+    # struct _GtkGstMediaFile { GtkMediaFile parent_instance; GstPlay *play; ... }: the GObject header
+    # (class pointer, ref count, qdata) is the whole parent instance.
+    player = ctypes.c_void_p.from_address(address + 3 * ctypes.sizeof(ctypes.c_void_p)).value
+    if not player or lib.g_type_name_from_instance(player) != b'GstPlay':
+        return None
+    return player
+
+
+# A source that never fires holds the live loops from C, so interpreter shutdown never finalizes one
+# (that would be a teardown too, unguarded); the process exits with them paused.
+GLib.timeout_add_seconds(GLib.MAXINT32, lambda *_: True, (_LOOPS, _PINNED))
 
 
 class Scene(Gtk.Overlay):
@@ -255,14 +355,25 @@ class Scene(Gtk.Overlay):
         self.add_css_class('scene-fallback')
         self.picture = FocalPicture()
         self.set_child(self.picture)
-        self.media = None
+        self.media = self.loop = None
         self.error_handler = 0
         self.still = None
         self.key = None
         self.want_motion = False
         self.mapped = self.minimized = False
-        self.connect('map', lambda *_: self._visibility(mapped=True))
-        self.connect('unmap', lambda *_: self._visibility(mapped=False))
+        # Plain functions, not closures over self: a handler holding its own widget is a cycle that
+        # keeps every closed preview (and its loop) alive.
+        self.connect('map', Scene._mapped, True)
+        self.connect('unmap', Scene._mapped, False)
+
+    @staticmethod
+    def _mapped(scene, mapped):
+        scene._visibility(mapped=mapped)
+
+    @staticmethod
+    def _failed(media, _spec, scene):
+        if media.get_error() is not None:
+            scene._fall_back()
 
     def show_room(self, assets, motion):
         key = (assets.get('still'), assets.get('loop'), bool(motion))
@@ -275,12 +386,13 @@ class Scene(Gtk.Overlay):
         self.still = texture = texture_for(still)
         self.picture.set_paintable(texture)
         if self.want_motion:
-            media = shared_loop(assets['loop'])
+            self.loop = shared_loop(assets['loop'], self)
+            self.media = media = self.loop.media
             if media.get_error() is not None:   # this loop failed before: still art, like _fall_back
                 self.want_motion = False
+                self._drop_media()
                 return
-            self.error_handler = media.connect('notify::error', lambda m, *_: m.get_error() and self._fall_back())
-            self.media = media
+            self.error_handler = media.connect('notify::error', Scene._failed, self)
             self.picture.set_paintable(media)
             self._visibility(mapped=self.get_mapped())
 
@@ -289,27 +401,29 @@ class Scene(Gtk.Overlay):
         self.picture.set_paintable(self.still)
 
     def _drop_media(self):
-        """Stop wanting the shared loop (it pauses when no other Scene wants it); never clear it."""
-        if self.media is not None:
-            media, self.media = self.media, None
-            media.disconnect(self.error_handler)
+        """Let go of the shared loop: it pauses when no Scene wants it, and goes when none shows it."""
+        if self.loop is not None:
+            loop, self.loop, self.media = self.loop, None, None
+            if self.error_handler:
+                loop.media.disconnect(self.error_handler)
             self.error_handler = 0
-            _want(media, self, False)
+            if self.picture.paintable is loop.media:
+                self.picture.set_paintable(self.still)
+            release_loop(loop, self)
 
     def _visibility(self, mapped=None, minimized=None):
         """Play only while the window is on screen: mapped and not minimized or suspended."""
         self.mapped = self.mapped if mapped is None else mapped
         self.minimized = self.minimized if minimized is None else minimized
-        if self.media is not None:
-            _want(self.media, self, self.mapped and not self.minimized)
+        if self.loop is not None:
+            self.loop.want(self, self.mapped and not self.minimized)
 
     @property
     def playing_motion(self):
-        return self.media is not None and id(self) in _WANTED[self.media] and self.media.get_playing()
+        return self.loop is not None and id(self) in self.loop.wanted and self.media.get_playing()
 
     def close(self):
         self._drop_media()
-        self.picture.set_paintable(self.still)   # let go of the shared loop
 
 
 def pop_button(icon, name, popover):
