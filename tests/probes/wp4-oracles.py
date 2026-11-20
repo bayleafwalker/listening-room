@@ -41,6 +41,11 @@ HOOK = r'''
 # Written by tests/probes/wp4-oracles.py into a throwaway copy only. Never commit.
 import os, sys
 _argv0 = os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else ''
+# A runner that starts a suite as `python -c "...runpy.run_path(argv[0])..." FILE` (run_suites.py's
+# network guard) runs FILE as __main__: attribute the run to FILE only when the -c code runs a path.
+_orig = getattr(sys, 'orig_argv', [])
+if _argv0 == '-c' and len(sys.argv) > 1 and '-c' in _orig and 'run_path' in _orig[_orig.index('-c') + 1]:
+    _argv0 = os.path.basename(sys.argv[1])
 
 
 def _chain():
@@ -456,6 +461,47 @@ def cmd_judge(a):
         return 'o5 acceptance replaced by a crash with no results'
     rc, text, _ = replay('J7', crash)
     check('J7 a probe that crashes before reporting fails judging', rc != 0, text[-800:])
+
+    def rename(store_dir, prefer, old, new):
+        """Rewrite one check name everywhere a recorded probe reported it (stdout and JSON results)."""
+        slot = next(s for s in sorted(store_dir.iterdir()) if s.is_dir() and prefer in s.name)
+        hits = 0
+        for path in [slot / 'stdout'] + list((slot / 'files').rglob('*.json')):
+            text = path.read_text(errors='ignore')
+            if path.suffix == '.json':
+                old_j, new_j = json.dumps(old)[1:-1], json.dumps(new)[1:-1]
+                hits += text.count(old_j)
+                text = text.replace(old_j, new_j)
+            else:
+                hits += text.count(old)
+                text = text.replace(old, new)
+            path.write_text(text)
+        if not hits:
+            raise RuntimeError('%r not found in %s' % (old, slot.name))
+        return '%r -> %r in %s (%d places)' % (old, new, slot.name, hits)
+
+    def retime(store_dir):
+        slot = next(s for s in sorted(store_dir.iterdir()) if s.is_dir() and 'o6-acceptance' in s.name)
+        done = []
+        for path in [slot / 'stdout'] + list((slot / 'files').rglob('*.json')):
+            text = path.read_text(errors='ignore')
+            new = re.sub(r'(within 150 ms[^\n"]*?\()(\d+)( ms\))', lambda m: m.group(1) + str(int(m.group(2)) + 37) + m.group(3), text)
+            new = re.sub(r'(\(measured \[)([^\]]*)', lambda m: m.group(1) + ', '.join('%.1f' % (float(x) + 3.3) for x in m.group(2).split(', ')), new)
+            if new != text:
+                done.append(path.name)
+            path.write_text(new)
+        return 'o6 measured values perturbed in ' + ', '.join(done)
+    rc, text, _ = replay('J8a', retime)
+    check('J8a measured values that differ from the recording (o6 timings shifted) still pass judging', rc == 0, text[-800:])
+    for label, prefer, old, new in (
+            ('J8b a check whose stated threshold changed (o2 4j ">= 480 px" -> ">= 300 px") fails judging',
+             'o2-acceptance', '4j preview art area is large (>= 480 px wide at 1200)', '4j preview art area is large (>= 300 px wide at 1200)'),
+            ('J8c a check whose stated scenario changed (o3 delays [0.9, 0] -> [0, 0]) fails judging',
+             'o3-acceptance', '7 saves under injected delays [0.9, 0] end', '7 saves under injected delays [0, 0] end'),
+            ('J8d dropping the "[ORIGINAL, superseded by R1]" marker from o4 5i fails judging',
+             'o4-acceptance', '5i [ORIGINAL, superseded by R1] the Recordings', '5i the Recordings')):
+        rc, text, _ = replay(label, lambda s, prefer=prefer, old=old, new=new: rename(s, prefer, old, new))
+        check(label, rc != 0, text[-800:])
 
     def flip_o4_original(store_dir):
         slot = next(s for s in sorted(store_dir.iterdir()) if s.is_dir() and 'o4-acceptance' in s.name)
