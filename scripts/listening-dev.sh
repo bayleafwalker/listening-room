@@ -39,7 +39,7 @@ case "${1:-}" in
       # Mirror the build sandbox: never read the live desktop session state.
       scratch=$(mktemp -d); trap "rm -rf \"$scratch\"" EXIT
       export HOME=$scratch XDG_STATE_HOME=$scratch/state XDG_CONFIG_HOME=$scratch/config XDG_CACHE_HOME=$scratch/cache
-      unset XDG_RUNTIME_DIR WAYLAND_DISPLAY DISPLAY DBUS_SESSION_BUS_ADDRESS
+      unset XDG_RUNTIME_DIR WAYLAND_DISPLAY DISPLAY DBUS_SESSION_BUS_ADDRESS HYPRLAND_INSTANCE_SIGNATURE
       export LISTENING_TEST_MPV=$(command -v mpv)
       for suite in "$@"; do echo "== $suite"; python3 "$suite"; done
       cd "$(dirname "$LISTENING_HUB_SOURCE")" && python3 validate_vistas.py "$LISTENING_HUB_ASSETS"
@@ -51,7 +51,7 @@ case "${1:-}" in
     runtime=$(mktemp -d); trap 'rm -rf "$runtime"' EXIT; chmod 700 "$runtime"
     # No portals and a private runtime dir: D-Bus activation must not reach
     # the live compositor or mount the documents portal in the real session.
-    in_shell env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
+    in_shell env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u HYPRLAND_INSTANCE_SIGNATURE \
       XDG_RUNTIME_DIR="$runtime" GDK_BACKEND=x11 GDK_DEBUG=no-portals \
       xvfb-run -a -s '-screen 0 1440x1000x24' \
       dbus-run-session python3 "tests/probes/${3:-listening-session-ui}.py" --output "$out"
@@ -63,7 +63,7 @@ case "${1:-}" in
     out=${2:-"${TMPDIR:-/tmp}/listening-acceptance"}
     runtime=$(mktemp -d); trap 'rm -rf "$runtime"' EXIT; chmod 700 "$runtime"
     gui() {
-      in_shell env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS \
+      in_shell env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u HYPRLAND_INSTANCE_SIGNATURE \
         XDG_RUNTIME_DIR="$runtime" GDK_BACKEND=x11 GDK_DEBUG=no-portals \
         xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session python3 "$@"
     }
