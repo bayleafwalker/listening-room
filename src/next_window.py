@@ -1036,7 +1036,8 @@ class NextWindow(Adw.ApplicationWindow):
             if self.current_page() == 'browse' and self.browse.get_visible_child_name() == 'listen':
                 return self.listen_back()
             return self.rooms.close_preview()
-        return False
+        # Space and the arrows normally stop in the capture phase; the same rules apply when they arrive here.
+        return self.key_captured(_controller, keyval, _code, state)
 
     def key_captured(self, _controller, keyval, _code, state):
         """Space plays or pauses and Up/Down set the room volume, before any focused button sees them.
@@ -1104,7 +1105,7 @@ class NextWindow(Adw.ApplicationWindow):
         if compact != widget.has_css_class('compact'):
             (widget.add_css_class if compact else widget.remove_css_class)('compact')
         self.fit_controls(width)
-        self.place_toasts(widget.get_height())
+        self.place_toasts()
         return GLib.SOURCE_CONTINUE
 
     def fit_controls(self, width):
@@ -1117,12 +1118,17 @@ class NextWindow(Adw.ApplicationWindow):
         self.mix_summary.set_visible(tier == 'wide')
         self.volume.set_size_request({'wide': 170, 'medium': 120, 'narrow': 84}[tier], -1)
 
-    def place_toasts(self, height):
-        """Toasts sit where they cover no control: at the top in Now and the mini layout, above Listen's
-        now-playing bar, and at the bottom elsewhere."""
+    def place_toasts(self):
+        """Toasts sit where they cover no control: above Now's control row or above the open Mix, above
+        the mini layout's controls and Listen's now-playing bar, at the bottom elsewhere.
+
+        Every margin comes from content that does not depend on the window's height: a margin that
+        followed the height would grow the window through the toast's own size request."""
         page = self.current_page()
-        if page in ('now', 'mini'):
-            margin = max(12, height - 150)
+        if page == 'now':
+            margin = self.mix.get_height() + 48 if self.sheet.get_open() else 140
+        elif page == 'mini':
+            margin = 96
         elif page == 'browse' and self.browse.get_visible_child_name() == 'listen' and self.listen.bar.get_visible():
             margin = self.listen.bar.get_height() + 12
         else:
