@@ -9,6 +9,8 @@ All notable changes are recorded here. The format follows
 - One suite list: `tests/run_suites.py` runs every `tests/test_*.py` for both the package
   check and `scripts/listening-dev.sh test`; exceptions are named with reasons in
   `tests/suites-manual.txt`. The WP1 and WP3 oracle suites now run in the package check.
+- `tests/netguard.py` blocks non-loopback network access in every suite `run_suites.py` starts;
+  the session evidence probe now fakes the World radio search instead of querying the live directory.
 - Acceptance probe expectations live in `tests/probes/expected/` and are judged by check
   name (`acceptance_verdict.py`) instead of pass counts in the dev script.
 - `nix/package.nix` has one launcher helper; the dev shell reuses the package's Python.

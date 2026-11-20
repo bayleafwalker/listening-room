@@ -5,7 +5,7 @@
 
 RESULTS_DIR holds the probe's results file (the ``*acceptance*.json`` it writes: a list of
 ``{criterion, pass}`` records, or a dict holding that list). ``expected/NAME.checks`` lists one
-check name per line. A line starting with ``!`` is a known failure, kept visible on purpose
+check name per line; values a name embeds (timings, counts in (), [] or {}) are ignored when comparing. A line starting with ``!`` is a known failure, kept visible on purpose
 (the superseded "5i [ORIGINAL]" check in O4); comment lines start with ``# ``.
 
 The run passes when:
@@ -19,9 +19,22 @@ recorded as a known failure and printed, so review the diff: a ``!`` line needs 
 from collections import Counter
 import json
 from pathlib import Path
+import re
 import sys
 
 HERE = Path(__file__).resolve().parent
+
+
+def stable(name):
+    """A check's name without the values it measured, so timings never change its identity.
+
+    Drops [...] and {...} groups, then (...) groups, that contain a digit, and collapses
+    spaces. The words and IDs that say what is checked stay, so a vanished or renamed check
+    is still found.
+    """
+    name = re.sub(r'\[[^\]]*\d[^\]]*\]|\{[^}]*\d[^}]*\}', '', name)
+    name = re.sub(r'\([^()]*\d[^()]*\)', '', name)
+    return re.sub(r'\s+', ' ', name).strip()
 
 
 def load_results(directory):
@@ -34,9 +47,9 @@ def load_results(directory):
     results = []
     for item in data:
         if isinstance(item, dict):
-            results.append((item.get('criterion', item.get('name')), bool(item.get('pass', item.get('ok')))))
+            results.append((stable(item.get('criterion', item.get('name'))), bool(item.get('pass', item.get('ok')))))
         else:
-            results.append((item[0], bool(item[1])))
+            results.append((stable(item[0]), bool(item[1])))
     return results
 
 
@@ -48,10 +61,10 @@ def load_expected(path):
             if line.startswith('# ') or line == '#':
                 comments.append(line)
             elif line.startswith('!'):
-                known[line[1:]] += 1
-                names[line[1:]] += 1
+                known[stable(line[1:])] += 1
+                names[stable(line[1:])] += 1
             elif line:
-                names[line] += 1
+                names[stable(line)] += 1
     return names, known, comments
 
 

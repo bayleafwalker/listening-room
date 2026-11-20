@@ -24,7 +24,9 @@ with a `__main__` guard. That is all: `tests/run_suites.py` runs every `tests/te
 and both the package build and `scripts/listening-dev.sh test` use it. A file that
 must not run by default (it needs built assets or minutes of CPU) gets a line with its
 reason in `tests/suites-manual.txt`; run it by name or with `test --all`. A test file not
-named `test_listening_*.py` fails the run, so none can be forgotten. Suites use isolated
+named `test_listening_*.py` fails the run, so none can be forgotten. Suites run with
+`tests/netguard.py` installed: a connection to anything but loopback fails with "fake it",
+so fake the network in tests and probes. Suites use isolated
 HOME and XDG state and never touch your desktop session.
 
 **The asset render is expensive.** `nix build` renders every room's scene loop and sound
