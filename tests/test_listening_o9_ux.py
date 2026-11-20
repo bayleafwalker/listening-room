@@ -11,6 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(os.environ.get('LISTENING_HUB_SOURCE', Path(__file__).resolve().parents[1] / 'src/listening_hub.py')).parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import listening_hub as hub
+import player_core
 import next_actions
 import next_model as model
 import next_station
@@ -132,9 +133,11 @@ class Controller(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {'XDG_CONFIG_HOME': str(base / 'config'), 'XDG_STATE_HOME': str(base / 'state')})
         patcher.start()
         self.addCleanup(patcher.stop)
-        state = mock.patch.object(hub, 'STATE', base / 'hub-state')
-        state.start()
-        self.addCleanup(state.stop)
+        # listening_hub re-exports STATE from player_core, which owns the favourites: patch both.
+        for module in (hub, player_core):
+            state = mock.patch.object(module, 'STATE', base / 'hub-state')
+            state.start()
+            self.addCleanup(state.stop)
         self.directory = base / 'controller'
 
     def controller(self):
