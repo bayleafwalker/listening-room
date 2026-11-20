@@ -218,8 +218,32 @@ def room_title(snapshot):
     music = active.get('music') or {}
     station = music.get('station') if isinstance(music.get('station'), dict) else {}
     layer = _layer(snapshot or {}, 'music')
-    return (station.get('name') or layer.get('station') or music.get('name') or layer.get('name')
-            or active.get('name') or 'Your listening room')
+    for name in (station.get('name'), layer.get('station'), music.get('name'), layer.get('name'), active.get('name')):
+        if not generic_name(name):
+            return name
+    return 'Your listening room'
+
+
+GENERIC_NAMES = frozenset({'', 'your listening room', 'listening room', 'untitled'})
+
+
+def generic_name(name):
+    """True for a name that says nothing about the room ("Your listening room", empty)."""
+    return (name or '').strip().lower() in GENERIC_NAMES
+
+
+def shown_name(snapshot, catalogue=()):
+    """The active room's title: its own name, or what plays when it is ad hoc or has only a generic name."""
+    active = (snapshot or {}).get('active') or {}
+    if ad_hoc(snapshot, catalogue) or generic_name(active.get('name')):
+        return room_title(snapshot)
+    return active.get('name')
+
+
+def suggested_name(snapshot):
+    """What Save as my room offers: the room's own name, else what plays."""
+    name = ((snapshot or {}).get('active') or {}).get('name')
+    return room_title(snapshot) if generic_name(name) else name
 
 
 def fallback_scene(snapshot, presets, catalogue=()):

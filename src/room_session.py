@@ -328,7 +328,11 @@ class Controller:
         self.settings = dict(placement='here', still=False, reduced_motion=False,
                              pause_on_disconnect=True, duck_on_call=False, keep_controls=False)
         self.settings.update(stored.get('settings') or {} if isinstance(stored, dict) else {})
-        if self.settings.get('placement') == '9' and not self.settings.get('placement_chosen'):
+        # Placement bookkeeping lives beside the settings, not in them (the snapshot shows settings).
+        marks = stored.get('placement') if isinstance(stored, dict) and isinstance(stored.get('placement'), dict) else {}
+        self.placement_chosen = bool(marks.get('chosen') or self.settings.pop('placement_chosen', False))
+        self.placement_migrated = bool(marks.get('migrated'))
+        if self.settings.get('placement') == '9' and not self.placement_chosen:
             self.settings['placement'] = 'here'
         # Session-wide multiplier (percent) over the Music and Ambience levels.
         # It never changes a layer's own level or mute, so the balance is kept.
@@ -375,6 +379,7 @@ class Controller:
         self.metadata_jobs = {}
         self.station_history = (stored.get('station_history') or [])[:20] if isinstance(stored, dict) else []
         self.station_memory = (stored.get('station_memory') or {}) if isinstance(stored, dict) and isinstance(stored.get('station_memory') or {}, dict) else {}
+        self._migrate_recipe_placement()
         self.recovery_blocked = False
         self.verified_units = []
         marker_path = self.directory / 'verified-playback.json'
@@ -614,7 +619,31 @@ class Controller:
         hub.save_json(self.directory / 'session.json', {'version': 1, 'last_session': self.last_session,
                        'settings': self.settings, 'recent': self.recent, 'station_history': self.station_history,
                        'station_memory': self.station_memory, 'room_volume': self.room_volume,
-                       'last_entered_at': self.last_entered_at})
+                       'last_entered_at': self.last_entered_at,
+                       'placement': {'chosen': self.placement_chosen, 'migrated': self.placement_migrated}})
+
+    def _migrate_recipe_placement(self):
+        """Once, when no placement was ever chosen: the last room and saved rooms recorded while workspace 9
+        was the implicit default open Here too. A placement chosen later (explicitly) is kept."""
+        if self.placement_chosen or self.placement_migrated:
+            return
+
+        def moved(recipe):
+            picture = recipe.get('picture') if isinstance(recipe, dict) else None
+            if isinstance(picture, dict) and picture.get('placement') == '9':
+                picture['placement'] = 'here'
+                return True
+            return False
+        try:
+            last = moved(self.last_session)
+            variants = hub.load_json(self.directory / 'room-variants.json', [])
+            if isinstance(variants, list) and [v for v in variants if moved(v)]:
+                hub.save_json(self.directory / 'room-variants.json', variants)
+            self.placement_migrated = True
+            if last or (self.directory / 'session.json').exists():
+                self._persist()
+        except (OSError, ValueError):
+            pass   # the default stays Here; the recipes are moved on the next start
 
     def _timers(self):
         timers = dict(self.timer_ends)
@@ -1697,12 +1726,14 @@ class Controller:
                 # the session's settings nor its durable return offer changes.
                 adapter.configure(**routing)
             self.settings = dict(previous, **values)
+            chosen_before = self.placement_chosen
             if 'placement' in values:
-                self.settings['placement_chosen'] = True
+                self.placement_chosen = True
             try:
                 self._persist()
             except (OSError, ValueError):
                 self.settings = previous
+                self.placement_chosen = chosen_before
                 if prior_routing is not None:
                     try:
                         adapter.configure(**prior_routing)

@@ -636,7 +636,7 @@ class RoomsPage:
             line.append(heading)
             line.append(label(detail, [], wrap=True))
             box.append(line)
-        entry = Gtk.Entry(text=active.get('name', ''), activates_default=True)
+        entry = Gtk.Entry(text=model.suggested_name(snapshot), activates_default=True)
         name_it(entry, 'Room name', None)
         notice = label('This replaces your saved room with the same name.', ['preview-note'], wrap=True)
         box.append(entry)

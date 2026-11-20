@@ -70,6 +70,17 @@ class ListenFirst(unittest.TestCase):
         self.assertEqual(model.room_title(snapshot), 'Groove Salad')
         self.assertFalse(model.ad_hoc({'active': room()}, CATALOGUE))
 
+    def test_a_room_saved_under_a_generic_name_is_titled_and_saved_by_what_plays(self):
+        saved = {'id': 'variant-your', 'room_id': None, 'name': 'Your listening room',
+                 'music': {'source_id': 'groove', 'name': 'Groove Salad'}}
+        snapshot = {'active': saved, 'variants': [saved]}
+        self.assertFalse(model.ad_hoc(snapshot, CATALOGUE))
+        self.assertEqual(model.shown_name(snapshot, CATALOGUE), 'Groove Salad')
+        self.assertEqual(model.suggested_name(snapshot), 'Groove Salad')
+        named = dict(saved, name='Rainy reading')
+        self.assertEqual(model.shown_name({'active': named, 'variants': [named]}, CATALOGUE), 'Rainy reading')
+        self.assertEqual(model.suggested_name({'active': named}), 'Rainy reading')
+
     def test_a_room_without_a_scene_falls_back_to_the_last_scene_then_a_default(self):
         last = room()
         assets = model.fallback_scene({'last_session': last}, PRESETS, CATALOGUE)
@@ -143,6 +154,32 @@ class Controller(unittest.TestCase):
         (self.directory / 'session.json').write_text(json.dumps({'version': 1, 'settings': {'placement': '9', 'still': True}}))
         settings = self.controller().snapshot()['settings']
         self.assertEqual((settings['placement'], settings['still']), ('here', True))
+
+    def test_recipes_recorded_under_the_old_default_open_here_once(self):
+        self.directory.mkdir(parents=True)
+        last = {'id': 'custom', 'name': 'Late room', 'picture': {'enabled': True, 'placement': '9'}}
+        variant = {'id': 'variant-a', 'name': 'A', 'music': {}, 'picture': {'enabled': True, 'placement': '9'}}
+        (self.directory / 'session.json').write_text(json.dumps({'version': 1, 'last_session': last,
+                                                                 'settings': {'placement': '9'}}))
+        (self.directory / 'room-variants.json').write_text(json.dumps([variant]))
+        controller = self.controller()
+        self.assertEqual(controller.last_session['picture']['placement'], 'here')
+        self.assertEqual(controller.variants()[0]['picture']['placement'], 'here')
+        self.assertNotIn('placement_chosen', controller.snapshot()['settings'])
+        # Once: a room placed on workspace 9 afterwards keeps it.
+        variants = json.loads((self.directory / 'room-variants.json').read_text())
+        variants[0]['picture']['placement'] = '9'
+        (self.directory / 'room-variants.json').write_text(json.dumps(variants))
+        controller.close()
+        self.assertEqual(self.controller().variants()[0]['picture']['placement'], '9')
+
+    def test_an_explicit_choice_keeps_the_recipes_as_they_are(self):
+        self.directory.mkdir(parents=True)
+        last = {'id': 'custom', 'name': 'Late room', 'picture': {'enabled': True, 'placement': '9'}}
+        (self.directory / 'session.json').write_text(json.dumps({'version': 1, 'last_session': last,
+                                                                 'settings': {'placement': '9', 'placement_chosen': True}}))
+        controller = self.controller()
+        self.assertEqual((controller.settings['placement'], controller.last_session['picture']['placement']), ('9', '9'))
 
     def test_the_config_generation_changes_when_a_library_or_favourite_is_saved(self):
         controller = self.controller()
