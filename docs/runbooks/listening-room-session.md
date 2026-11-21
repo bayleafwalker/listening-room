@@ -59,6 +59,40 @@ The save/update/play-next arguments are JSON objects. IDs come from
 `listening-roomctl stations`, the current session's Recent view, or the
 Jellyfin library picker.
 
+### YouTube: Play, Watch and Show as scene
+
+Every YouTube result, suggestion and pasted YouTube link offers three ways to use it:
+
+- **Play** sends the audio to the room's Music (Tune in only for a live stream).
+- **Watch** opens the video with sound in its own player window: the `video` mode of
+  the picture engine (`ambience.py`, app id `org.kotona.ListeningVideo`), placed like
+  the scene. It is not a layer. The room's Music and Ambience pause the way Pause does
+  and the Scene keeps going; Now shows "Watching · ‹title›" with Stop watching. When the
+  video stops (Stop watching, the window closed, or the video ended, which closes the
+  window), a toast offers Resume. The room never resumes on its own. Leaving the room
+  closes the video too. With no room, Watch just plays.
+- **Show as scene** puts the video in the picture layer, silently (the existing `link`
+  destination `picture`). A saved or catalogue room is then marked Changed, with Save
+  as my room.
+
+The controller action is `video`: `{"action": "start", "url": "https://www.youtube.com/watch?v=…",
+"name": "…"}` is queued behind other room changes (Pause and Leave cancel it while it
+opens); `{"action": "stop"}` answers at once. Only public YouTube video links are
+accepted. While the window is open, the snapshot carries `video` with `status`
+(Opening, Playing or Paused), `name`, `url`, `started_at` and `room_paused`; the room's
+resume offer then has `reason: "video"`. A failed start leaves `errors.video` and keeps
+the room paused with its resume offer.
+
+Before you type, the YouTube scope shows Your saved YouTube (stations and history with a
+YouTube source, no network), "For ‹room›" (two short `ytsearch` queries built from the
+active catalogue room's tags and subtitle) and "Live now" (a `results?search_query=`
+search with YouTube's live filter). No account or cookies are used. Results are cached
+in `$XDG_CACHE_HOME/listening-hub/youtube-shelves.json` with their fetch time: they show
+at once, refresh off the GTK thread at most hourly (a failed refresh retries after ten
+minutes and keeps the shelf), and entries older than a day are dropped. The cache is
+re-validated on read: rows are rebuilt from 11-character video ids. Delete the file to
+start fresh. Personalised recommendations need a YouTube account and are not offered.
+
 ## Recording metadata
 
 Open **Metadata** beneath a selected Jellyfin track in the library view. Enrich

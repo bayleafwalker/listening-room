@@ -79,6 +79,21 @@ def destinations(preview):
     return [(key, text) for key, text in DESTINATIONS if key in actions]
 
 
+# A YouTube video's sheet, in the same order and words as its Listen row: Play, Watch (with
+# sound, its own window), Show as scene (silent), Play as ambience, Open elsewhere.
+YOUTUBE_ORDER = (('music', 'Play'), ('video', 'Watch'), ('picture', 'Show as scene'),
+                 ('atmosphere', 'Play as ambience'), ('original', 'Open elsewhere'))
+
+
+def sheet_destinations(preview):
+    """What the link sheet offers: the link's destinations, plus Watch for a YouTube video."""
+    offered = destinations(preview)
+    if (preview or {}).get('kind') != 'youtube' or 'music' not in dict(offered):
+        return offered
+    keys = set(dict(offered)) | {'video'}
+    return [(key, text) for key, text in YOUTUBE_ORDER if key in keys]
+
+
 def non_public(value):
     """True when the link's host is this machine or a private network: localhost, loopback,
     private, link-local, unspecified or `.local` names, including odd numeric spellings."""
@@ -154,7 +169,7 @@ class LinkSheet(Adw.Dialog):
         heading.append(url)
         heading.append(_text(detail(preview), 'caption'))
         body.append(heading)
-        offered = destinations(preview)
+        offered = sheet_destinations(preview)
         if any(key != 'original' for key, _text_ in offered):
             note = _text('Choose what to do with this link. Nothing starts until you choose.',
                          'caption')
@@ -165,6 +180,8 @@ class LinkSheet(Adw.Dialog):
         buttons = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         for key, text in offered:
             button = Gtk.Button(label=text)
+            if key == 'video':
+                button.set_tooltip_text('Watch with sound in its own window')
             if key == 'music':
                 button.add_css_class('suggested-action')
                 button.add_css_class('pill')

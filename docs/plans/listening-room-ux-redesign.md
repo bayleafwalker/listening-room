@@ -277,7 +277,9 @@ Each retired surface has its reason:
   per-player volume.
 - **Video with sound for a bare video-file link:** the Link sheet never offered it. A
   YouTube link plays its audio through Play, while a plain video file opens only as a
-  silent scene. This is a recorded loss.
+  silent scene. This is a recorded loss. *Reversed for YouTube on 2026-11-20* (see
+  Decisions taken): YouTube videos can now be watched with sound. A plain video-file link
+  still opens only as a silent scene.
 
 ## Acceptance criteria
 
@@ -329,3 +331,23 @@ reason; it is never silently weakened.
 - **Room volume is a controller concept,** not a UI-only scale, so every surface agrees.
 - **Retire Scenes and settings profiles.** No saved user data is affected (checked
   2026-11-17).
+- **YouTube: both a silent scene and with sound (user decision, 2026-11-20).** The
+  user's words: "I'd offer both options for silent scene and sound". This reverses the
+  recorded loss under Retired for YouTube. Every YouTube row and YouTube link offers
+  Play (audio as the room's Music), **Watch** (video with sound) and **Show as scene**
+  (silent, the picture layer only). Watch is its own player window (the existing `video`
+  mode of the picture engine, under its own app id), not a layer, and never audio and
+  picture as two players: two independently resolved mpv processes have no shared clock,
+  so they would start seconds apart and drift. Starting Watch pauses the room's Music and
+  Ambience the way Pause does, with the resume offer recorded; the Scene keeps going. Now
+  shows "Watching · ‹title›" with Stop watching. When the video stops (Stop watching, the
+  window closed or the video ended) a toast offers Resume; it never resumes on its own.
+  With no room, Watch just plays. Show as scene marks the room Changed, with Save as my
+  room. The controller gains an additive `video` action (start, stop) and a `video`
+  snapshot field.
+- **YouTube suggestions before you type, without an account.** The YouTube scope shows
+  Your saved YouTube (stations and history, no network), "For ‹room›" (short searches
+  built from the room's own tags and subtitle) and "Live now" (YouTube's live filter).
+  The last results are cached on disk, shown at once, refreshed off the GTK thread at
+  most hourly and dropped after a day; a failed refresh keeps what was there.
+  Personalised recommendations need the user's YouTube account and are not built.

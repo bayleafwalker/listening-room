@@ -199,6 +199,12 @@ def state(mode='ambience'):
                       has_audio=mode == 'video',
                       volume=_ipc(['get_property', 'volume'], mode) if mode == 'video' else 0,
                       muted=_ipc(['get_property', 'mute'], mode) if mode == 'video' else True)
+        if mode == 'video':
+            # The window keeps its last frame at the end (--keep-open); Watch closes it then.
+            try:
+                result['ended'] = _ipc(['get_property', 'eof-reached'], mode) is True
+            except (OSError, ValueError):
+                result['ended'] = False
         return result
     except (OSError, ValueError):
         return None

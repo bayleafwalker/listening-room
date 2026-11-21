@@ -26,6 +26,7 @@ from next_async import call_on_main, error_text, pool, run_async
 from next_mini import MINI_CSS, MiniPlayer, MiniWindow
 from next_mix import MixSheet
 from next_rooms import RoomsPage
+from next_watching import Watching
 from next_widgets import (FocalPicture, choose_renderer, show_texture, OutputPopover, Scene, TimerPopover, accent_css, icon_button,
                           install_css, label, menu_item, name_it, pop_button)
 
@@ -336,8 +337,10 @@ class NextWindow(Adw.ApplicationWindow):
         # Tune in replaced this room's music: say so; Save as my room… is in the Mix and the toast.
         self.changed_chip = label('Changed', ['room-changed'])
         self.changed_chip.set_visible(False)
-        self.changed_chip.set_tooltip_text('The music differs from the saved room. Save it from the Mix.')
+        self.changed_chip.set_tooltip_text('The music or scene differs from the saved room. Save it from the Mix.')
         chips.append(self.changed_chip)
+        self.watching = Watching(self)      # "Watching · title" with Stop watching (the Watch window)
+        chips.append(self.watching.chip)
         self.room_name = label('', ['room-name'], wrap=True)
         line = Gtk.Box(spacing=8)
         self.now_line = label('', ['now-line'], ellipsize=True)
@@ -745,7 +748,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.listen_shown = shown
 
     def show_now(self):
-        if not self.snapshot.get('active'):
+        if not self.snapshot.get('active') and not self.snapshot.get('video'):
             self.toast('You are not in a room yet')
             return
         self.show_page('now')
@@ -1402,6 +1405,7 @@ class NextWindow(Adw.ApplicationWindow):
                 self.listen.config_changed()
         self.guard('rooms', self.rooms.render, snapshot, changed)
         self.guard('listen', self.listen.update, snapshot, changed)
+        self.guard('watching', self.watching.update, snapshot)
         active = snapshot.get('active')
         if not active:
             self.show_room_volume(snapshot)     # the slider never reads 0 while the stored volume is not 0
@@ -1448,8 +1452,8 @@ class NextWindow(Adw.ApplicationWindow):
         elif active:
             if self.due('now', playing_changed, *now_state):
                 self.guard('now', self.render_now, snapshot)
-        elif self.current_page() == 'now':
-            self.show_rooms()
+        elif self.current_page() == 'now' and not snapshot.get('video'):
+            self.show_rooms()          # with a video playing and no room, Now shows Watching (next_watching)
         if not active and not self.pending:
             self.listen_first = False
         return False

@@ -29,6 +29,28 @@ All notable changes are recorded here. The format follows
   `refresh()` without deadlocking.
 
 ### Added
+- **Watch** a YouTube video with sound, from every YouTube result, shelf row and the
+  YouTube link sheet. It opens in its own player window (not as audio plus picture),
+  pauses the room's Music and Ambience the way Pause does, and Now shows
+  "Watching · ‹title›" with Stop watching. When the video stops, a toast offers Resume;
+  the room never resumes on its own. With no room, Watch just plays.
+- **Show as scene** on YouTube rows: the video becomes the room's silent scene, only the
+  picture changes, and the room is marked Changed with Save as my room.
+- YouTube suggestions before you type, without an account: Your saved YouTube, "For
+  ‹room›" and "Live now", cached on disk (shown at once, refreshed at most hourly, kept
+  for a day) and fetched off the GTK thread. Browsing them starts nothing.
+- The session controller has a `video` action (`start` with a public YouTube `url` and
+  `name`, queued; `stop`, at once) and a `video` snapshot field (status, name, url,
+  started_at, room_paused) while the Watch window is open.
+
+### Changed
+- YouTube rows say Play for videos and Tune in only for live streams. Their menu puts
+  Show as scene first (it never interrupts sound), then Play as ambience, Save as station
+  and Open elsewhere. The YouTube link sheet offers Play, Watch, Show as scene, Play as
+  ambience and Open elsewhere, in the same order and words. While choosing an ambience,
+  Play as music and Watch move into the row menu.
+
+### Added
 - Each Mix row (Music, Ambience) has its own Pause/Play and Stop buttons; a row paused on
   its own says "paused" in the accent colour. `listening-roomctl music|ambience
   pause|play|toggle|stop|next` exposes the same layer actions.
