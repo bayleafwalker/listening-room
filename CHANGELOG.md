@@ -28,7 +28,7 @@ All notable changes are recorded here. The format follows
   not fade while a toast with an action is showing.
 - Browse rooms and Listen fit a 360 px window: room cards go one per line, the station page is
   built stacked, station cards are wider, the Listen scope chips scroll sideways instead of
-  ellipsizing.
+  ellipsizing, and Recently played lists each station once.
 
 ## [2.4.0] - 2026-11-21
 
