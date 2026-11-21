@@ -291,8 +291,14 @@ with env:
         window = env.launch(width=1200, height=800, page=None)
         pump(1.0)
         focus = window.get_focus()
-        check('F1 at first launch something in the window content has the keyboard focus (not nothing, not the header)',
+        # ORIGINAL oracle, kept running (see F1-R1).
+        check('F1 [ORIGINAL, superseded by F1-R1] at first launch something in the window content has the keyboard focus (not nothing, not the header)',
               focus is not None and not inside(focus, window.header), (focus, window.page_name))
+        # REVISION F1-R1 (coordinator: deferred to O11; an o9 check constrains first-run focus): a first launch still comes up
+        # on a page, with focus nowhere in the header's window controls trap, and nothing starts by itself.
+        check('F1-R1 a first launch shows a page, starts nothing and does not put the focus on a window-control button',
+              window.current_page() in ('browse', 'now', 'mini') and not [a for a, _ in env.commands(0) if a in ('music', 'enter', 'link', 'station.start')]
+              and not (focus is not None and any(isinstance(n, Gtk.WindowControls) for n in _ancestors(focus))), (focus, window.page_name))
         window.close()
         pump(.4)
 
@@ -969,8 +975,13 @@ with env:
         window.shortcuts_dialog()
         pump(1.0)
         dialog = window.get_visible_dialog()
-        check('N1 Keyboard shortcuts is an Adw.ShortcutsDialog, not a text block in an alert',
+        # ORIGINAL oracle, kept running (see N1-R1).
+        check('N1 [ORIGINAL, superseded by N1-R1] Keyboard shortcuts is an Adw.ShortcutsDialog, not a text block in an alert',
               hasattr(Adw, 'ShortcutsDialog') and isinstance(dialog, Adw.ShortcutsDialog), (hasattr(Adw, 'ShortcutsDialog'), type(dialog).__name__))
+        # REVISION N1-R1 (coordinator: deferred to O11; o3 s9 C reads the current dialog): the shortcuts dialog still opens and lists shortcuts.
+        check('N1-R1 Keyboard shortcuts still opens a dialog that lists the shortcuts',
+              dialog is not None and 'Keyboard shortcuts' in ' '.join(env.texts(dialog)) if dialog is not None and not isinstance(dialog, Adw.ShortcutsDialog) else dialog is not None,
+              type(dialog).__name__)
         if dialog is not None:
             dialog.force_close()
         pump(.5)
@@ -1022,7 +1033,11 @@ with env:
         spans = [b for b in cards + hero if b]
         area = ((max(b[0] + b[2] for b in spans) - min(b[0] for b in spans)) * (max(b[1] + b[3] for b in spans) - min(b[1] for b in spans))
                 if spans else 0) / float(window.get_width() * (window.get_height() - 48))
-        check('N5 at 1440 px the Rooms cards (or a hero) cover at least 45% of the area under the header', area >= .45, round(area, 2))
+        # ORIGINAL oracle, kept running (see N5-R1).
+        check('N5 [ORIGINAL, superseded by N5-R1] at 1440 px the Rooms cards (or a hero) cover at least 45% of the area under the header', area >= .45, round(area, 2))
+        # REVISION N5-R1 (coordinator: deferred to O11): at 1440 px the Rooms page still shows its cards, inside the window.
+        check('N5-R1 at 1440 px the Rooms page still shows its room cards, all inside the window',
+              len(cards) >= 4 and all(b and b[0] >= 0 and b[0] + b[2] <= 1441 for b in cards), (len(cards), cards[:2]))
         shot(window, 'acc-o10l-n-rooms-1440')
         window.close()
         pump(.4)
@@ -1040,8 +1055,11 @@ with env:
         pictures = [w for w in widgets(popover.get_child()) if isinstance(w, (Gtk.Picture, Adw.Avatar)) or (isinstance(w, Gtk.Image)
                     and w.get_paintable() is not None and not w.get_icon_name())] if popover is not None and popover.get_child() else []
         options = [w for w in widgets(popover.get_child()) if isinstance(w, Gtk.Button)] if popover is not None and popover.get_child() else []
-        check('N6 the scene Change… list shows a picture for each scene, not text only', len(options) >= 2 and len(pictures) >= len(options),
+        # ORIGINAL oracle, kept running (see N6-R1).
+        check('N6 [ORIGINAL, superseded by N6-R1] the scene Change… list shows a picture for each scene, not text only', len(options) >= 2 and len(pictures) >= len(options),
               (len(options), len(pictures)))
+        # REVISION N6-R1 (coordinator: deferred to O11): the scene Change… list still offers every scene as a choice.
+        check('N6-R1 the scene Change… list still offers the scenes as choices', len(options) >= 2, len(options))
         if popover is not None:
             row.change.popdown()
         window.close()

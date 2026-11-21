@@ -1,3 +1,6 @@
+# KNOWN FAILURES (marked !): the original oracles 6c, 3a, 3e and 3f, kept running verbatim with their original names, are superseded
+# by 6c-R1, 3a-R1, 3e-R1 and 3f-R1 (O10-LISTEN: N11 words "Play" for on-demand Library rows; N13 Recently played lists a station once).
+# They fail on any tree that includes O10-LISTEN and pass on main 2.4.0 alone, where this file therefore reports them as "known failure that passes".
 # R-src1 (acceptance author, WP4): the two "integration:" checks read source text (next_window.py, nix/package.nix). They
 # still print as SUPERSEDED [ORIGINAL] lines with their result; integration-R1a/R1b drive one room change into both pages,
 # integration-R2 runs the O2 and O3 suites through tests/run_suites.py, and tests/probes/wp4-oracles.py suites traces
@@ -16,19 +19,23 @@
 2b Your stations scope lists rows with a menu
 2c station row menu offers Play as ambience, never a global send-audio mode
 2d Play as ambience sends the atmosphere command (and only that)
-6c Recently played shelf shows 4 entries; Replay buttons only for entries with tracks (2 of the first 4)
+!6c [ORIGINAL, superseded by 6c-R1] Recently played shelf shows 4 entries; Replay buttons only for entries with tracks (2 of the first 4)
+6c-R1 the Recently played shelf lists each station once, at most 4 rows, with Replay only where the play has tracks (1 of 2)
 6a History lists all six entries, Replay only with track references (garbage tracks do not count)
 6b Replay sends station.replay for that history entry only
 6d Replay actually started the room
 6e a history entry without tracks offers Tune in, which starts the station (station.start), not a replay
 2e shelves present: Your stations, Recently played, Radio, Library, Live channels, Open elsewhere
 2f New station affordance is on the Your stations shelf
-3a every row has initials tile, name, one descriptor line and an action
+!3a [ORIGINAL, superseded by 3a-R1] every row has initials tile, name, one descriptor line and an action
+3a-R1 every row has initials tile, name, one descriptor line and an action (Tune in, Play, Replay or Open)
 3b menus collectively cover Play as ambience, Save as station, Favourite, Open elsewhere
 3c a Radio row menu holds Play as ambience, Save as station, Favourite and Open elsewhere
 3d Radio Tune in sends only music
-3e Library scope has albums to tune in
-3f Library Tune in sends only online
+!3e [ORIGINAL, superseded by 3e-R1] Library scope has albums to tune in
+!3f [ORIGINAL, superseded by 3f-R1] Library Tune in sends only online
+3e-R1 Library scope has albums to play
+3f-R1 Library Play sends only online
 3g Live channel Tune in sends only link(destination music)
 3h a Radio row offers Favourite
 3i Favourite saves exactly one favourite and starts nothing

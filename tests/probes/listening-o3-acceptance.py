@@ -562,8 +562,25 @@ def s6_history_replay():
     p = page(window)
     p.show_index(); pump(.5)
     shelf_replays = [b for b in buttons_labelled(window, 'Replay')]
-    check('6c Recently played shelf shows 4 entries; Replay buttons only for entries with tracks (2 of the first 4)',
+    # ORIGINAL oracle, kept running with its original wording (see revision R1 below).
+    check('6c [ORIGINAL, superseded by 6c-R1] Recently played shelf shows 4 entries; Replay buttons only for entries with tracks (2 of the first 4)',
           len(shelf_replays) == 2, str(len(shelf_replays)))
+    # REVISION 6c-R1 (O10-LISTEN, N13 "Recently played repeats a station"; coordinator decision 2026-11-21): the intent of 6c is
+    # that the shelf shows recent history, capped at four rows, with Replay only on entries that have tracks. The seed has six
+    # plays of two stations; it never meant a station should appear several times. The shelf lists each station once (its most
+    # recent play); the History page still keeps every play (6a). The seed's latest plays are lib (has tracks) and radio (none).
+    shelf_history = []
+    for w in walk(window):
+        if isinstance(w, Gtk.Label) and w.get_text() == 'Recently played' and shown(w):
+            node = w
+            while node is not None and node.get_parent() is not p.index_body:
+                node = node.get_parent()
+            if node is not None:
+                shelf_history = [r for r in walk(node) if isinstance(r, Gtk.Box) and 'listen-row' in r.get_css_classes() and shown(r)]
+    names = [texts(r)[0] if texts(r) else '' for r in shelf_history]
+    check('6c-R1 the Recently played shelf lists each station once, at most 4 rows, with Replay only where the play has tracks (1 of 2)',
+          1 <= len(shelf_history) <= 4 and len(names) == len(set(names)) and len(shelf_replays) == 1,
+          repr((names, len(shelf_replays))))
     p.show_history(); pump(.8)
     rows = [w for w in walk(window) if isinstance(w, Gtk.Box) and 'listen-row' in w.get_css_classes() and shown(w)]
     summary = []
@@ -614,7 +631,17 @@ def s2b_menus_and_rows():
         has_tune = any(' '.join(texts(b)) in ('Tune in', 'Replay', 'Open') for b in walk(r) if isinstance(b, Gtk.Button))
         if len(ts) < 3 or not has_tune:
             bad.append(ts)
-    check('3a every row has initials tile, name, one descriptor line and an action', rows and not bad, repr(bad[:3]))
+    # ORIGINAL oracle, kept running (see revision 3a-R1 below).
+    check('3a [ORIGINAL, superseded by 3a-R1] every row has initials tile, name, one descriptor line and an action', rows and not bad, repr(bad[:3]))
+    # REVISION 3a-R1 (O10-LISTEN, N11 "Play for on-demand, Tune in for live"): Library rows are on demand and say "Play".
+    # Same intent: every row has an initials tile, name, one descriptor line and an action.
+    bad_r1 = []
+    for r in rows:
+        ts = texts(r)
+        has_action = any(' '.join(texts(b)) in ('Tune in', 'Play', 'Replay', 'Open') for b in walk(r) if isinstance(b, Gtk.Button))
+        if len(ts) < 3 or not has_action:
+            bad_r1.append(ts)
+    check('3a-R1 every row has initials tile, name, one descriptor line and an action (Tune in, Play, Replay or Open)', rows and not bad_r1, repr(bad_r1[:3]))
     wanted = {'Play as ambience'}
     menus = {}
     for m in menu_buttons(window):
@@ -640,11 +667,19 @@ def s2b_menus_and_rows():
     set_scope(window, 'Library')
     mark = len(COMMANDS)
     first = buttons_labelled(window, 'Tune in')
-    check('3e Library scope has albums to tune in', bool(first), repr(texts(window))[:200])
-    if first:
-        first[0].emit('clicked'); settle(1.2)
+    # ORIGINAL oracles 3e and 3f, kept running (see revisions 3e-R1 and 3f-R1 below).
+    check('3e [ORIGINAL, superseded by 3e-R1] Library scope has albums to tune in', bool(first), repr(texts(window))[:200])
+    check('3f [ORIGINAL, superseded by 3f-R1] Library Tune in sends only online', bool(first) and False, 'no Tune in on Library rows (N11 says Play)')
+    # REVISION 3e-R1 / 3f-R1 (O10-LISTEN, N11): Library rows are on demand, so their action is "Play". Same intent.
+    play = buttons_labelled(window, 'Play')
+    check('3e-R1 Library scope has albums to play', bool(play), repr(texts(window))[:200])
+    mark = len(COMMANDS)
+    if play:
+        play[0].emit('clicked'); settle(1.2)
         cmds = mutating_since(mark)
-        check('3f Library Tune in sends only online', [c[0] for c in cmds] == ['online'], repr(cmds)[:300])
+        check('3f-R1 Library Play sends only online', [c[0] for c in cmds] == ['online'], repr(cmds)[:300])
+    else:
+        check('3f-R1 Library Play sends only online', False, 'no Play button on Library rows')
     leave_all()
     window = listen_window()
     set_scope(window, 'Live channels')
