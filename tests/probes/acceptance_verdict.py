@@ -6,8 +6,8 @@
 RESULTS_DIR holds the probe's results file (the ``*acceptance*.json`` it writes: a list of
 ``{criterion, pass}`` records, or a dict holding that list). ``expected/NAME.checks`` lists one
 check name per line; an entry may declare the measured part of its name with ``@@``
-(for example ``... (worst gap @@ ms)``); that span matches only measurement characters (digits, sign, decimal point, the
-list punctuation ``, [ ]`` and space, and the units ``ms s % px fps Hz``, with at least one digit) and the rest of the name must match
+(for example ``... (worst gap @@ ms)``); that span matches only measurement characters (digits, sign, decimal point, comma,
+square brackets and spaces, with at least one digit; units stay outside the span) and the rest of the name must match
 exactly, so a span cannot swallow a changed word or a ``FAILED`` marker.
 Nothing else is ignored: thresholds, scenario inputs and markers in a name are part of its identity. A line starting with ``!`` is a known failure, kept visible on purpose
 (the superseded "5i [ORIGINAL]" check in O4); a line cannot combine ``!`` with ``@@`` (a failure is recorded under the exact name it failed with); comment lines start with ``# ``.
@@ -48,8 +48,8 @@ def load_results(directory):
 
 
 WILDCARD = '@@'
-# What a measured span may hold: numbers (digits, sign, decimal point), list punctuation for a list of numbers, and units.
-_FILLER = r'(?:[+\-.,\[\]\s]|ms|s|%|px|fps|Hz)'
+# What a measured span may hold: digits, sign, decimal point, comma, square brackets and spaces (units stay outside the span).
+_FILLER = r'[+\-.,\[\]\s]'
 MEASUREMENT = _FILLER + r'*[0-9](?:[0-9]|' + _FILLER + ')*'
 
 

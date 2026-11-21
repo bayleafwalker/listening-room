@@ -17,7 +17,7 @@ All notable changes are recorded here. The format follows
   in four rooms and the second water effect in after-hours). The rendered loops are
   byte-identical. Their colours are listed for a later scene review rather than honoured.
 - In an acceptance expectation, `@@` matches only a measurement (digits, sign, decimal
-  point, list punctuation, units), and a line that combines `!` with `@@` is refused.
+  point, comma, brackets, spaces), and a line that combines `!` with `@@` is refused.
 - `tests/netguard.py` also guards Python child processes that suites start (a
   `sitecustomize` on `PYTHONPATH`, kept in explicit `env=` too); `tests/test_listening_netguard.py`
   covers it. Non-Python children are not covered.

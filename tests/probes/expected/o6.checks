@@ -1,4 +1,4 @@
-# Entries with @@ declare a measured span (numbers, signs, list punctuation, units); everything else must match exactly.
+# Entries with @@ declare a measured span (digits, sign, decimal point, comma, brackets, spaces); everything else must match exactly.
 1a the Rooms grid has room cards to click
 1b single click -> preview visible within 150 ms for every card (measured @@ ms)
 1c the GTK thread was never held for more than 150 ms after the first (cold) preview (gaps @@ ms), and never more than 400 ms

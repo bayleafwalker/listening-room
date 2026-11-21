@@ -36,22 +36,10 @@ class DecoderEOF(unittest.TestCase):
                     if process.poll() is not None or time.monotonic() >= deadline:
                         self.fail('The isolated decoder failed to open its IPC socket')
                     time.sleep(.02)
-                def connect():
-                    # The decoder creates the socket path when it binds, a moment before it listens: a connect
-                    # in between is refused. Retry until it accepts, within the same deadline.
-                    while True:
-                        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                        connection.settimeout(1)
-                        try:
-                            connection.connect(str(endpoint))
-                            return connection
-                        except (ConnectionRefusedError, FileNotFoundError):
-                            connection.close()
-                            if process.poll() is not None or time.monotonic() >= deadline:
-                                self.fail('The isolated decoder never accepted its IPC socket')
-                            time.sleep(.02)
                 def property_value(name):
-                    with connect() as connection:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                        connection.settimeout(1)
+                        connection.connect(str(endpoint))
                         connection.sendall(json.dumps({'command': ['get_property', name], 'request_id': 7}).encode() + b'\n')
                         with connection.makefile('rb') as responses:
                             for line in responses:
@@ -61,6 +49,19 @@ class DecoderEOF(unittest.TestCase):
                                         return None
                                     self.assertEqual(response.get('error'), 'success')
                                     return response.get('data')
+                # mpv creates the socket path when it binds, a moment before it listens, so the path
+                # existing is not readiness: wait until the decoder accepts a connection.
+                while True:
+                    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    try:
+                        probe.connect(str(endpoint))
+                        break
+                    except ConnectionRefusedError:
+                        if process.poll() is not None or time.monotonic() >= deadline:
+                            self.fail('The isolated decoder never accepted its IPC socket')
+                        time.sleep(.02)
+                    finally:
+                        probe.close()
                 while property_value('eof-reached') is not True:
                     if time.monotonic() >= deadline:
                         self.fail('The decoder did not retain a positive EOF')

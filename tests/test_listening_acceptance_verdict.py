@@ -29,6 +29,15 @@ class MeasuredSpans(unittest.TestCase):
             status, output = verdict(['gap (%s ms) ok' % '@@'], [('gap (%s ms) ok' % measured, True)])
             self.assertEqual(status, 0, (measured, output))
 
+    def test_several_spans_on_one_line(self):
+        entry = "ok: {'a': @@, 'b': @@}"
+        self.assertEqual(verdict([entry], [("ok: {'a': 1.5, 'b': 20}", True)])[0], 0)
+        self.assertEqual(verdict([entry], [("ok: {'a': 1.5, 'b': slow}", True)])[0], 1)
+
+    def test_units_stay_outside_the_span(self):
+        self.assertEqual(verdict(['gap @@ ms'], [('gap 12 ms', True)])[0], 0)
+        self.assertEqual(verdict(['gap @@'], [('gap 12 ms', True)])[0], 1)
+
     def test_words_and_markers_do_not_match(self):
         for swallowed in ('FAILED', 'NaN', 'none', '12 FAILED', '[]', '', 'seconds slower'):
             status, output = verdict(['gap (@@ ms) ok'], [('gap (%s ms) ok' % swallowed, True)])

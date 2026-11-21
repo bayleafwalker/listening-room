@@ -56,7 +56,7 @@ lines and writes its `*acceptance*.json` results into `--output`.
 `tests/probes/acceptance_verdict.py` judges a run by check names, not counts: any
 failure that is not a known one fails, and so does a check that disappeared. New passing
 checks need no edit. In an expected line, `@@` stands for a measurement only (digits, sign, decimal point,
-list punctuation, units such as `ms`), and a `!` line cannot use it. After a deliberate change, `scripts/listening-dev.sh acceptance OUTDIR --record`
+comma, brackets and spaces; units stay outside), and a `!` line cannot use it. After a deliberate change, `scripts/listening-dev.sh acceptance OUTDIR --record`
 rewrites `tests/probes/expected/<name>.checks`. A known failure is a line starting with
 `!` with a comment line above it saying why. Today O4 keeps the superseded "5i [ORIGINAL]" check, and O3 keeps
 its "hub test list registers the O2 and O3 suites" check, which looked for suite names in `nix/package.nix` and awaits a
