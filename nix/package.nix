@@ -86,9 +86,30 @@ let
   ];
   # The rendered scene loops and sound beds, built from src/artwork and
   # src/scene_tuning only (see assets.nix).
-  assets = import ./assets.nix {
+  rendered = import ./assets.nix {
     inherit lib stdenvNoCC ffmpeg;
     python = assetPython;
+  };
+  # The render plus every poster pre-scaled to card size (NAME.card.jpg), so opening the
+  # window never decodes a full poster for a card. Kept apart from the render so changing
+  # the card size does not re-render the scenes.
+  assets = stdenvNoCC.mkDerivation {
+    pname = "listening-room-scene-assets";
+    version = "1";
+    dontUnpack = true;
+    nativeBuildInputs = [ assetPython ];
+    buildPhase = ''
+      runHook preBuild
+      cp -r --no-preserve=mode ${rendered} assets
+      python3 ${../src/poster_cards.py} assets
+      runHook postBuild
+    '';
+    installPhase = ''
+      runHook preInstall
+      cp -r assets "$out"
+      runHook postInstall
+    '';
+    dontFixup = true;
   };
 in
 stdenvNoCC.mkDerivation {

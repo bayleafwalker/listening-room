@@ -9,9 +9,13 @@ gi.require_version('Graphene', '1.0')
 from gi.repository import Adw, Gdk, GLib, Graphene, Gtk
 
 import next_model
+import poster_cards
+from next_async import pool, run_async
 
 TEXTURE_LIMIT = 64          # decoded images kept; the least recently shown goes first
 _TEXTURES = collections.OrderedDict()
+CARD_SIZE = poster_cards.CARD_SIZE
+_ART = {'pool': None, 'waiting': {}}   # the decoding threads, and art key -> pictures waiting for it
 _STYLES = {}                # stylesheet text -> its provider, installed once
 _UNSET = object()
 
@@ -43,12 +47,75 @@ def texture_for(path):
 def show_texture(picture, path):
     """Point a picture at an image file's texture, leaving it alone when nothing changed."""
     texture = texture_for(path)
+    picture._art_key = None
+    _show(picture, texture)
+    return texture
+
+
+def _show(picture, texture):
     # Not every picture widget here has get_paintable (FocalPicture only sets), so
     # remember what was shown on the widget itself.
     if getattr(picture, '_shown_texture', _UNSET) is not texture:
         picture.set_paintable(texture)
         picture._shown_texture = texture
-    return texture
+
+
+def show_art(picture, path, size=None):
+    """Point a picture at image art without decoding it on the GTK thread.
+
+    Art decoded before shows at once. Otherwise the picture keeps what it shows (a new card shows its
+    plain background) while a worker decodes the file, then shows the texture; the GTK thread only
+    hands it over. With ``size`` the art is decoded at about that size: the build's pre-scaled
+    ``.card.jpg`` when there is one, else the file scaled on the worker. A later call for the same
+    picture wins over a decode still in flight."""
+    try:
+        key = (path, os.stat(path).st_mtime_ns, size) if path else None
+    except OSError:
+        key = None
+    picture._art_key = key
+    if key is None:
+        _show(picture, None)
+        return
+    texture = _TEXTURES.get(key)
+    if texture is not None:
+        _TEXTURES.move_to_end(key)
+        _show(picture, texture)
+        return
+    waiting = _ART['waiting']
+    if key in waiting:
+        waiting[key].append(picture)
+        return
+    waiting[key] = [picture]
+    if _ART['pool'] is None:
+        _ART['pool'] = pool('art', 2)
+    run_async(lambda: decode_art(path, size), lambda texture: _art_ready(key, texture),
+              lambda _error: _art_ready(key, None), _ART['pool'])
+
+
+def decode_art(path, size=None):
+    """A texture for an image file, at about ``size`` when given. Runs on a worker: GdkTexture loading is
+    thread-safe, and nothing here touches a widget."""
+    if size is None:
+        return Gdk.Texture.new_from_filename(path)
+    card = poster_cards.card_file(path) if tuple(size) == CARD_SIZE else None
+    if card is not None:
+        return Gdk.Texture.new_from_filename(card)
+    try:
+        width, height, alpha, pixels = poster_cards.scaled(path, size)
+    except Exception:       # no Pillow, or a format only GTK reads: the whole image, still off the GTK thread
+        return Gdk.Texture.new_from_filename(path)
+    return Gdk.MemoryTexture.new(width, height, Gdk.MemoryFormat.R8G8B8A8 if alpha else Gdk.MemoryFormat.R8G8B8,
+                                 GLib.Bytes.new(pixels), width * (4 if alpha else 3))
+
+
+def _art_ready(key, texture):
+    if texture is not None:
+        _TEXTURES[key] = texture
+        while len(_TEXTURES) > TEXTURE_LIMIT:
+            _TEXTURES.popitem(last=False)
+    for picture in _ART['waiting'].pop(key, ()):
+        if getattr(picture, '_art_key', None) == key:
+            _show(picture, texture)
 
 
 def choose_renderer(environ=None, nvidia_marker='/proc/driver/nvidia/version'):

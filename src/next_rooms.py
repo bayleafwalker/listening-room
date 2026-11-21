@@ -18,7 +18,7 @@ import next_model as model
 import next_rooms_model as rooms
 from next_async import run_async
 from next_mix import ICONS
-from next_widgets import FocalPicture, Scene, install_css, label, menu_item, name_it
+from next_widgets import CARD_SIZE, FocalPicture, Scene, install_css, label, menu_item, name_it, show_art
 
 CSS = '''
 .next .rooms-chip { min-height: 34px; padding: 0 14px; border-radius: 17px; border: none; box-shadow: none;
@@ -271,7 +271,7 @@ class RoomsPage:
         self.hero_when.set_visible(bool(self.hero_when.get_text()))
         self.hero_button.set_visible(not first)
         self.hero_button.set_label(hero.get('button', ''))
-        window.set_artwork(self.hero_art, hero.get('poster'))
+        show_art(self.hero_art, hero.get('poster'))     # decoded off the GTK thread, shown when ready
         if self.opened is None:
             window.apply_accent(hero.get('accent'))
 
@@ -303,7 +303,7 @@ class RoomsPage:
         art = FocalPicture()
         art.set_size_request(CARD_WIDTH, getattr(self, 'card_height', None) or round(CARD_WIDTH * 9 / 16))
         art.card_art = True
-        self.window.set_artwork(art, entry['poster'])
+        show_art(art, entry['poster'], CARD_SIZE)       # the pre-scaled card poster, decoded off the GTK thread
         overlay.set_child(art)
         scrim = Gtk.Box(valign=Gtk.Align.END, can_target=False)
         scrim.add_css_class('scrim-bottom')
