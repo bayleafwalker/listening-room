@@ -1036,14 +1036,7 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
         history = next_station.history_rows(snapshot.get('station_recent') or [], snapshot.get('now') or time.time())
         if not history:
             return None
-        # One row per station (the most recent play): the History page keeps every play.
-        seen, latest = set(), []
-        for row in history:
-            key = row.get('station_id') or row.get('name')
-            if key not in seen:
-                seen.add(key)
-                latest.append(row)
-        return self.section('Recently played', [self.history_entry(row) for row in latest[:4]],
+        return self.section('Recently played', [self.history_entry(row) for row in history[:4]],
                             trailing=self.link_button('History', self.show_history))
 
     def radio_shelf(self):
