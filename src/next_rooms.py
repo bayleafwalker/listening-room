@@ -126,7 +126,7 @@ class RoomsPage:
         self.hero_kind = 'first-run'
         column.append(self.hero)
         column.append(self.build_filters())
-        self.cards = Gtk.FlowBox(min_children_per_line=1, max_children_per_line=4, column_spacing=16, row_spacing=16,
+        self.cards = Gtk.FlowBox(min_children_per_line=2, max_children_per_line=4, column_spacing=16, row_spacing=16,
                                  homogeneous=True, selection_mode=Gtk.SelectionMode.SINGLE, activate_on_single_click=False,
                                  valign=Gtk.Align.START)
         self.cards.add_css_class('rooms-grid')
@@ -173,6 +173,10 @@ class RoomsPage:
 
     def shape_cards(self, grid, _clock):
         """Keep every card 16:9 at the width the grid actually gives it (a homogeneous grid measures at the minimum)."""
+        # Two to a line keeps cards from stretching, except in a window narrower than two cards: one per line.
+        narrow = 0 < self.window.get_width() < 560
+        if grid.get_min_children_per_line() != (1 if narrow else 2):
+            grid.set_min_children_per_line(1 if narrow else 2)
         first = grid.get_first_child()
         width = first.get_width() if first is not None else 0
         height = round(width * 9 / 16)
