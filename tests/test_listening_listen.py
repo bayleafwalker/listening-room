@@ -68,6 +68,10 @@ class MoodMappingTests(unittest.TestCase):
         self.assertEqual(station.choices(library(preferences={}))['speech'], 'Any')
         self.assertEqual(station.choices(library(preferences={'energy': 'High'}))['energy'], 'Lively')
         self.assertEqual(station.choices(library(preferences={'familiarity': 'New'}))['familiarity'], 'Discover')
+        # Unset shows each control's neutral word: Familiarity has no "Any", its middle choice is "A mix".
+        self.assertEqual(station.choices(library(preferences={}))['familiarity'], 'A mix')
+        self.assertEqual(station.choices(library(preferences={'familiarity': 'Any'}))['familiarity'], 'A mix')
+        self.assertEqual(station.choices(library(preferences={'familiarity': 'Familiar'}))['familiarity'], 'Familiar')
 
     def test_one_choice_rewrites_only_that_preference(self):
         changed = station.with_choice(library(), 'speech', 'Instrumental only')

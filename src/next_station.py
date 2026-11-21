@@ -42,7 +42,8 @@ def _label_for(mood, current):
             return label
     if mood['key'] == 'speech' and current in FEWER_VALUES:
         return 'Fewer'
-    return 'Any'
+    # Unset (or unknown) is the neutral choice, whatever that control calls it: "A mix" for Familiarity.
+    return next(label for label, value in mood['choices'] if value == 'Any')
 
 
 def choices(station):
