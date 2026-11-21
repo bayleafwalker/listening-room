@@ -396,7 +396,7 @@ def plain_error(error):
 def start_error(error):
     """Why a room's music did not start. The controller answered, so a refused connection is the stream's."""
     plain = plain_error(error)
-    return 'The music could not connect.' if plain.startswith('The room service') else plain
+    return 'Its music couldn’t start: it could not connect.' if plain.startswith('The room service') else plain
 
 
 def error_details(error):

@@ -161,7 +161,7 @@ class NowTests(unittest.TestCase):
         queued = {'entry_before': 3}
         self.assertIsNone(model.start_outcome(snapshot(entry={'id': 3, 'state': 'started'}), queued))
         self.assertEqual(model.start_outcome(snapshot(entry={'id': 4, 'state': 'failed', 'error': 'x'}), queued), ('failed', 'x'))
-        self.assertEqual(model.start_error('Connection refused'), 'The music could not connect.')
+        self.assertEqual(model.start_error('Connection refused'), 'Its music couldn’t start: it could not connect.')
 
     def test_another_rooms_failed_start_is_not_this_rooms_music_failure(self):
         kept = snapshot(errors={'music': 'refused'},
