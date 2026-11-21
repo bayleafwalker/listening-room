@@ -1,0 +1,126 @@
+# O10-LISTEN acceptance (independent oracles, written before the implementation exists).
+# Every check below is expected to PASS on the finished outcome. On main 2.4.0 (e45d947) many of them fail on purpose:
+# main has no mode header, no Twitch categories or paging, the mini layout overlaps its window controls, Rooms clips at 360 px,
+# toasts cover the room name, and so on. This list therefore has no "!" known failures: a failing line is a real gap.
+F1 at first launch something in the window content has the keyboard focus (not nothing, not the header)
+G1 at 360 px the mini layout is showing and its window controls are on screen (precondition)
+G2 at 360 px the minimize/maximize/close controls do not overlap "Open the full window"
+G3 at 360 px the room name never runs under the window controls or the expand button
+G4 at 360 px no two controls in the top row overlap, and none is outside the window
+G1 at 420 px the mini layout is showing and its window controls are on screen (precondition)
+G2 at 420 px the minimize/maximize/close controls do not overlap "Open the full window"
+G3 at 420 px the room name never runs under the window controls or the expand button
+G4 at 420 px no two controls in the top row overlap, and none is outside the window
+G1 at 540 px the mini layout is showing and its window controls are on screen (precondition)
+G2 at 540 px the minimize/maximize/close controls do not overlap "Open the full window"
+G3 at 540 px the room name never runs under the window controls or the expand button
+G4 at 540 px no two controls in the top row overlap, and none is outside the window
+G5 the Ctrl+M mini window at 480 px: its window controls do not overlap the expand button
+G5 the Ctrl+M mini window at 320 px: its window controls do not overlap the expand button
+G6 at 360 px the Rooms page is the page shown (not the mini player)
+G7 at 360 px Rooms asks for no more width than the window has (no "requested N px, M available")
+G8 at 360 px nothing on Rooms (header tabs, mood chips, buttons, words) runs off the window
+G9 at 360 px both view targets, Rooms and Listen, are on screen
+G10 at 360 px the mood chips wrap or scroll; none is cut off
+G11 at 360 px no two controls on Rooms overlap
+G12 at 360 px Listen is the page shown
+G13 at 360 px Listen asks for no more width than the window has
+G14 at 360 px nothing on Listen runs off the window
+G15 at 360 px no two controls on Listen overlap
+G16 at 360 px ambience mode asks for no more width than the window has
+G17 at 360 px nothing in ambience mode runs off the window
+G18 at 360 px no two controls overlap in ambience mode
+G6 at 560 px the Rooms page is the page shown (not the mini player)
+G7 at 560 px Rooms asks for no more width than the window has (no "requested N px, M available")
+G8 at 560 px nothing on Rooms (header tabs, mood chips, buttons, words) runs off the window
+G9 at 560 px both view targets, Rooms and Listen, are on screen
+G10 at 560 px the mood chips wrap or scroll; none is cut off
+G11 at 560 px no two controls on Rooms overlap
+G12 at 560 px Listen is the page shown
+G13 at 560 px Listen asks for no more width than the window has
+G14 at 560 px nothing on Listen runs off the window
+G15 at 560 px no two controls on Listen overlap
+G16 at 560 px ambience mode asks for no more width than the window has
+G17 at 560 px nothing in ambience mode runs off the window
+G18 at 560 px no two controls overlap in ambience mode
+G19 at 560 px nothing on Now runs off the window and no controls overlap
+G6 at 1200 px the Rooms page is the page shown (not the mini player)
+G7 at 1200 px Rooms asks for no more width than the window has (no "requested N px, M available")
+G8 at 1200 px nothing on Rooms (header tabs, mood chips, buttons, words) runs off the window
+G9 at 1200 px both view targets, Rooms and Listen, are on screen
+G10 at 1200 px the mood chips wrap or scroll; none is cut off
+G11 at 1200 px no two controls on Rooms overlap
+G12 at 1200 px Listen is the page shown
+G13 at 1200 px Listen asks for no more width than the window has
+G14 at 1200 px nothing on Listen runs off the window
+G15 at 1200 px no two controls on Listen overlap
+G16 at 1200 px ambience mode asks for no more width than the window has
+G17 at 1200 px nothing in ambience mode runs off the window
+G18 at 1200 px no two controls overlap in ambience mode
+G19 at 1200 px nothing on Now runs off the window and no controls overlap
+G19b (precondition) a catalogue room is playing for the toast checks
+G20 at 360 px (mini, toast plain) a toast is on screen and covers neither the room name nor the now-playing line
+G20 at 360 px (mini, toast with a button) a toast is on screen and covers neither the room name nor the now-playing line
+G20 at 560 px (now, toast plain) a toast is on screen and covers neither the room name nor the now-playing line
+G20 at 560 px (now, toast with a button) a toast is on screen and covers neither the room name nor the now-playing line
+G20 at 900 px (now, toast plain) a toast is on screen and covers neither the room name nor the now-playing line
+G20 at 900 px (now, toast with a button) a toast is on screen and covers neither the room name nor the now-playing line
+G20 at 1200 px (now, toast plain) a toast is on screen and covers neither the room name nor the now-playing line
+G20 at 1200 px (now, toast with a button) a toast is on screen and covers neither the room name nor the now-playing line
+G21 (precondition) with no toast the controls fade after the idle time in this environment
+G22 while a toast with an action is showing the controls and header do not idle-fade away
+H0 plain Listen (music mode) shows no ambience header and no "Play as ambience" buttons
+H1 in ambience mode, Listen is the page shown
+H2 ... and the header (top band, not the scrolling body) names the mode: it says "ambience"
+H3 ... and the header holds a way out (a Back/Cancel/Done/Exit control)
+H4 ... while browsing there still plays nothing
+H5 the header way out leaves the mode and returns to Now, closed Mix, with nothing sent and the room untouched
+H6 ... and the header no longer says it is choosing an ambience
+H7 ... and Listen opened again is plain music mode: no ambience header, no "Play as ambience" buttons
+H8 from the Mix the header names the mode and offers a way out too
+H9 ... and its way out returns to the Mix over Now
+H10 going to Rooms ends the mode: the Rooms header shows no ambience text
+H11 ... and Listen opened afterwards is music mode again
+H12 Escape in ambience mode still leaves it (to Now) and the header returns to normal
+H13 Music > Change… while the mode is on opens plain Listen: the mode never survives into it
+H14 in ambience mode the offline Sounds rows offer "Play as ambience"
+H15 choosing an ambience sends exactly one ambience (atmosphere layer) command, returns to Now and ends the mode
+H16 at 560 px the header still names the mode, with a way out, inside the window
+H17 at 560 px the header controls (mode, way out, tabs, window controls) do not overlap
+H16 at 360 px the header still names the mode, with a way out, inside the window
+H17 at 360 px the header controls (mode, way out, tabs, window controls) do not overlap
+T1 Live channels has category chips Music, ASMR, All and Your channels
+T2 the Music chip lists Music channels (and no ASMR ones)
+T3 a row shows the channel name, its stream title, its category (Music) and its viewers (1234)
+T4 a row has art (a picture or avatar slot), not only a monogram tile
+T5 the page loaded the Music category with at most 100 streams per request
+T6 "Show more" pages past 60: every one of the 230 Music streams can be reached
+T7 ... through the cursors Twitch returned, in order (music-1 then music-2), never an invented one
+T8 ... and no channel appears twice
+T9 ... and once the last page is in, there is no "Show more" left (and the pages really were fetched)
+T10 browsing and paging Twitch sent no command to the room
+T11 the ASMR chip shows ASMR streams (the first without any paging), with category ASMR and its 87 viewers, and no Music rows
+T12 ... all 45 ASMR streams are reachable and the last page leaves no "Show more"
+T13 the All chip reaches every Music and every ASMR stream (230 + 45), once each
+T14 (the original bug) ASMR streams are no longer cut off by a 60 channel cap in the merged list
+T15 the Your channels chip lists the curated channel and none of the category streams
+T16 a page that fails does not drop the rows already shown (still at least 100 Music rows)
+T17 ... and asking again fetches the page that failed (all 230 reachable after the retry)
+W1 Library rows (on demand) say "Play", never "Tune in"
+W2 Radio rows (live) say "Tune in", never "Play"
+W3 the link sheet for a live (Twitch) link says "Tune in", not "Play", matching the Twitch rows
+W4 live Twitch rows say "Tune in"
+R1 the fixture search ran through the fake radio-browser and all six stations are listed
+R2 whole-word name matches (Rain Sounds Radio, Heavy Rain Radio) rank above substring noise (Ukrainian, Trainspotting)
+R3 a tag match ("rain" in the tags of Calm Mix) ranks above substring noise
+R4 a word-start match (Rainbow) ranks above substring noise
+R5 within the same kind of match the more popular station stays first (Rain Sounds before Heavy Rain; Ukrainian before Trainspotting)
+R6 ranking drops no station and repeats none
+N1 Keyboard shortcuts is an Adw.ShortcutsDialog, not a text block in an alert
+N2 at 560 px the Listen scope chips (Your stations, Live channels, …) are not ellipsized
+N3 at 560 px the station card and rows show the station name in full ("Morning lift", not "Mo…")
+N2 at 640 px the Listen scope chips (Your stations, Live channels, …) are not ellipsized
+N3 at 640 px the station card and rows show the station name in full ("Morning lift", not "Mo…")
+N4 Recently played shows a station once even when it was played twice
+N5 at 1440 px the Rooms cards (or a hero) cover at least 45% of the area under the header
+N6 the scene Change… list shows a picture for each scene, not text only
