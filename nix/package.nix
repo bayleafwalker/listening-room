@@ -57,7 +57,7 @@ let
 in
 stdenvNoCC.mkDerivation {
   pname = "listening-hub";
-  version = "2.3.1";
+  version = "2.3.2";
   src = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
