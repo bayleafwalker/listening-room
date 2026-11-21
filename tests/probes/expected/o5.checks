@@ -1,0 +1,242 @@
+S1 --ui=classic exits with status 2 and a message, and opens nothing
+S1 --ui classic exits with status 2 and a message, and opens nothing
+S1 --desk --ui=classic exits with status 2 and a message, and opens nothing
+S1 classic modules are not importable
+S1 the default launch opens the one window (NextWindow, application id app.kotona.ListeningRoom)
+S1 first run shows Rooms, with nothing playing
+S2a Ctrl+M opens the mini player in its own window and leaves the main window alone
+S2b a second Ctrl+M does not open a second mini window
+S2c opening the mini player on first run starts nothing
+S2e closing the mini player leaves the main window open
+S2f with a last room recorded the mini player offers Return and shows the room name, no pause or volume
+S2g it sat there without starting anything
+S2h Return sends the return command once and the room plays
+S2i the mini player shows art, the room name, the now-playing line, pause, volume, timer and expand
+S2j pause sends quiet
+S2k play resumes
+S2l the mini slider sets room volume 35 on the controller
+S2m the mini timer starts a 10 minute Break (quiet, minutes 10)
+S2n a running Break shows as a timer label on the mini player
+S2o Expand closes the mini window and shows the main window
+S2p Up in the mini window raises room volume by 5
+S2q Space in the mini window pauses
+S2r Esc closes the mini window
+S3a at 561 px the normal window shows (grid columns, not the mini layout)
+S3b "from 560 to 999 px: two or three columns" so exactly 560 px is NOT the mini layout
+S3c below 560 px (559) the mini layout shows
+S3d at 420 px the mini layout shows
+S3e at 420 px the mini layout has pause, room volume, timer and expand
+S3f at 420 px no control is clipped and nothing scrolls sideways
+S3g the window can be that narrow (minimum width <= 420)
+S3h Expand at narrow width widens the window to the normal layout
+S3i back at 420 px the mini layout returns
+S3j widening past 560 px leaves the mini layout
+S3k launching narrow with a last room offers Return and plays nothing
+S3l narrow launch starts nothing
+S4a --mini / --desk opens the mini player; the main window stays hidden
+S4b a second --mini is delivered (exit 0) without opening the full window
+S4c a second --desk behaves as --mini
+S4d a second --preview-link reaches the running window and opens the link sheet
+S4e a delivered link starts nothing
+S4f a second listening-room://open URI is delivered
+S4g a second --inside shows Now while a room plays
+S4h a second --mini with the full window visible adds the mini player
+S5a the popover is the mini component (same class as the main window's mini layout)
+S5b with a last room and nothing playing the popover offers Return and no timers or Leave
+S5c opening the popover with a recorded room starts nothing
+S5d Return from the popover starts the room
+S5e the popover shows Break 10 min, Wind down 30 min and Leave room
+S5f the popover has pause, room volume and expand
+S5g Break 10 min sends quiet with minutes 10
+S5h Wind down 30 min sends wind_down with minutes 30
+S5i Leave room sends leave and the session ends
+S5j Expand starts listening-room (no autoplay args) and closes the popover
+S5k Esc closes the popover
+S5l losing focus closes the popover
+S5m listening-roomctl popover runs next_mini.run_popover
+S5n opening the popover over a playing room changes nothing
+S6a mini slider, roomctl and MPRIS agree on 37
+S6b Waybar scroll `volume +5` gives 42 everywhere
+S6b Waybar scroll `volume -5` gives 37 everywhere
+S6b Waybar scroll `volume -5` gives 32 everywhere
+S6c the mini slider follows a change made elsewhere
+S6d the popover slider shows the same 32
+S6e the popover sets it for MPRIS and roomctl too
+S6f Now shows 61 as well
+S7 Now midnight-library: every text >= 4.5:1 (5 labels)
+S7 mini window midnight-library: every text >= 4.5:1 (2 labels)
+S7 420 px mini layout midnight-library: every text >= 4.5:1 (2 labels)
+S7 Waybar popover midnight-library: every text >= 4.5:1 (5 labels)
+S7 Rooms hero (last room midnight-library): every text >= 4.5:1 (12 labels)
+S7 Rooms grid cards: text over the art >= 4.5:1 (16 labels in view)
+S7 Now night-drive: every text >= 4.5:1 (5 labels)
+S7 mini window night-drive: every text >= 4.5:1 (2 labels)
+S7 420 px mini layout night-drive: every text >= 4.5:1 (2 labels)
+S7 Waybar popover night-drive: every text >= 4.5:1 (5 labels)
+S7 Rooms hero (last room night-drive): every text >= 4.5:1 (12 labels)
+S7 Now northern-quiet: every text >= 4.5:1 (5 labels)
+S7 mini window northern-quiet: every text >= 4.5:1 (2 labels)
+S7 420 px mini layout northern-quiet: every text >= 4.5:1 (2 labels)
+S7 Waybar popover northern-quiet: every text >= 4.5:1 (5 labels)
+S7 Rooms hero (last room northern-quiet): every text >= 4.5:1 (12 labels)
+S7 Now velvet-circuit: every text >= 4.5:1 (5 labels)
+S7 mini window velvet-circuit: every text >= 4.5:1 (2 labels)
+S7 420 px mini layout velvet-circuit: every text >= 4.5:1 (2 labels)
+S7 Waybar popover velvet-circuit: every text >= 4.5:1 (5 labels)
+S7 Rooms hero (last room velvet-circuit): every text >= 4.5:1 (12 labels)
+S7 Now after-hours: every text >= 4.5:1 (5 labels)
+S7 mini window after-hours: every text >= 4.5:1 (2 labels)
+S7 420 px mini layout after-hours: every text >= 4.5:1 (2 labels)
+S7 Waybar popover after-hours: every text >= 4.5:1 (5 labels)
+S7 Rooms hero (last room after-hours): every text >= 4.5:1 (12 labels)
+S7 Now atomic-lounge: every text >= 4.5:1 (5 labels)
+S7 mini window atomic-lounge: every text >= 4.5:1 (2 labels)
+S7 420 px mini layout atomic-lounge: every text >= 4.5:1 (2 labels)
+S7 Waybar popover atomic-lounge: every text >= 4.5:1 (5 labels)
+S7 Rooms hero (last room atomic-lounge): every text >= 4.5:1 (12 labels)
+S7 Now finnish-discoveries: every text >= 4.5:1 (5 labels)
+S7 mini window finnish-discoveries: every text >= 4.5:1 (2 labels)
+S7 420 px mini layout finnish-discoveries: every text >= 4.5:1 (2 labels)
+S7 Waybar popover finnish-discoveries: every text >= 4.5:1 (5 labels)
+S7 Rooms hero (last room finnish-discoveries): every text >= 4.5:1 (12 labels)
+S7 Now wizard-valley: every text >= 4.5:1 (5 labels)
+S7 mini window wizard-valley: every text >= 4.5:1 (2 labels)
+S7 420 px mini layout wizard-valley: every text >= 4.5:1 (2 labels)
+S7 Waybar popover wizard-valley: every text >= 4.5:1 (5 labels)
+S7 Rooms hero (last room wizard-valley): every text >= 4.5:1 (12 labels)
+S8 Now midnight-library: focus ring on Pause is visible (>=3:1; changed px, perimeter, median)
+S8 Now midnight-library: focus ring on Mix is visible (>=3:1; changed px, perimeter, median)
+S8 Now midnight-library: focus ring on Room volume is visible (>=3:1; changed px, perimeter, median)
+S8 Now midnight-library: focus ring on Output is visible (>=3:1; changed px, perimeter, median)
+S8 Now midnight-library: focus ring on Timer is visible (>=3:1; changed px, perimeter, median)
+S8 Now midnight-library: focus ring on Menu is visible (>=3:1; changed px, perimeter, median)
+S8 mini midnight-library: focus ring on Pause the room is visible
+S8 mini midnight-library: focus ring on Open the full window is visible
+S8 mini midnight-library: focus ring on Timer is visible
+S8 mini midnight-library: focus ring on Room volume is visible
+S8 Rooms midnight-library: focus ring on the Return button is visible
+S8 Now atomic-lounge: focus ring on Pause is visible (>=3:1; changed px, perimeter, median)
+S8 Now atomic-lounge: focus ring on Mix is visible (>=3:1; changed px, perimeter, median)
+S8 Now atomic-lounge: focus ring on Room volume is visible (>=3:1; changed px, perimeter, median)
+S8 Now atomic-lounge: focus ring on Output is visible (>=3:1; changed px, perimeter, median)
+S8 Now atomic-lounge: focus ring on Timer is visible (>=3:1; changed px, perimeter, median)
+S8 Now atomic-lounge: focus ring on Menu is visible (>=3:1; changed px, perimeter, median)
+S8 mini atomic-lounge: focus ring on Pause the room is visible
+S8 mini atomic-lounge: focus ring on Open the full window is visible
+S8 mini atomic-lounge: focus ring on Timer is visible
+S8 mini atomic-lounge: focus ring on Room volume is visible
+S8 Rooms atomic-lounge: focus ring on the Return button is visible
+S8 Now velvet-circuit: focus ring on Pause is visible (>=3:1; changed px, perimeter, median)
+S8 Now velvet-circuit: focus ring on Mix is visible (>=3:1; changed px, perimeter, median)
+S8 Now velvet-circuit: focus ring on Room volume is visible (>=3:1; changed px, perimeter, median)
+S8 Now velvet-circuit: focus ring on Output is visible (>=3:1; changed px, perimeter, median)
+S8 Now velvet-circuit: focus ring on Timer is visible (>=3:1; changed px, perimeter, median)
+S8 Now velvet-circuit: focus ring on Menu is visible (>=3:1; changed px, perimeter, median)
+S8 mini velvet-circuit: focus ring on Pause the room is visible
+S8 mini velvet-circuit: focus ring on Open the full window is visible
+S8 mini velvet-circuit: focus ring on Timer is visible
+S8 mini velvet-circuit: focus ring on Room volume is visible
+S8 Rooms velvet-circuit: focus ring on the Return button is visible
+S9a <Control>1 (Rooms) is bound to a window action or shortcut
+S9a <Control>2 (Listen) is bound to a window action or shortcut
+S9a <Control>3 (Now) is bound to a window action or shortcut
+S9a <Control>f (Search) is bound to a window action or shortcut
+S9a <Control>l (Add a link) is bound to a window action or shortcut
+S9a <Control>v (Add a link from the clipboard) is bound to a window action or shortcut
+S9a <Control>m (Mini player) is bound to a window action or shortcut
+S9a <Control>comma (Preferences) is bound to a window action or shortcut
+S9a <Control>question (Shortcuts) is bound to a window action or shortcut
+S9b the shortcuts dialog lists Space
+S9b the shortcuts dialog lists Ctrl+1
+S9b the shortcuts dialog lists Ctrl+2
+S9b the shortcuts dialog lists Ctrl+3
+S9b the shortcuts dialog lists Ctrl+F
+S9b the shortcuts dialog lists Ctrl+L
+S9b the shortcuts dialog lists Ctrl+V
+S9b the shortcuts dialog lists Ctrl+M
+S9b the shortcuts dialog lists Ctrl+,
+S9b the shortcuts dialog lists Esc
+S9b the shortcuts dialog lists Up / Down
+S9b the shortcuts dialog lists Ctrl+?
+S9c Esc closes Mix first
+S9d a second Esc returns to browsing (Rooms)
+S9e Ctrl+F puts focus in the search entry
+S9f Ctrl+L opens the Add a link dialog
+S9g Ctrl+V outside an entry with a link on the clipboard opens the link sheet
+S9h none of those keys started anything
+S9i Tab on now reaches its controls ('Pause the room', 'Mix', 'Room volume')
+S9i Tab on rooms reaches its controls ()
+S10 1200x800 rooms: no clipped control and no sideways scroll
+S10 1200x800 rooms: minimum width 360 fits
+S10 1200x800 listen: no clipped control and no sideways scroll
+S10 1200x800 listen: minimum width 360 fits
+S10 1200x800 now: no clipped control and no sideways scroll
+S10 1200x800 now: minimum width 360 fits
+S10 1200 px Rooms grid has 4 columns
+S10 800x700 rooms: no clipped control and no sideways scroll
+S10 800x700 rooms: minimum width 360 fits
+S10 800x700 listen: no clipped control and no sideways scroll
+S10 800x700 listen: minimum width 360 fits
+S10 800x700 now: no clipped control and no sideways scroll
+S10 800x700 now: minimum width 360 fits
+S10 800 px Rooms grid has 2/3 columns
+S10 420x800 rooms: no clipped control and no sideways scroll
+S10 420 px rooms is the mini layout
+S10 420x800 rooms: minimum width 360 fits
+S10 420x800 listen: no clipped control and no sideways scroll
+S10 420 px listen is the mini layout
+S10 420x800 listen: minimum width 360 fits
+S10 420x800 now: no clipped control and no sideways scroll
+S10 420 px now is the mini layout
+S10 420x800 now: minimum width 360 fits
+S11g reduced motion: the Scene window starts as still artwork (picture still=True)
+S11a reduced motion: no idle fade in Now after 6.5 s
+S11b reduced motion: no video widget and no playing media stream
+S11c reduced motion turns GTK animations off for the whole app
+S11d the mini player has no video and no spinner, only still art
+S11e the popover has no video and no spinner
+S11f the narrow mini layout shows no moving picture or spinning spinner either
+S12 mini player, popover, narrow layout, Ctrl+M and a recorded last room send no start command
+PARITY Music Assistant: the window can load players, browse or search, play on a speaker and transfer a queue
+PARITY ListenBrainz and local history: Remember playing, Show remembered, history and recommendations are reachable
+PARITY Twitch: Review my follows (explicit import for review) is reachable
+PARITY AudioMuse: a station can be made from an AudioMuse mix (generation kind audiomuse)
+PARITY Station range (stay_close, in the runbook list "energy, familiarity, speech and range") is settable
+PARITY Jellyfin library browses albums, playlists, recently added albums and tracks (runbook); next_listen browses ['albums', 'playlists', 'recent', 'tracks']
+PARITY Track details / Play next are reachable: Listen can produce an Audio (track) row from the real Jellyfin browse
+PARITY Connections copy only promises what the window can do (no dead promises)
+PARITY the capability chips "Plays on speakers" and "History" correspond to a GUI route
+PARITY nothing in online_services was orphaned by the removal (every function the classic window called still has a caller)
+S14a the menu offers the plan's entries
+S14b Other players… opens a dialog and sends no start command
+S14c Other players… carries system volume and Mute
+S14d the Mute and System volume controls are fully visible in the dialog without scrolling (frame bottom 630, Mute bottom 324)
+S15 criterion 14: the evidence directory holds all fifteen listed screenshots
+S15 no evidence screenshot is blank
+S16a Now on live radio hides Next track, More like this and Less like this (hidden, not disabled)
+S16b the mini player uses none of the retired words
+S16c the Waybar popover uses none of the retired words
+S16d Other players uses none of the retired words
+S16e the narrow layout uses none of the retired words
+S16f Now on a plain library queue shows Next track but not More/Less like this (no generated station has played)
+S16g Next track is keyboard focusable
+S17a Library kind playlists: the toggle reaches browse_jellyfin with that kind and the rows show on screen
+S17a Library kind recent: the toggle reaches browse_jellyfin with that kind and the rows show on screen
+S17a Library kind tracks: the toggle reaches browse_jellyfin with that kind and the rows show on screen
+S17b the Tracks list offers Track details… and the AudioMuse station entry on a real Audio row
+S17c Track details… opens the dialog from that row and starts nothing
+S17d Show tracks on an album lists its tracks (jellyfin_queue) inertly
+S17e Speakers lists the players and Music Assistant music, and browsing sends nothing
+S17f a "Play on Kitchen" button is on screen
+S17g clicking it sends one online command naming the chosen speaker and the uri
+S17h Move Lounge's queue here transfers through Music Assistant
+S17i Remembered shows local bookmarks and has read nothing from ListenBrainz
+S17j the History button reads ListenBrainz once and shows it
+S17k Remember playing stores the note locally
+S17l none of this started playback
+S17m Station detail shows a Range choice and a Rename button
+S17n the Twitch page has a Review my follows button
+S17o nothing was read from Twitch before the button was pressed
+S17p pressing Review reads the follows once and adds none to a pool
+S17q the follows appear as two tick rows
+S17r adding the ticked follow puts only that channel in the pool

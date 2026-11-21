@@ -1,0 +1,197 @@
+# KNOWN FAILURE (WP4): the "integration: the hub test list registers the O2 and O3 suites" check greps nix/package.nix
+# for two suite file names. package.nix no longer lists suites (tests/run_suites.py discovers them), so the text is gone
+# although both suites still run. The acceptance author must replace it with a behaviour check, for example that
+# `python3 tests/run_suites.py --list` contains both names. Until then it stays a visible known failure.
+1a Listen is the page shown after Ctrl+2
+1b typing without focus lands in the search entry
+1c a pasted public URL shows up as a link result
+1d Open link… presents a sheet
+1e Ctrl+L opens an Add a link dialog
+1f launch with listening-room://open?url=https%3A%2F%2F opens the link sheet, nothing playing
+1f launch with https://www.youtube.com/watch?v=dQw4w9Wg opens the link sheet, nothing playing
+1f launch with https://www.youtube.com/watch?v=dQw4w9Wg opens the link sheet, nothing playing
+1g typing, every scope chip, search results, station pages, History, row menus, link results, sheets opened and cancelled, paste/drop and launch URIs started or changed nothing
+1h no real network request was attempted by fixtures-only browsing
+2a station Tune in sends exactly station.start for that id
+2b Your stations scope lists rows with a menu
+2c station row menu offers Play as ambience, never a global send-audio mode
+2d Play as ambience sends the atmosphere command (and only that)
+6c Recently played shelf shows 4 entries; Replay buttons only for entries with tracks (2 of the first 4)
+6a History lists all six entries, Replay only with track references (garbage tracks do not count)
+6b Replay sends station.replay for that history entry only
+6d Replay actually started the room
+6e a history entry without tracks offers Tune in, which starts the station (station.start), not a replay
+2e shelves present: Your stations, Recently played, Radio, Library, Live channels, Open elsewhere
+2f New station affordance is on the Your stations shelf
+3a every row has initials tile, name, one descriptor line and an action
+3b menus collectively cover Play as ambience, Save as station, Favourite, Open elsewhere
+3c a Radio row menu holds Play as ambience, Save as station, Favourite and Open elsewhere
+3d Radio Tune in sends only music
+3e Library scope has albums to tune in
+3f Library Tune in sends only online
+3g Live channel Tune in sends only link(destination music)
+3h a Radio row offers Favourite
+3i Favourite saves exactly one favourite and starts nothing
+1i a typed burst triggers one network search for the final text, not one per keystroke
+1j the World radio search ran off the GTK thread
+1l a pasted link is not also sent to World Radio as a search query (privacy: URLs may carry tokens)
+1k the matching result is shown
+2-off-thread the GTK loop is never blocked >250 ms by a slow search
+2a newer search result is shown
+2b the slower, older search never displays (not even briefly) over the newer one
+2c final screen shows only the newer result
+2d a running search offers Stop
+2e after Stop the late answer is ignored
+2f a late World answer does not appear after switching to Your stations
+2g returning to World radio with the old query does not resurrect the cancelled answer as fresh results
+2h a failing provider shows a calm note
+2i Library search runs off the GTK thread and the superseded one is cancelled
+2j a library search result that is not in the preloaded shelf is shown (Library scope, query "deep")
+2k a Live channels search surfaces a discovered channel that is not curated
+2l no provider call used a real network
+4a no Save button on the station page
+4b station page headline wording: Tune in and Play as ambience present
+4c mood rows named as the plan says
+4d segmented choice labels match the plan
+4e a stored Less speech shows as Fewer
+3-mood each mood choice writes exactly the mapped value through station.save, changes only that key, shows an Undo toast
+4f Over time and When it runs out write arc / end_policy only
+4g no hint is visible while Voices is Any
+4h Instrumental only shows a hint with the reviewed count (2 seeded)
+4i exactly one reviewed-recordings hint
+4j the hint disappears when another Voices value is chosen
+4k Fewer shown again for Less speech
+4l Instrumental only stored Strict instrumental
+4m Undo restores the previous value exactly (Less speech, not Likely instrumental)
+4n after Undo the segmented control shows Fewer again
+4o Undo wrote the full previous station back unchanged
+4s when the controller refuses a Voices change the page ends up showing what is stored
+4p rapid successive changes all persist
+4p2 each change offered its own Undo toast
+4q Undo of the FIRST toast reverts only its own change (energy), keeping the later Discover and Instrumental only
+4p3 the page follows a change made through the controller within 1.5 s (no stale pending state)
+4r two saves finishing out of order never lose the later choice
+4t Hold this mood is disabled (with a reason) when the station is not running
+4u Hold becomes available while the station runs
+4v Hold on sends station.hold(true) and the program is held
+4w Hold on writes no station preferences
+4x switch stays on after the next poll
+4y Hold off resumes the arc
+4z a radio station page hides Mood (not applicable) and still offers Tune in / Play as ambience
+4ab reopening the page after another recording was reviewed shows the new count (2 -> 3)
+4s2 four back-to-back choices (10 trials) always end with the last choices stored
+5a fallbacks listed in stored order
+5b the list shows them in that order
+5c keyboard-operable "Move … up" control with an accessible name
+5d Move up persists [Bravo, Alpha, Charlie]
+5e reorder starts nothing and saves once
+5f after a keyboard move focus stays inside the moved row (still keyboard-operable)
+5g after a keyboard move the focus stays on a control of the same (moved) item, so it can be moved again
+5h dropping row 2 onto row 0 moves it to the top
+5i hostile or no-op drag payloads write nothing
+5j Remove has an accessible name
+5k removing writes the list without that fallback, order of the rest kept
+5l removal toast offers Undo
+5m Undo restores the exact previous list and order
+5n Add a fallback appends the chosen source
+5o the Add a fallback menu lists other stations, not the one being edited
+5p two quick removals then Undo of the first brings back only the first (the second stays removed)
+5q the order is in the stations file on disk
+3a Undo of the second Energy change returns to Lively
+3b then Undo of the first returns to Any
+3c four changes gave four Undo toasts
+3d Undo of the first (Voices) restores Less speech only; Discover, Rise and Repeat stay
+3e Undo of the arc change restores Steady only
+3f Undo of the end change restores Stop only
+5r2 removed Bravo
+5r3 later reorder and add persisted
+5r4 Undo of the removal brings Bravo back and keeps the later reorder and add
+5r5 pressing the same Undo twice does not duplicate the fallback
+4a Library: a remote answer repeating a preloaded album is shown once, plus the new album
+4b Library: a superseded slow answer never shows (Stale album absent, newer shown)
+4c Library: clearing the query drops a late answer
+4d Live channels: a channel known both curated and remote is shown once
+4e Live channels: a superseded slow answer never shows
+4f remote searches ran off the GTK thread
+6 a URL as the query sends no provider search in any scope (including after Enter)
+6 control: ordinary text still searches
+5-paging 450 reviewed recordings counted across pages
+5-paging the page requests ran off the GTK thread (several pages)
+5-paging the GTK loop never blocked >250 ms while pages were fetched
+5-paging counting started nothing
+5-paging reopening the page recounts (451)
+5-paging a failing count leaves a calm hint and a working page
+7 saves under injected delays [0.9, 0] end with every last choice stored
+7 saves under injected delays [0.6, 0.3, 0] end with every last choice stored
+7 saves under injected delays [0, 0.8, 0] end with every last choice stored
+7 the page agrees with what is stored after the delayed saves
+7 closing the window with a save in flight does not crash
+5-sheet YouTube video offers exactly ['Play', 'Play as ambience', 'Show as scene', 'Open elsewhere']
+5-sheet YouTube video starts nothing before a choice
+5-sheet YouTube sheet shows a title and host
+5-sheet radio stream offers exactly ['Play', 'Play as ambience', 'Open elsewhere']
+5-sheet radio stream starts nothing before a choice
+5-sheet Twitch channel offers exactly ['Play', 'Play as ambience', 'Open elsewhere']
+5-sheet Twitch channel starts nothing before a choice
+5-sheet video file offers exactly ['Show as scene', 'Open elsewhere']
+5-sheet video file starts nothing before a choice
+5-sheet unsupported page offers exactly ['Open elsewhere']
+5-sheet unsupported page starts nothing before a choice
+5-sheet YouTube channel page (not a video) offers exactly ['Open elsewhere']
+5-sheet YouTube channel page (not a video) starts nothing before a choice
+5-choose Play as ambience sends one link command with destination atmosphere
+5-choose Open elsewhere hands the URL to the desktop launcher and starts nothing
+5-hostile paste: malformed URLs (file:, javascript:, data:, credentials, spaces, huge, bad port) never reach a sheet
+5-hostile paste: refused links start or open nothing
+5-hostile drop: malformed URLs (file:, javascript:, data:, credentials, spaces, huge, bad port) never reach a sheet
+5-hostile drop: refused links start or open nothing
+5-hostile dialog: malformed URLs (file:, javascript:, data:, credentials, spaces, huge, bad port) never reach a sheet
+5-hostile dialog: refused links start or open nothing
+5-hostile search: malformed URLs (file:, javascript:, data:, credentials, spaces, huge, bad port) never reach a sheet
+5-hostile search: refused links start or open nothing
+5-hostile launch-uri: malformed URLs (file:, javascript:, data:, credentials, spaces, huge, bad port) never reach a sheet
+5-hostile launch-uri: refused links start or open nothing
+5-hostile launch (listening-room:// URI): non-public hosts are refused or offered only as Open elsewhere
+5-hostile launch (listening-room:// URI): non-public hosts start nothing
+5-hostile launch (listening-room:// URI) control: a public stream is still previewed with Play offered (no over-refusal)
+5-hostile launch (--preview-link): non-public hosts are refused or offered only as Open elsewhere
+5-hostile launch (--preview-link): non-public hosts start nothing
+5-hostile launch (--preview-link) control: a public stream is still previewed with Play offered (no over-refusal)
+5-hostile launch (bare URL argument): non-public hosts are refused or offered only as Open elsewhere
+5-hostile launch (bare URL argument): non-public hosts start nothing
+5-hostile launch (bare URL argument) control: a public stream is still previewed with Play offered (no over-refusal)
+5-hostile no network attempted
+B no internal vocabulary on Listen, Station, History, link sheet or menus (at 1200 and 800)
+C every control on every Listen surface has an accessible name (not tooltip only)
+C each segmented mood choice group is named for assistive tech (e.g. Energy), not just its segments
+C Ctrl+F focuses the search entry
+C the keyboard-shortcuts dialog lists the Listen shortcuts (Ctrl+F search, Ctrl+L add a link)
+C Ctrl+F from a station page returns to the Listen index with search focused
+F8 Ctrl+F from Rooms goes to Listen with the search entry focused
+F8 setup: Now is showing
+F8 Ctrl+F from Now goes to Listen with the search entry focused
+C Ctrl+L from Rooms opens the Add a link dialog over Listen
+C the Add a link entry takes focus immediately
+C Enter in the entry previews the link in the sheet
+C the sheet gives keyboard focus to something inside it
+C nothing started by previewing
+C Escape on a station page goes back to Listen
+C Tab from the search entry reaches the scope chips and a Tune in button
+C Escape clears the search
+D layout at 1200x800 and 800x700: no control clipped or off-window, no horizontal scroll (shelves, search, scopes, History, Station, long names, link sheet)
+D reduced motion: moving between Listen, a station page and History runs no animated stack transition
+D reduced motion: no spinner is spinning on Listen
+6-bar the now-playing bar is visible and pinned to the bottom of Listen while a room is active
+6-bar bar stays pinned on station
+6-bar bar stays pinned on history
+6-bar bar stays pinned on index
+A typing with a room playing sends nothing (not even a volume write)
+6-bar the bar has a named volume control and Pause
+6-bar the bar is hidden when no room is active
+1-launch dio.example.test/live.mp3: sheet shown, no start/change command, nothing playing
+1-launch e.com/watch?v=dQw4w9WgXcQ: sheet shown, no start/change command, nothing playing
+1-launch ://www.twitch.tv/lofigirl: sheet shown, no start/change command, nothing playing
+4aa the Instrumental only hint counts ALL 130 reviewed recordings (metadata.list is paged at 100)
+F evidence-o3 holds at least ten screenshots
+integration: render() calls both rooms and listen updates
+!integration: the hub test list registers the O2 and O3 suites

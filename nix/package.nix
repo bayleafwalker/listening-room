@@ -48,6 +48,33 @@ let
     ps.librosa
     ps.soundfile
   ]);
+  # Programs the launchers may start; every entry point gets the same PATH.
+  runtimePath = lib.makeBinPath [
+    mpv
+    playerctl
+    pulseaudio
+    rofi
+    libnotify
+    xdg-utils
+    systemd
+    flatpak
+    feishin
+    wireplumber
+    hyprland
+    yt-dlp
+    ffmpeg
+    chromaprint
+  ];
+  # One launcher for a Python entry point in $out/share/listening-hub.
+  wrapPython = name: script: ''
+    makeWrapper ${python}/bin/python3 "$out/bin/${name}" \
+      --add-flags "$out/share/listening-hub/${script}" \
+      --set LISTENING_HUB_CATALOG "$out/share/listening-hub/catalogue.json" \
+      --set LISTENING_HUB_ASSETS "$out/share/listening-hub/assets" \
+      --set LISTENING_VOICE_MODEL "$out/share/listening-hub/models/voice-instrumental.onnx" \
+      --set LISTENING_EMBED_MODEL "$out/share/listening-hub/models/msd-musicnn.onnx" \
+      --prefix PATH : "$out/bin:${runtimePath}"
+  '';
   # The rendered scene loops and sound beds, built from src/artwork and
   # src/scene_tuning only (see assets.nix).
   assets = import ./assets.nix {
@@ -104,46 +131,9 @@ stdenvNoCC.mkDerivation {
     export LISTENING_AMBIENCE_SOURCE="$PWD/src/ambience.py"
     export PYTHONPATH="$PWD/src:$PWD/tests"
     export PYTHONDONTWRITEBYTECODE=1
-    python3 tests/test_listening_hub.py
-    python3 tests/test_listening_ambience.py
-    python3 tests/test_listening_rooms.py
-    python3 tests/test_listening_visuals.py
-    python3 tests/test_listening_scene_tuning.py
-    python3 tests/test_listening_effects.py
-    python3 tests/test_listening_twitch.py
-    python3 tests/test_listening_layers.py
-    python3 tests/test_listening_browse.py
-    python3 tests/test_listening_credentials.py
-    python3 tests/test_listening_atmospheres.py
-    python3 tests/test_listening_atmosphere_character.py
-    python3 tests/test_listening_devices.py
-    python3 tests/test_listening_session.py
-    python3 tests/test_listening_session_push.py
-    python3 tests/test_listening_online.py
-    python3 tests/test_listening_experience.py
-    python3 tests/test_listening_picture_races.py
-    python3 tests/test_listening_desktop_stations.py
-    python3 tests/test_listening_stations.py
-    python3 tests/test_listening_metadata_store.py
-    python3 tests/test_listening_metadata_pipeline.py
-    python3 tests/test_listening_metadata_http.py
-    python3 tests/test_listening_metadata_cli.py
-    python3 tests/test_listening_provider_auth.py
-    python3 tests/test_listening_room_volume.py
-    python3 tests/test_listening_controller_cost.py
-    python3 tests/test_listening_next_model.py
-    python3 tests/test_listening_next_glance.py
-    python3 tests/test_listening_render_cache.py
-    python3 tests/test_listening_next_rooms.py
-    python3 tests/test_listening_rooms_oracles.py
-    python3 tests/test_listening_glance_oracles.py
-    python3 tests/test_listening_listen.py
-    python3 tests/test_listening_listen_oracles.py
-    python3 tests/test_listening_next_prefs.py
-    python3 tests/test_listening_overlay_swap.py
-    python3 tests/test_listening_sources.py
-    python3 tests/test_listening_o6_oracles.py
-    python3 tests/test_listening_o9_ux.py
+    # Every tests/test_*.py runs unless tests/suites-manual.txt names it; the two below
+    # need their own environment and run after.
+    python3 tests/run_suites.py --except test_listening_window_smoke.py test_listening_station_eof.py
     # The sandbox has no /etc/dbus-1, so the private bus gets its config explicitly; the test sees
     # it is already isolated (LISTENING_PROBE_ISOLATED) and does not re-execute itself.
     smoke_runtime=$(mktemp -d)
@@ -169,80 +159,11 @@ stdenvNoCC.mkDerivation {
     ln -s ${voiceModel} "$out/share/listening-hub/models/voice-instrumental.onnx"
     ln -s ${embeddingModel} "$out/share/listening-hub/models/msd-musicnn.onnx"
     cp src/models/README.md "$out/share/listening-hub/models/README.md"
-    makeWrapper ${python}/bin/python3 "$out/bin/listening-hub" \
-      --add-flags "$out/share/listening-hub/listening_hub.py" \
-      --set LISTENING_HUB_CATALOG "$out/share/listening-hub/catalogue.json" \
-      --set LISTENING_HUB_ASSETS "$out/share/listening-hub/assets" \
-      --set LISTENING_VOICE_MODEL "$out/share/listening-hub/models/voice-instrumental.onnx" \
-      --set LISTENING_EMBED_MODEL "$out/share/listening-hub/models/msd-musicnn.onnx" \
-      --prefix PATH : "$out/bin:${
-        lib.makeBinPath [
-          mpv
-          playerctl
-          pulseaudio
-          rofi
-          libnotify
-          xdg-utils
-          systemd
-          flatpak
-          feishin
-          wireplumber
-          hyprland
-          yt-dlp
-          ffmpeg
-          chromaprint
-        ]
-      }"
-    makeWrapper ${python}/bin/python3 "$out/bin/listening-room" \
-      --add-flags "$out/share/listening-hub/listening_room.py" \
-      --set LISTENING_HUB_CATALOG "$out/share/listening-hub/catalogue.json" \
-      --set LISTENING_HUB_ASSETS "$out/share/listening-hub/assets" \
-      --set LISTENING_VOICE_MODEL "$out/share/listening-hub/models/voice-instrumental.onnx" \
-      --set LISTENING_EMBED_MODEL "$out/share/listening-hub/models/msd-musicnn.onnx" \
-      --prefix PATH : "$out/bin:${
-        lib.makeBinPath [
-          mpv
-          playerctl
-          pulseaudio
-          rofi
-          libnotify
-          xdg-utils
-          systemd
-          flatpak
-          feishin
-          wireplumber
-          hyprland
-          yt-dlp
-          ffmpeg
-          chromaprint
-        ]
-      }"
-    for entry in listening-session:session_service.py listening-roomctl:roomctl.py listening-session-client:session_client.py; do
-      makeWrapper ${python}/bin/python3 "$out/bin/''${entry%%:*}" \
-        --add-flags "$out/share/listening-hub/''${entry#*:}" \
-        --set LISTENING_HUB_CATALOG "$out/share/listening-hub/catalogue.json" \
-        --set LISTENING_HUB_ASSETS "$out/share/listening-hub/assets" \
-      --set LISTENING_VOICE_MODEL "$out/share/listening-hub/models/voice-instrumental.onnx" \
-      --set LISTENING_EMBED_MODEL "$out/share/listening-hub/models/msd-musicnn.onnx" \
-        --prefix PATH : "$out/bin:${
-          lib.makeBinPath [
-            mpv
-            playerctl
-            pulseaudio
-            rofi
-            libnotify
-            xdg-utils
-            systemd
-            flatpak
-            feishin
-            wireplumber
-            hyprland
-            yt-dlp
-            ffmpeg
-            chromaprint
-          ]
-        }"
-    done
+    ${wrapPython "listening-hub" "listening_hub.py"}
+    ${wrapPython "listening-room" "listening_room.py"}
+    ${wrapPython "listening-session" "session_service.py"}
+    ${wrapPython "listening-roomctl" "roomctl.py"}
+    ${wrapPython "listening-session-client" "session_client.py"}
     makeWrapper ${feishin}/bin/feishin "$out/bin/listening-hub-jellyfin" \
       --set SERVER_TYPE jellyfin \
       ${lib.optionalString (jellyfinUrl != "") ''
@@ -253,8 +174,9 @@ stdenvNoCC.mkDerivation {
   '';
 
   # Lets scripts/listening-dev.sh reuse the reviewed scene render without
-  # rebuilding or re-testing the whole package.
-  passthru = { inherit assets; };
+  # rebuilding or re-testing the whole package, and the dev shell reuse the
+  # package's Python environment.
+  passthru = { inherit assets python; };
 
   meta = {
     description = "Native listening menu for desktop players, internet radio and music discovery";

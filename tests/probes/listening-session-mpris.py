@@ -99,7 +99,7 @@ def child(source):
                     'PropertiesChanged', session_service.MPRIS_PATH, None, Gio.DBusSignalFlags.NONE,
                     lambda *_: signals.append(True))
                 assert current['PlaybackStatus'] == 'Playing', current
-                assert current['Volume'] == .25, current
+                assert current['Volume'] == 1.0, current  # MPRIS Volume is the room volume (default 1.0), not the music layer's 25
                 assert not current['CanSeek'] and not current['CanGoNext'] and not current['CanGoPrevious'], current
                 assert current['Metadata']['xesam:title'] == 'An isolated stream', current
                 assert current['Metadata']['mpris:trackid'].startswith('/app/kotona/ListeningRoom/track/'), current

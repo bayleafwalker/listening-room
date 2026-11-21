@@ -16,3 +16,19 @@ a vulnerability, a normal issue is welcome.
 You can expect an acknowledgement within a week. This is a hobby project, so
 fixes follow as time allows; critical problems come first. Only the latest
 release is supported.
+
+## What the app trusts
+
+These are deliberate, not oversights. A report that one of them can be abused
+across a trust boundary (for example by a stream or provider reply) is welcome.
+
+- **Stream links.** `valid_url` accepts any `http` or `https` link with a host and
+  no embedded credentials, including loopback (`127.0.0.1`, `localhost`) and
+  local-network addresses, because home radio and library servers live there.
+  It is a shape check, not a network policy.
+- **Catalogue apps.** An `app` entry in the catalogue runs its `command` list
+  (a program and arguments, never through a shell) when the user chooses it.
+  The catalogue is trusted configuration: only use one you wrote or reviewed.
+- **Catalogue path.** `LISTENING_HUB_CATALOG` replaces the catalogue the app
+  loads. Anyone who controls that environment variable controls which commands
+  an `app` entry can run, so treat the variable like `PATH`.

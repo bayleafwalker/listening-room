@@ -5,6 +5,63 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- The session controller pushes changes: a `subscribe` action streams one JSON line
+  per snapshot change over the private socket (heartbeat every 15 s when idle), and
+  `session_client.Subscription` / `subscribe()` give clients an iterator or callback
+  that reconnects with backoff and never starts playback. `inspect` reports the
+  protocol `version` (2). MPRIS updates from the same feed.
+- `listening-roomctl status --follow` prints a Waybar line whenever the status
+  changes, so the Waybar module runs one process with `exec` and no `interval`
+  (the README snippet is updated; plain `status` still works for polling).
+
+### Changed
+- The controller's actions are declared once in a registry (handler, whether it runs
+  at once or queues, argument types) that drives both dispatch and the socket
+  service. Unknown actions and wrongly typed arguments now fail at once with a
+  plain error instead of being queued.
+- The window does work in proportion to what changed: each surface draws only when
+  something it shows changed, Rooms no longer builds a key every poll, and Listen
+  rebuilds only the shelf whose contents changed. A poll that changes nothing draws
+  nothing (`tests/probes/wp2w-rebuild-probe.py` counts it). Renaming or saving a room
+  that is not playing leaves Now alone, and redrawing Now (a volume change) creates
+  no widgets: the Mix's Change… buttons are relabelled only when their words change.
+- The window and the mini player take snapshots from the controller's stream when it
+  has one; polling is the fallback (every 5 s while a stream that worked is down;
+  a controller without a stream is polled as before). Polls have a worker of their own,
+  so a slow command never delays them, and all thread handoffs go through one helper.
+- One stylesheet helper instead of four copies; the art cache keeps at most 64 images.
+- Now says a room's name once: a room named after its station shows the track
+  under the name, not the station again, and the Mix button, the mini players and
+  Listen's now-playing bar say "Music" or the track instead of repeating it. Now's
+  cards never cover the room's name and chip: in a short window they step aside
+  while the card shows, and a failed start puts the room that is still playing back
+  at once, with no "Connecting" chip left under "Couldn't start…".
+- Leaving Listen by any route (a tab, Back, Now, a shortcut or the mini layout) ends
+  ambience choosing, so Music › Change… and the Listen tab offer music again instead
+  of "Choose an ambience".
+- Undo of a default placement change in Preferences no longer counts as choosing a
+  placement.
+- The Waybar popover stays open when it loses focus (with focus-follows-mouse it closed
+  as soon as the pointer left it). Esc, its close control and Open the room window close
+  it, and a second Waybar click closes it too.
+
+### Internal
+- One suite list: `tests/run_suites.py` runs every `tests/test_*.py` for both the package
+  check and `scripts/listening-dev.sh test`; exceptions are named with reasons in
+  `tests/suites-manual.txt`. The WP1 and WP3 oracle suites now run in the package check.
+- `tests/netguard.py` blocks non-loopback network access in every suite `run_suites.py` starts;
+  the session evidence probe now fakes the World radio search instead of querying the live directory.
+- Acceptance probe expectations live in `tests/probes/expected/` and are judged by check
+  name (`acceptance_verdict.py`) instead of pass counts in the dev script.
+- `nix/package.nix` has one launcher helper; the dev shell reuses the package's Python.
+- CONTRIBUTING covers the asset render cost and adding a test or probe; SECURITY lists
+  what the app deliberately trusts. The classic-era `listening-hub-audio`/`-mix` probes
+  are reviewed: `-audio` (live network streams) is archived under `tests/probes/archive-classic/`
+  with its reasons; `-mix` stays as a manual real-systemd check. `listening-session-mpris.py`
+  (real Gio MPRIS on an isolated bus; run with a built package path) is kept and its stale
+  expectation fixed: MPRIS Volume is the room volume, default 1.0.
+
 ## [2.3.2] - 2026-11-21
 
 ### Fixed
@@ -25,14 +82,6 @@ All notable changes are recorded here. The format follows
 
 
 ### Added
-- The session controller pushes changes: a `subscribe` action streams one JSON line
-  per snapshot change over the private socket (heartbeat every 15 s when idle), and
-  `session_client.Subscription` / `subscribe()` give clients an iterator or callback
-  that reconnects with backoff and never starts playback. `inspect` reports the
-  protocol `version` (2). MPRIS updates from the same feed.
-- `listening-roomctl status --follow` prints a Waybar line whenever the status
-  changes, so the Waybar module runs one process with `exec` and no `interval`
-  (the README snippet is updated; plain `status` still works for polling).
 - Objective checks for the sounds (spectrum, event structure, distinctness, loop
   seam, level, determinism): `tests/test_listening_atmosphere_character.py`.
 - Ambience in the Mix: Change… on the Ambience row opens Listen in an ambience
@@ -68,10 +117,6 @@ All notable changes are recorded here. The format follows
   Radio shelf, without a restart (the snapshot carries `config_generation`).
 
 ### Changed
-- The controller's actions are declared once in a registry (handler, whether it runs
-  at once or queues, argument types) that drives both dispatch and the socket
-  service. Unknown actions and wrongly typed arguments now fail at once with a
-  plain error instead of being queued.
 - Sounds: the rain under distant thunder is now clearly audible between the
   rolls, and the six offline sounds are matched on A-weighted (perceived)
   loudness instead of raw RMS, so thunder is no longer far quieter than rain.
@@ -105,31 +150,6 @@ All notable changes are recorded here. The format follows
   a quick second click, double-click or Enter still enters.
 - Try again appears in a Mix row's menu only when that layer failed.
 - Favourites, the World radio cache and Twitch channels are read off the GTK thread.
-- The window does work in proportion to what changed: each surface draws only when
-  something it shows changed, Rooms no longer builds a key every poll, and Listen
-  rebuilds only the shelf whose contents changed. A poll that changes nothing draws
-  nothing (`tests/probes/wp2w-rebuild-probe.py` counts it). Renaming or saving a room
-  that is not playing leaves Now alone, and redrawing Now (a volume change) creates
-  no widgets: the Mix's Change… buttons are relabelled only when their words change.
-- The window and the mini player take snapshots from the controller's stream when it
-  has one; polling is the fallback (every 5 s while a stream that worked is down;
-  a controller without a stream is polled as before). Polls have a worker of their own,
-  so a slow command never delays them, and all thread handoffs go through one helper.
-- One stylesheet helper instead of four copies; the art cache keeps at most 64 images.
-- Now says a room's name once: a room named after its station shows the track
-  under the name, not the station again, and the Mix button, the mini players and
-  Listen's now-playing bar say "Music" or the track instead of repeating it. Now's
-  cards never cover the room's name and chip: in a short window they step aside
-  while the card shows, and a failed start puts the room that is still playing back
-  at once, with no "Connecting" chip left under "Couldn't start…".
-- Leaving Listen by any route (a tab, Back, Now, a shortcut or the mini layout) ends
-  ambience choosing, so Music › Change… and the Listen tab offer music again instead
-  of "Choose an ambience".
-- Undo of a default placement change in Preferences no longer counts as choosing a
-  placement.
-- The Waybar popover stays open when it loses focus (with focus-follows-mouse it closed
-  as soon as the pointer left it). Esc, its close control and Open the room window close
-  it, and a second Waybar click closes it too.
 
 ## [2.3.1] - 2026-11-18
 

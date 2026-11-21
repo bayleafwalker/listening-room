@@ -104,7 +104,12 @@ with tempfile.TemporaryDirectory(prefix='listening-session-') as folder:
         log.append((action, copy.deepcopy(arguments)))
         return service.execute(action, arguments)
 
+    # World radio search is a fixture, never the live directory.
+    world = [{'id': 'world-rain-room', 'name': 'Rain Room Radio', 'group': 'Search results', 'kind': 'radio',
+              'url': 'https://radio.example.test/rain-room', 'country': 'Finland', 'language': 'Finnish',
+              'tags': ['rain', 'calm'], 'website': 'https://radio.example.test/'}]
     patches = [patch.object(session_client, 'request', side_effect=request),
+               patch.object(hub, 'search_radio', side_effect=lambda query, **kw: copy.deepcopy(world)),
                patch.object(audio_devices, 'outputs', return_value=outputs),
                patch.object(audio_devices, 'test_sound', side_effect=lambda name=None: log.append(('test_sound', name))),
                patch.object(hub, 'system_volume', side_effect=lambda: dict(system_volume)),

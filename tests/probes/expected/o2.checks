@@ -1,0 +1,161 @@
+0a static: rename is registered immediate in the service (no worker round-trip surprises)
+1a hero: one primary "Return to Midnight library" on Rooms
+1b hero: a "last visited" line from last_entered_at
+1c hero: the returning room is NOT the only card (grid below hero)
+1d hero click returns exactly once and starts the last room
+1e first run: no hero, no "Return to"
+1f first run: no primary suggested-action on Rooms
+2a chips: exactly All, Yours, Focus, Reading, Late night, Lively, Something new in order
+2b choosing every chip sends nothing and has no backend effect
+2c All shows every catalogue room
+2d Late night keeps late rooms (Night drive, Midnight library, After hours) and drops Northern quiet/Velvet circuit
+2e Focus / Reading / Lively are non-empty subsets, each different from All
+2f Yours with nothing saved shows no rooms and an explanation
+2g Something new includes the authored new room (Finnish discoveries)
+2h Surprise me always opens a preview
+2i Surprise me within Late night only picks late-night rooms
+2j Surprise me never picks a room twice in a row only (varies)
+2k Surprise me never starts or changes anything
+2l Surprise me avoids the room you are in when others exist
+2m Surprise me under an empty Yours opens nothing and starts nothing
+2n Something new excludes the room you are in now (history) unless authored new
+3a saved room comes first, before every catalogue room
+3b saved room carries a Yours tag; catalogue rooms do not
+3c a visible "Yours" label exists on the saved card only
+3d the active room (Night drive) alone shows a Playing marker
+3e four columns at 1200 px
+3f cards are 16:9 (1.78 +- 0.12) at 1200 px
+3g every catalogue card shows its name and subtitle
+3i two or three columns at 800 px
+3i2 cards are 16:9 (+- 0.12) at 800 px
+4a single click opens a preview page (after the double-click wait)
+4b preview shows 'Night drive'
+4b preview shows "What you'll hear"
+4b preview shows 'Music'
+4b preview shows 'Scene'
+4b preview shows 'Ambience'
+4c preview shows the room subtitle and description
+4d Music row for live radio says "programming varies"
+4e preview shows the room tags
+4f exactly one Scene toggle with an accessible name
+4g one primary action: Enter room
+4h a note says the current room fades out and other apps keep playing
+4i opening a preview is inert
+4j preview art area is large (>= 480 px wide at 1200)
+4k preview: every icon-only control has an accessible name
+4l preview has no internal vocabulary
+4m Esc returns to the grid
+5a chips, Surprise me, card click, preview controls (scene toggle etc) send nothing
+5b card menu offers Rename… and Delete… (and no start action)
+5c Rename… opens a dialog
+5d Rename cancelled: no command, room unchanged
+5e Delete… asks first with a Delete and a Cancel response
+5e2 nothing deleted while the dialog is open
+5f Delete cancelled: no command, room still saved
+5g Delete dismissed with Esc/close: nothing deleted
+5h Mix has Save as my room…
+5i Save dialog opens from Mix
+5j Save dialog cancelled: no command
+5k all browse/dialog/menu actions combined send nothing
+6a Enter room sends exactly one enter for the previewed room, with_view true by default
+6b after Enter room the Rooms preview is gone and the window shows Now
+6c returning to Rooms shows the grid, not a stale preview
+6d scene toggle off -> enter with with_view false
+6e double-click enters exactly once
+6f after a double-click no preview is open on Now
+6g going back to Rooms after a double-click shows the grid (no pushed preview)
+6h double-click with a 200 ms gap still only enters (once, no preview)
+6h2 and nothing is pushed later
+6i single click previews and does not start
+6j Enter on a focused card enters it (explicit), once
+6k Space on a focused card previews it and starts nothing
+6l focus moves to Enter room on opening a preview (keyboard flow)
+7a entering while another room is active offers "Back to Midnight library"
+7b the new room is active
+7c Back enters the previous room (once)
+7d previous saved room named in the toast
+7e Back re-enters the saved room via its variant id
+7f entering from nothing offers no Back toast
+8a main menu has Save as my room…
+8b dialog opens with the name prefilled with the room name
+8c dialog lists what will be saved: Music and Scene (and Ambience when present) with the room volume
+8d dialog has no internal vocabulary
+8e dialog name field has an accessible name
+8f empty name disables Save
+8g Save uses the existing save command with that name and nothing else
+8g2 the confirmation toast "Saved Rainy study to Yours" is shown
+8g3 Undo on the save toast removes the room just saved
+8h the controller now has the saved room
+8i the saved room is the first card under Rooms (Yours)
+8j the Yours chip shows exactly the saved room
+8k saved room preview opens with its name and What you'll hear
+8l entering a saved room sends its variant_id only
+9a Rename dialog is prefilled with the current name
+9b renaming onto an existing saved name is refused in the dialog (button disabled or notice)
+9c empty name disables Rename
+9d rename sends exactly one rename command for the old id
+9e controller has the new name with a re-derived id, and the old one is gone
+9f grid shows the new name, not the old
+9g renaming the active saved room updates active id and name
+9h last_session follows the rename
+9i recent history holds no dangling id
+9j snapshot (what roomctl/UI read) lists only live ids for saved rooms and active
+9k no snapshot field points at a variant id that no longer exists
+9l Return hero shows the renamed room
+9m Return after a rename still works
+9n after a controller restart: variants reloaded under the new ids
+9o after a restart: last_session refers to a live room
+9p after a restart: recent has no dangling variant ids
+9q controller refuses a duplicate name
+9r controller refuses a duplicate that only differs in whitespace
+9s controller refuses renaming a missing room
+9t controller refuses an empty name
+9u controller does not rename catalogue rooms
+9v renames sent no start command
+10a Delete confirmation names the room and says what is removed
+10b confirming sends exactly one delete for that id
+10c the room is gone from the grid and the controller
+10d catalogue rooms are untouched by delete
+10e a catalogue card offers no Rename/Delete menu
+11a a legacy scene appears under Yours, first
+11b a legacy scene whose station is gone does not appear
+11c legacy card carries a Yours tag
+11d Yours chip lists the legacy scene
+11e entering a legacy scene is one explicit enter and the room plays that station
+11f a saved room with the same name replaces the legacy duplicate (one card)
+12a Rooms @1200x800: no horizontal scroll
+12b Rooms @1200x800: no clipped control
+12c Rooms @1200x800: the last card is reachable inside the window when scrolled down
+12d Rooms @1200x800: every icon-only control has an accessible name
+12e Rooms @1200x800: no internal vocabulary
+12f Preview @1200x800: no horizontal scroll
+12g Preview @1200x800: no clipped control
+12h Preview @1200x800: Enter room is visible or reachable by scrolling
+12i Preview @1200x800: height of Enter room >= 40 px
+12j Preview @1200x800: no internal vocabulary
+12a Rooms @800x700: no horizontal scroll
+12b Rooms @800x700: no clipped control
+12c Rooms @800x700: the last card is reachable inside the window when scrolled down
+12d Rooms @800x700: every icon-only control has an accessible name
+12e Rooms @800x700: no internal vocabulary
+12f Preview @800x700: no horizontal scroll
+12g Preview @800x700: no clipped control
+12h Preview @800x700: Enter room is visible or reachable by scrolling
+12i Preview @800x700: height of Enter room >= 40 px
+12j Preview @800x700: no internal vocabulary
+13b the preview says nothing plays until you enter
+13c closing the preview stops its loop (no stray playing stream)
+13e reduced motion: preview open
+13f reduced motion: no playing media stream in the preview
+13g reduced motion: no video widget or media paintable in the tree
+13h reduced motion: the preview says it is a still
+13i reduced motion: still art is shown in the preview (stdev 26.8 >= 8)
+13j reduced motion: opening/closing a preview runs no Gtk.Stack transition
+14a the Menu key opens the focused saved card's options
+14b opening options by keyboard sends nothing
+14c options reachable from the keyboard (Menu key on the card)
+14d chips are focusable
+15a exact same name warns that it replaces the saved room
+15b same name after whitespace cleaning also warns (the controller treats it as the same room)
+15c a save that replaced an existing room does not offer Undo that would delete it
+0b static: evidence directory holds the nine required screenshots

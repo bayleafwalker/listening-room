@@ -1,0 +1,130 @@
+1a launch dispatch: --ui=next, the default and --mini -> new window with their arguments; --ui=classic is refused
+1b launch with last room only: opens Rooms, single primary "Return to Midnight library"
+1c launch never autoplays (no command, no backend effect)
+1c launch leaves no room active
+1d Rooms lists every catalogue room
+1e a catalogue room card enters that room (enter command, then Now)
+1f launch while a room is active opens Now
+1g launch into active room sends no mutating command
+1h Return hero starts exactly the existing return, then Now
+2a browsing, Mix, popovers, menu and collapsing Now send no playback command
+2b browsing with no active room (Rooms/Listen/Now shortcut, popovers) sends nothing
+2c browsing with no active room leaves it idle
+3a Now (live radio) offers exactly the allowed controls
+3b Next track is hidden (not merely disabled) on live radio
+3c source chip present (Live radio)
+3d room name shown in a serif face
+3e Mix control carries a layer summary
+3f now-playing line visible
+3g Now is full-bleed art: nothing from Mix shown at rest
+3h Now (library queue) offers the allowed controls including Next track
+3i Next track is sensitive on a skippable library queue
+3j source chip says Library
+3k Next track sends one skip command (layer next)
+4a Now text, tooltips and accessible names: no forbidden vocabulary
+4b Timer popover: no forbidden vocabulary
+4b Output popover: no forbidden vocabulary
+4b Main menu popover: no forbidden vocabulary
+4c Mix open: no forbidden vocabulary
+4d Mix and Now use Music / Ambience / Scene
+4e "Workspace 9" appears only as a Scene placement value
+4f Mix row menu 'Music options': no forbidden vocabulary
+4f Mix row menu 'Ambience options': no forbidden vocabulary
+4f Mix row menu 'Change… Northern lake · offline Moonlit lake · offline Midnight Library · offline room Night Drive · offline room Northern Quiet · offline room Velvet Circuit · offline room After Hours · offline room Atomic Lounge · offline room Finnish Discoveries · offline room Wizarding Valley · offline room': no forbidden vocabulary
+4f Mix row menu 'Scene options': no forbidden vocabulary
+5a Pause sends the existing quiet (no minutes), nothing else
+5b Pause quiets the layers (music Paused, not stopped)
+5c the control becomes "Play the room"
+5d Play sends the existing resume and playback resumes
+5e the control returns to "Pause the room"
+5f Main menu offers "Leave room"
+5g Leave room sends the existing leave (fade-and-stop), not a bare stop
+5h room is stopped after the leave fade and the window returns to browsing
+6a Mix has rows Music, Ambience, Scene
+6b each row names its source and a state
+6c Music has level and mute
+6d Ambience (outdoor sound) has level, mute and Window, and a plain Change… that opens Listen in ambience mode
+6e Music row has no Window control
+6f Scene has placement (Workspace 9 / Here), Moving picture, a close control and no level/mute
+6j opening Mix and row menus sends no playback command
+6g Music row menu: Stop always; Try again only after a failure; no Next track on live radio
+6h Ambience row menu: Stop always; Try again only after a failure
+6i Scene row menu: Stop always; Try again only after a failure
+6k Music level slider sends a layer volume command that persists (35)
+6l Music mute sends a layer command and the layer is muted
+6m Ambience shows Window only for outdoor sounds (indoor sound hides it)
+6n Scene can be closed (one layer command, picture stops, others play)
+6o Mix offers "Save as my room…"
+6p Save dialog opens with the room name prefilled
+6q Save goes through the existing save command and stores the room
+7a exactly one banner: one Try again and one Choose another
+7b banner names the failing layer (Scene) and what keeps playing (Music)
+7c banner vocabulary is clean
+7d other layers keep playing
+7e Try again re-runs only the failing layer (one picture/layer command; only start_picture runs)
+7f Mix button carries a marker only while a layer failed (widget tree differs failed vs healthy)
+7g banner clears once the layer starts
+7h Choose another opens a chooser (popover, Mix or dialog) without changing playback
+7i music failure banner names Music
+8a the window sets room volume through the controller (room_volume command, value 50)
+8b room volume scales Music and Ambience, keeping their ratio
+8c per-layer levels persist unchanged under room volume
+8d MPRIS Volume reads the room volume
+8e listening-roomctl volume reads the same value (50)
+8f listening-roomctl volume 70 sets it; the window slider follows
+8g MPRIS Volume write sets the same value; window slider follows
+8h saved rooms store room volume
+8i entering the saved room restores its room volume
+8j runbook documents the listening-roomctl volume verb
+9a Timer popover offers Break 10 min, Wind down 30 min, Dim the scene 30 min, Cancel
+9b no timer chip before a timer runs
+9c Break 10 min sends the existing timed quiet with minutes 10
+9d Break pauses the room and records a resume offer
+9e a timer chip with time remaining appears in the header
+9f Break confirms with a toast carrying Undo
+9g Break never auto-resumes after its time (music still Paused); Play is offered
+9h Wind down 30 min sends wind_down with minutes 30; chip shows it
+9i Wind down toast carries Undo
+9j Dim the scene 30 min sends one command with minutes 30 and shows a chip
+9j2 Dim toast carries Undo
+9k Cancel is available while a timer runs
+9l Cancel stops the timers and removes the chip
+9m Output popover lists the owned-stream outputs
+9n Output popover has Test sound
+9o Test sound plays a test sound and sends no playback command to the room
+9p Output popover has a system volume control
+9q system volume slider changes the system volume
+10b reduced motion: no playing video/media stream anywhere
+10c reduced motion: no video widget or media paintable in the tree
+10d reduced motion: still art is shown behind Now (non-flat pixels above the scrim; stdev 23.7 >= 8)
+10e reduced motion: switching Rooms/Listen/Now runs no animated Gtk.Stack transition
+11a Space pauses the room (quiet)
+11b Space again resumes the room
+11c Down lowers and Up raises room volume in Now
+11d Esc closes Mix and stays in Now
+11f Esc from Now returns to browsing
+11g Ctrl+3 opens Now, Ctrl+2/Ctrl+1 leave it (accelerators registered)
+11h Ctrl+1/Ctrl+2 reach browsing pages
+11i each required control exists exactly once under its exact accessible name (Pause state)
+11j "Play the room" appears when paused
+11k every icon-only control has an explicit accessible name (Now, Mix, Rooms, Listen)
+11l keyboard focus ring is visible over art (>=40 clearly changed pixels around the focused control)
+12 layout at 1200x800: no control clipped or off-window, no horizontal scroll
+12 layout at 800x700: no control clipped or off-window, no horizontal scroll
+13 contrast midnight-library @1200x800: room title and now-playing >= 4.5:1
+13 contrast night-drive @1200x800: room title and now-playing >= 4.5:1
+13 contrast northern-quiet @1200x800: room title and now-playing >= 4.5:1
+13 contrast velvet-circuit @1200x800: room title and now-playing >= 4.5:1
+13 contrast after-hours @1200x800: room title and now-playing >= 4.5:1
+13 contrast atomic-lounge @1200x800: room title and now-playing >= 4.5:1
+13 contrast finnish-discoveries @1200x800: room title and now-playing >= 4.5:1
+13 contrast wizard-valley @1200x800: room title and now-playing >= 4.5:1
+13 contrast midnight-library @800x700: room title and now-playing >= 4.5:1
+13 contrast night-drive @800x700: room title and now-playing >= 4.5:1
+13 contrast northern-quiet @800x700: room title and now-playing >= 4.5:1
+13 contrast velvet-circuit @800x700: room title and now-playing >= 4.5:1
+13 contrast after-hours @800x700: room title and now-playing >= 4.5:1
+13 contrast atomic-lounge @800x700: room title and now-playing >= 4.5:1
+13 contrast finnish-discoveries @800x700: room title and now-playing >= 4.5:1
+13 contrast wizard-valley @800x700: room title and now-playing >= 4.5:1
+14 (static) evidence directory holds the required screenshots

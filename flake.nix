@@ -74,15 +74,7 @@
         {
           default = p.mkShell {
             packages = [
-              (p.python3.withPackages (ps: [
-                ps.pygobject3
-                ps.pycairo
-                ps.pillow
-                ps.numpy
-                ps.onnxruntime
-                ps.librosa
-                ps.soundfile
-              ]))
+              self.packages.${system}.default.python
               p.xvfb-run
               p.dbus
               p.mpv

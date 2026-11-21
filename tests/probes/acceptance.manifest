@@ -1,0 +1,10 @@
+# The GUI acceptance probes that `scripts/listening-dev.sh acceptance` runs, in order.
+# Format: NAME EVIDENCE-PROBE ACCEPTANCE-PROBE  (- when there is no evidence probe).
+# The evidence probe writes the screenshots its acceptance probe then checks.
+# What a run must produce is expected/NAME.checks, judged by acceptance_verdict.py.
+next listening-next-ui listening-next-acceptance
+o2 listening-next-rooms listening-o2-acceptance
+o3 listening-listen-ui listening-o3-acceptance
+o4 - listening-o4-acceptance
+o5 listening-session-ui listening-o5-acceptance
+o6 - listening-o6-acceptance

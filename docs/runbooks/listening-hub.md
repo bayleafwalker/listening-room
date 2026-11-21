@@ -264,6 +264,9 @@ an owned picture to the current workspace as a movable, pinned 640×360 window;
 Bring here or Workspace 9 removes its pin. Ordinary sound-enabled videos keep
 their normal player controls.
 
-`tests/probes/listening-hub-mix.py` checks real systemd/mpv replacement,
-independent layers, retained levels and unchanged master volume with local HTTP
-fixtures and null audio. It does not establish Twitch service compatibility.
+`tests/probes/listening-hub-mix.py` is a manual check for a development machine: it
+drives real systemd/mpv replacement, independent layers, retained levels and unchanged
+master volume with local HTTP fixtures and null audio. It starts uniquely named transient
+user units and reads the default sink volume, so it is not part of the dev loop or the
+package build and never runs from the isolated probes. It does not establish Twitch
+service compatibility. The fake-mpv suites cover the same behaviour without a session.
