@@ -13,7 +13,7 @@ All notable changes are recorded here. The format follows
   rooms) is scaled on the worker the first time it is shown.
 - Scene loops cost far less memory: GStreamer's libav video decoders run one thread
   instead of one per core, which roughly halves what the eight catalogue loops hold
-  once each has been shown (about 930 MB to about 480 MB in the software-rendered
+  once each has been shown (about 930 MB to 420-490 MB in the software-rendered
   test harness). Loops still play only while on screen and are still never torn down.
 - At most 12 loop files hold a pipeline for the life of the window (the catalogue's
   and a few of your own clips); a clip beyond that shows its still.
