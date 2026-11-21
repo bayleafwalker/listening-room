@@ -5,6 +5,29 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- The window opens faster: Rooms paints its cards at once and their posters arrive
+  from a worker thread, so the GTK thread no longer decodes art at startup (about
+  300 ms of it before, under 1 ms now). The package build writes every poster at card
+  size (`NAME.card.jpg`, 640x360) and cards show that; a poster without one (your own
+  rooms) is scaled on the worker the first time it is shown.
+- Scene loops cost far less memory: GStreamer's libav video decoders run one thread
+  instead of one per core, which roughly halves what the eight catalogue loops hold
+  once each has been shown (about 930 MB to about 480 MB in the software-rendered
+  test harness). Loops still play only while on screen and are still never torn down.
+- At most 12 loop files hold a pipeline for the life of the window (the catalogue's
+  and a few of your own clips); a clip beyond that shows its still.
+- GStreamer loads on a worker when the window opens, so the first room preview no
+  longer freezes the window while GStreamer scans its plugins (1.6 s or more after a
+  first start or an upgrade); a scene shown before that shows its still, then moves.
+- The dev shell has the package's GStreamer plugins, so `scripts/listening-dev.sh test`
+  and acceptance play scene loops like the installed window.
+
+### Fixed
+- Scenes loop again: a scene stopped moving at the end of its clip (about 20 s after
+  entering a room), because GTK's own looping stops at the end of the stream with
+  this GTK and GStreamer. A playing loop now starts over itself, on the same pipeline.
+
 ## [2.4.0] - 2026-11-21
 
 ### Added

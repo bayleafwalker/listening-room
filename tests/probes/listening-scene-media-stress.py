@@ -18,14 +18,19 @@ exists from then on), takes a "warm" sample, then runs the cycles. Prints a "sam
 GL threads (gldisplay-event + gstglcontext), open fds, and the live Scene and Gtk.MediaFile
 wrappers after gc.collect(). With --flat, fails unless every later sample is within a small bound
 of the warm one (no per-preview growth). With --budget-mb B, fails unless every sample's RSS is
-within B of the base one: what all the loops cost together, held for the whole run.
+within B of the base one: what all the loops cost together, held for the whole run (the "clips"
+sample is bounded by the loop limit instead).
 
 --extra-clips N  after the cycles, shows N more distinct loop files (links to a catalogue loop, as a
                  user's own clips would be) in one scene, then samples again ("clips"): the loops
                  beyond next_widgets.LOOP_LIMIT must show their still and add nothing.
 
+--seam           after the cycles, enters a room and watches its scene past the end of the loop:
+                 the timestamp must wrap back to the start (Gtk.MediaFile's own looping stops at the
+                 end here), on the same MediaFile, with no GTK-thread gap over 100 ms around it.
+
     listening-scene-media-stress.py --output DIR [--cycles N] [--seed S] [--mode M] [--flat]
-                                    [--budget-mb B] [--extra-clips N]
+                                    [--budget-mb B] [--extra-clips N] [--seam]
 """
 import gc
 import os
@@ -41,7 +46,7 @@ ENV = o6_env.Env(__doc__, default_output='/tmp/listening-scene-media-stress',
                  extra_args={'--cycles': dict(type=int, default=60), '--seed': dict(type=int, default=None),
                              '--mode': dict(default='random', choices=['random', 'preview']),
                              '--flat': dict(action='store_true'), '--budget-mb': dict(type=int, default=0),
-                             '--extra-clips': dict(type=int, default=0)})
+                             '--extra-clips': dict(type=int, default=0), '--seam': dict(action='store_true')})
 
 
 def main():
@@ -89,6 +94,8 @@ def main():
         rooms.close_preview(animate=False)
         env.pump(3)
         samples['settled'] = sample(env, 'settled')
+        if ENV.args.seam:
+            seam(env, window, rooms, cards)
         if ENV.args.extra_clips:
             samples['clips'] = extra_clips(env, ENV.args.extra_clips)
         window.close()
@@ -98,7 +105,7 @@ def main():
           % (ENV.args.cycles, counts, motion, peak), flush=True)
     if ENV.args.budget_mb:
         over = {label: values['rss_mb'] - samples['base']['rss_mb'] for label, values in samples.items()
-                if values['rss_mb'] - samples['base']['rss_mb'] > ENV.args.budget_mb}
+                if label != 'clips' and values['rss_mb'] - samples['base']['rss_mb'] > ENV.args.budget_mb}
         assert not over, 'loops cost more than %d MB over the base sample: %r' % (ENV.args.budget_mb, over)
         print('budget: every sample within %d MB of the base sample (warm +%d MB)'
               % (ENV.args.budget_mb, samples['warm']['rss_mb'] - samples['base']['rss_mb']), flush=True)
@@ -112,6 +119,37 @@ def main():
                  if values[key] - base[key] > limit and (key != 'scenes' or label == 'settled')}
         assert not grown, 'grew beyond %r of the warm sample: %r' % (bounds, grown)
         print('flat: every sample within %r of the warm sample' % bounds, flush=True)
+
+
+def seam(env, window, rooms, cards):
+    """Enter a room and watch its loop pass its end: it must start over, without a GTK-thread stall."""
+    import time
+    window.show_rooms()
+    rooms.open_preview(cards[0])
+    env.pump(.5)
+    rooms.enter(rooms.opened)
+    env.pump(2)
+    scene = window.scene
+    media = scene.media
+    assert media is not None and scene.playing_motion, 'the entered room plays no loop'
+    duration = media.get_duration() / 1e6
+    ticks, wraps, last = [], 0, media.get_timestamp()
+    deadline = time.monotonic() + duration + 6
+    while time.monotonic() < deadline:
+        env.context.iteration(False)
+        ticks.append(time.monotonic())
+        now = media.get_timestamp()
+        wraps += now + 1e6 < last
+        last = now
+        time.sleep(.005)
+    gap = max(b - a for a, b in zip(ticks, ticks[1:])) * 1000
+    print('seam: loop %.1f s, wrapped %d times, still the same MediaFile %s, playing %s, worst GTK-thread gap %.0f ms'
+          % (duration, wraps, scene.media is media, scene.playing_motion, gap), flush=True)
+    assert wraps >= 1, 'the loop stopped at its end instead of starting over'
+    assert scene.media is media, 'the scene changed its MediaFile'
+    assert gap < 100, 'the GTK thread stalled %.0f ms around the seam' % gap
+    window.leave_room()
+    env.pump(1)
 
 
 def extra_clips(env, count):
