@@ -313,6 +313,19 @@ def warm_gst():
     _GST['thread'].start()
 
 
+DMABUF_WARM_MS = 1000
+
+
+def _warm_dmabuf():
+    """GTK's video sink asks the display for its dmabuf formats, and the first ask sets up a Vulkan
+    instance on the GTK thread (about 200 ms with software rendering). Ask once while the window is idle
+    after opening, so the first room preview does not pay it."""
+    display = Gdk.Display.get_default()
+    if display is not None and hasattr(display, 'get_dmabuf_formats'):
+        display.get_dmabuf_formats()
+    return False
+
+
 def _load_gst(notify=False):
     ready = False
     try:
@@ -330,6 +343,8 @@ def _load_gst(notify=False):
 
 
 def _gst_known():
+    if _GST['ready']:
+        GLib.timeout_add(DMABUF_WARM_MS, _warm_dmabuf, priority=GLib.PRIORITY_LOW)
     waiting, _GST['waiting'] = _GST['waiting'], []
     for scene, assets, motion in waiting:
         if scene.key == (assets.get('still'), assets.get('loop'), bool(motion)) and not scene.closed:
