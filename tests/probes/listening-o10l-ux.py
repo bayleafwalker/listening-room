@@ -129,6 +129,7 @@ with env:
         check('2b All shows ASMR channels next to Music (the ASMR loss is fixed)', 'Whisperer' in texts and 'Lofigirl' in texts, texts[:12])
         check('2c a row says category, viewers and language', any(t == 'ASMR · 321 watching · FI' for t in texts)
               and any(t == 'Music · 1.2 k watching · EN' for t in texts), [t for t in texts if 'watching' in t][:6])
+        check('2d0 rows have a picture slot (an avatar), not a monogram', any(isinstance(w, env.Adw.Avatar) for w in env.widgets(listen.index_body)))
         check('2d a row shows the stream title', 'Rain on a mic' in texts and 'beats to relax' in texts)
 
         def pick(name):
@@ -207,9 +208,10 @@ with env:
         window.close()
         pump(1.2)
     leave()
+    env.start_station_room()
     window = env.launch(width=360, height=640, page=None)
     pump(.8)
-    env.press(window.mini_player, 'Browse rooms')
+    window.browse_rooms()
     pump(1.0)
     rooms = window.rooms
     check('3h Browse rooms at 360 px shows Rooms', window.current_page() == 'browse')
@@ -225,6 +227,16 @@ with env:
     window.browse.set_visible_child_name('listen')
     pump(1.0)
     listen = window.listen
+    check('3p with a room playing, Listen at 360 px asks for no more than the window (bar included)',
+          window.toolbar.measure(Gtk.Orientation.HORIZONTAL, -1)[0] <= 360, window.toolbar.measure(Gtk.Orientation.HORIZONTAL, -1)[0])
+    check('3q ... and the search entry ends inside the window', (bounds(listen.search, window) or (0, 0, 0))[0] + (bounds(listen.search, window) or (0, 0, 0))[2] <= 360)
+    listen.begin_ambience('now')
+    pump(.8)
+    check('3r ambience mode at 360 px fits: toolbar, Cancel and search all inside', window.toolbar.measure(Gtk.Orientation.HORIZONTAL, -1)[0] <= 360
+          and all(inside(bounds(b, window), window) for b in buttons(listen.widget, 'Cancel') + [listen.search]),
+          window.toolbar.measure(Gtk.Orientation.HORIZONTAL, -1)[0])
+    listen.end_ambience()
+    pump(.4)
     scopes = [bounds(t, window) for t in env.widgets(listen.scopes) if isinstance(t, Gtk.ToggleButton) and t.get_mapped()]
     check('3m Listen at 360 px: the scope chips keep their full words (they scroll, not ellipsize)',
           all(not any(isinstance(x, Gtk.Label) and x.get_layout().is_ellipsized() for x in env.widgets(t))
