@@ -88,8 +88,11 @@ def main():
     if ENV.args.flat:
         base = samples['warm']
         bounds = {'rss_mb': 60, 'threads': 8, 'gl_threads': 0, 'fds': 8, 'scenes': 2, 'media': 0}
+        # Mid-run, a closing preview page lives until its removal timeout (up to 260 ms), so live
+        # Scenes are only counted once settled; every other measure is checked at every sample.
         grown = {(label, key): (base[key], values[key]) for label, values in samples.items()
-                 for key, limit in bounds.items() if values[key] - base[key] > limit}
+                 for key, limit in bounds.items()
+                 if values[key] - base[key] > limit and (key != 'scenes' or label == 'settled')}
         assert not grown, 'grew beyond %r of the warm sample: %r' % (bounds, grown)
         print('flat: every sample within %r of the warm sample' % bounds, flush=True)
 
