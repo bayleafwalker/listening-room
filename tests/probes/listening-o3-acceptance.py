@@ -1396,7 +1396,14 @@ def s7_link_sheet():
             check('5-sheet %s opens the sheet' % label_text, False, 'no sheet')
             continue
         offered = [' '.join(texts(b)) for b in walk(sheet) if isinstance(b, Gtk.Button) and shown(b) and ' '.join(texts(b)) != 'Cancel']
-        check('5-sheet %s offers exactly %r' % (label_text, want), offered == want, repr(offered))
+        if label_text == 'Twitch channel':
+            # ORIGINAL oracle, kept running (see 5-sheet-R1).
+            check('5-sheet %s offers exactly %r [ORIGINAL, superseded by 5-sheet-R1]' % (label_text, want), offered == want, repr(offered))
+            # REVISION 5-sheet-R1 (O10-LISTEN, N11; coordinator decision 2026-11-21): a Twitch channel is a live source, so the
+            # sheet's music destination says "Tune in" like the Twitch rows. The other destinations are unchanged.
+            check('5-sheet-R1 Twitch channel offers exactly %r' % (['Tune in'] + want[1:],), offered == ['Tune in'] + want[1:], repr(offered))
+        else:
+            check('5-sheet %s offers exactly %r' % (label_text, want), offered == want, repr(offered))
         check('5-sheet %s starts nothing before a choice' % label_text, not mutating_since(mark) and not backend.calls, repr(mutating_since(mark)))
         if label_text == 'YouTube video':
             check('5-sheet YouTube sheet shows a title and host', any('youtube' in t.lower() for t in texts(sheet)), repr(texts(sheet)))

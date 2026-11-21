@@ -138,7 +138,8 @@
 5-sheet YouTube sheet shows a title and host
 5-sheet radio stream offers exactly ['Play', 'Play as ambience', 'Open elsewhere']
 5-sheet radio stream starts nothing before a choice
-5-sheet Twitch channel offers exactly ['Play', 'Play as ambience', 'Open elsewhere']
+!5-sheet Twitch channel offers exactly ['Play', 'Play as ambience', 'Open elsewhere'] [ORIGINAL, superseded by 5-sheet-R1]
+5-sheet-R1 Twitch channel offers exactly ['Tune in', 'Play as ambience', 'Open elsewhere']
 5-sheet Twitch channel starts nothing before a choice
 5-sheet video file offers exactly ['Show as scene', 'Open elsewhere']
 5-sheet video file starts nothing before a choice
