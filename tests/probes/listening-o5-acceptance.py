@@ -450,7 +450,31 @@ def s5_popover():
     host3.window.is_active = lambda: False   # no window manager here: say the window lost focus
     host3.window.notify('is-active')
     pump(.6)
-    check('S5l losing focus closes the popover', host3.closed or not host3.window.get_visible())
+    # S5l is superseded (2026-11-20, WP2-WINDOW acceptance): a user report ("It doesn't crash, but window closes
+    # when losing focus", the Waybar popover on Hyprland with follow_mouse=1) led to the product decision that the
+    # popover must not close because it lost focus. The original check stays visible and still runs; on a tree with
+    # the decision implemented it records one expected failure. S5j and S5k (the close control, Esc) are unchanged.
+    check('S5l [ORIGINAL, superseded by S5l-R1] losing focus closes the popover', host3.closed or not host3.window.get_visible())
+    if not host3.closed:
+        host3.window.close()
+        pump(.4)
+    host5 = next_mini.PopoverHost(app(), request, launch=lambda arguments: None)
+    pump(.8)
+    other = Gtk.Window(title='Another window')
+    other.set_default_size(320, 200)
+    other.present()           # focus moves to another window (as far as Xvfb without a window manager allows)
+    pump(.6)
+    host5.window.was_active = True
+    host5.window.is_active = lambda: False   # and say so explicitly, the same way S5l did
+    host5.window.notify('is-active')
+    pump(1.0)
+    check('S5l-R1 with the popover open, focus moving to another window leaves it open and visible',
+          not host5.closed and host5.window.get_visible() and host5.window.get_mapped(),
+          repr((host5.closed, host5.window.get_visible(), host5.window.get_mapped())))
+    other.close()
+    if not host5.closed:
+        host5.window.close()
+    pump(.4)
     check('S5m listening-roomctl popover runs next_mini.run_popover', 'run_popover' in Path(roomctl.__file__).read_text())
     # enter then verify the popover while playing issues no start on open
     enter_room('night-drive')
