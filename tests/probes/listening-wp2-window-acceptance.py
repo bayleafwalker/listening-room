@@ -481,6 +481,29 @@ with env:
                 rebuilt.append(texts[:60])
         check('R5 a station change leaves the other Listen shelves alone (same widgets, none replaced)',
               (untouched + len(rebuilt)) >= 1 and not rebuilt, {'kept': untouched, 'rebuilt': rebuilt})
+        # R5-R1, phase 2 (2026-11-21): "Recently played" says "5 min ago"-style times, so it must redraw when the
+        # controller minute turns; one run had the minute turn inside the 2.2 s window and failed R5 on that shelf
+        # only (another run passed). The revision measures again when that happens, so a minute turn is not counted.
+        retried = 0
+        while rebuilt and retried < 2 and all(text.startswith('Recently played') for text in rebuilt):
+            retried += 1
+            while time.time() % 60 > 50:          # not near a minute boundary
+                pump(.5)
+            station = dict(o6_env.RADIO_STATION, name='Acceptance Evening %d' % retried)
+            result, shelves = measure('station saved elsewhere (again), listen shown',
+                                      lambda: env.service.execute('station.save', {'station': station}))
+            untouched, rebuilt = 0, []
+            for shelf, items in shelves:
+                texts = ' '.join((w.get_text() or '') for w in items if isinstance(w, Gtk.Label))
+                if 'Acceptance Evening' in texts or 'stations' in texts.lower():
+                    continue
+                now_items = {id(w) for w in widgets(shelf)} if shelf.get_parent() is not None else set()
+                if all(id(w) in now_items for w in items) and len(now_items) == len(items):
+                    untouched += 1
+                else:
+                    rebuilt.append(texts[:60])
+        check('R5-R1 a station change leaves the other Listen shelves alone, a minute turn excluded (%d re-measures)'
+              % retried, (untouched + len(rebuilt)) >= 1 and not rebuilt, {'kept': untouched, 'rebuilt': rebuilt})
         # Rooms-only change: a saved room that is not playing is renamed elsewhere.
         window.show_rooms()
         pump(1.5)
