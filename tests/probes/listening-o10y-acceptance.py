@@ -93,6 +93,11 @@ for index in range(3):
                       'live_status': 'is_live' if live else 'not_live'}), flush=True)
 ''' % sys.executable)
 (BIN / 'yt-dlp').chmod((BIN / 'yt-dlp').stat().st_mode | stat.S_IXUSR)
+# Revision H1 (acceptance author, phase 2, 2026-11-21): `ambience.start` looks mpv up on PATH before it reaches the
+# fake systemd-run, and PATH is only this directory, so Watch failed with "The video player is unavailable". The
+# fake mpv is never executed (systemd-run is faked); it only has to exist. A harness fix, no criterion changed.
+(BIN / 'mpv').write_text('#!/bin/sh\nexit 1\n')
+(BIN / 'mpv').chmod((BIN / 'mpv').stat().st_mode | stat.S_IXUSR)
 os.environ['FAKE_YT_LOG'] = str(YT_LOG)
 os.environ['FAKE_YT_KNOBS'] = str(YT_KNOBS)
 
@@ -831,7 +836,11 @@ def w4_shelves():
 def main():
     build_app()
     selected = [x for x in args.only.split(',') if x]
-    for fn in [w1_rows, w2_watch, w2b_watch_without_room, w3_scene, w4_shelves]:
+    # Revision H2 (acceptance author, phase 2, 2026-11-21): w4_shelves runs first. In the original order
+    # [w1_rows, w2_watch, w2b_watch_without_room, w3_scene, w4_shelves] the earlier scenarios already opened the
+    # YouTube scope in Midnight library, so w4 met a fresh cache and 4c/4h saw no yt-dlp call. A harness fix:
+    # w4 must start with no shelf cache; no criterion changed.
+    for fn in [w4_shelves, w1_rows, w2_watch, w2b_watch_without_room, w3_scene]:
         if selected and fn.__name__ not in selected:
             continue
         print('==', fn.__name__, flush=True)
