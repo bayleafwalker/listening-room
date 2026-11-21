@@ -37,7 +37,10 @@ scene: the child finished without a crash or hang
 scene: the child reported all its oracles and exited 0
 M0 fixture: 8 catalogue loop rooms (8 distinct loop files) and 16 user-clip rooms
 M1 every catalogue loop visibly played in its preview before its cost was measured
-M2 steady-state media cost with all 8 catalogue loops shown is under 400 MB (process tree RSS, @@ MB)
+# KNOWN FAILURE allowed: "M2 [ORIGINAL, superseded by M2r]" is the brief's 400 MB target, kept verbatim and still evaluated;
+# the coordinator re-based it in phase 2 (M2r: <= 520 MB total and <= 50 MB per loop after the first). Backlog: further cuts.
+!M2 [ORIGINAL, superseded by M2r] steady-state media cost with all 8 catalogue loops shown is under 400 MB (process tree RSS, @@ MB)
+M2r media cost with all 8 catalogue loops shown is <= 520 MB and each loop after the first adds <= 50 MB (process tree RSS, @@ MB total, @@ MB per loop)
 M3 decoder threads are bounded: at most 16 in the whole process tree, warm and at peak (@@)
 M4 the media adds at most 64 threads once every loop was shown (@@)
 M5 off-screen loops are paused: media threads use <= 50 ms CPU in 5 s on the grid (@@ ms)

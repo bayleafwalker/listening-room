@@ -73,12 +73,17 @@ FLAGS = {
 
 # Thresholds, each from the brief or the assessment (see the check names).
 ART_HOLD_MS = 50          # criterion 1: the GTK thread is never held more than 50 ms by art
-MEDIA_TOTAL_MB = 400      # criterion 2 target: total under 400 MB for the 8 catalogue loops
+MEDIA_TOTAL_MB = 400      # criterion 2 target: total under 400 MB for the 8 catalogue loops ([ORIGINAL], superseded by M2r)
+# Revision M2r (2026-11-21, coordinator decision in phase 2, like the 2.3.2 pool-cap re-base): the implementer measured
+# 421-493 MB for 8 loops (main 927-993), of which ~140 MB is llvmpipe's one-time GL set-up on Xvfb and ~37-40 MB per
+# loop is reference frames plus the GL video sink, with decoders capped at one thread per loop. Re-based to: total media
+# cost <= 520 MB with 8 loops AND each loop after the first adds <= 50 MB. Further cuts are backlog.
+MEDIA_TOTAL_R_MB, MEDIA_PER_LOOP_R_MB = 520, 50
 DECODER_THREADS_MAX = 16  # bounded: on main avdec_h264 starts 16 threads per loop (one per core), 128 for 8
 MEDIA_THREADS_MAX = 64    # all threads the media adds after every loop was shown (main: +215 for 8 loops)
 IDLE_MEDIA_CPU_MS = 50    # media threads with every loop off screen, per 5 s (1% of a core)
 STEADY_RSS_MB, STEADY_THREADS, STEADY_FDS = 64, 6, 12   # the 2.3.2 lifetime bounds, after 40 more previews
-EXTRA_TOTAL_MB = MEDIA_TOTAL_MB + 64   # 8 catalogue loops plus 16 user clips (24 distinct files)
+EXTRA_TOTAL_MB = 400 + 64   # the original 400 MB target plus 64 MB, as written in phase 1; 8 catalogue loops plus 16 user clips (24 distinct files)
 EXTRA_PER_CLIP_MB, EXTRA_PER_CLIP_THREADS, EXTRA_PER_CLIP_FDS = 4, 1, 2   # marginal, over the last 8 clips
 LOOP_FORMAT = (1440, 810)  # every catalogue room loop at e45d947: h264 1440x810, 24 fps, 480 frames
 DECODER_NAME = re.compile(r'^av:|avdec|dav1d|openh264|vaapi|v4l2|nvh264|vtdec|libde265')
@@ -1122,9 +1127,12 @@ def media(env, step, check, info, clips):
     result = {'uptime_start': uptime(), 'cold': cold_point}
 
     step('every catalogue loop once')
-    played = []
+    played, first = [], None
     for card in catalogue:
         played.append((rooms.entry(card)['name'],) + preview(card))
+        if first is None:          # the first loop carries the one-time set-up; M2r judges the loops after it
+            pump(3.)
+            first = measure('after the first catalogue loop')
     info('catalogue previews (name, moved, %% changed, s): %s' % played)
     check('M1 every catalogue loop visibly played in its preview before its cost was measured',
           all(p[1] for p in played), played)
@@ -1135,9 +1143,17 @@ def media(env, step, check, info, clips):
     result.update(warm=warm, catalogue_played=played, media_cost_mb=round(cost, 1))
     info('media cost for 8 loops: %.1f MB (%.1f MB per loop); threads +%d; decoder threads %d (peak %d)' % (
         cost, cost / 8., warm['threads'] - cold_point['threads'], warm['decoder_threads'], peak['decoder_threads']))
-    check('M2 steady-state media cost with all 8 catalogue loops shown is under %d MB (process tree RSS, @@ MB)'
-          % MEDIA_TOTAL_MB, all_played and cost < MEDIA_TOTAL_MB, (cold_point['rss_mb'], warm['rss_mb'], round(cost, 1)),
-          measured=round(cost))
+    check('M2 [ORIGINAL, superseded by M2r] steady-state media cost with all 8 catalogue loops shown is under %d MB '
+          '(process tree RSS, @@ MB)' % MEDIA_TOTAL_MB, all_played and cost < MEDIA_TOTAL_MB,
+          (cold_point['rss_mb'], warm['rss_mb'], round(cost, 1)), measured=round(cost))
+    per_loop = (warm['rss_mb'] - first['rss_mb']) / max(1., len(catalogue) - 1.)
+    info('media cost: first loop %.1f MB (one-time set-up included), then %.1f MB per loop' % (
+        first['rss_mb'] - cold_point['rss_mb'], per_loop))
+    result.update(first=first, per_loop_mb=round(per_loop, 1))
+    check('M2r media cost with all 8 catalogue loops shown is <= %d MB and each loop after the first adds <= %d MB '
+          '(process tree RSS, @@ MB total, @@ MB per loop)' % (MEDIA_TOTAL_R_MB, MEDIA_PER_LOOP_R_MB),
+          all_played and cost <= MEDIA_TOTAL_R_MB and per_loop <= MEDIA_PER_LOOP_R_MB,
+          (cold_point['rss_mb'], first['rss_mb'], warm['rss_mb']), measured=(round(cost), float(round(per_loop, 1))))
     check('M3 decoder threads are bounded: at most %d in the whole process tree, warm and at peak (@@)'
           % DECODER_THREADS_MAX, all_played and max(warm['decoder_threads'], peak['decoder_threads']) <= DECODER_THREADS_MAX,
           (warm['decoder_threads'], peak['decoder_threads']),
