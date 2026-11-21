@@ -2,6 +2,10 @@
 # still print as SUPERSEDED [ORIGINAL] lines with their result; integration-R1a/R1b drive one room change into both pages,
 # integration-R2 runs the O2 and O3 suites through tests/run_suites.py, and tests/probes/wp4-oracles.py suites traces
 # that the checkPhase and the dev loop run them. This replaces the known failure the WP4 implementer recorded.
+# KNOWN FAILURE: "5-sheet YouTube video [ORIGINAL, superseded by 5-sheet-R1]" is the original oracle, kept verbatim.
+# O10-YOUTUBE criterion 3 (UX Proposal B, 2026-11-21) orders the YouTube link sheet Play, Watch, Show as scene, Play as
+# ambience, Open elsewhere, so the original fails by design once it lands (it passes on main e45d947); 5-sheet-R1 guards
+# the same intent with the new order. The other link kinds' sheets are unchanged.
 1a Listen is the page shown after Ctrl+2
 1b typing without focus lands in the search entry
 1c a pasted public URL shows up as a link result
@@ -126,7 +130,8 @@
 7 saves under injected delays [0, 0.8, 0] end with every last choice stored
 7 the page agrees with what is stored after the delayed saves
 7 closing the window with a save in flight does not crash
-5-sheet YouTube video offers exactly ['Play', 'Play as ambience', 'Show as scene', 'Open elsewhere']
+!5-sheet YouTube video [ORIGINAL, superseded by 5-sheet-R1] offers exactly ['Play', 'Play as ambience', 'Show as scene', 'Open elsewhere']
+5-sheet-R1 YouTube video offers exactly ['Play', 'Watch', 'Show as scene', 'Play as ambience', 'Open elsewhere']
 5-sheet YouTube video starts nothing before a choice
 5-sheet YouTube sheet shows a title and host
 5-sheet radio stream offers exactly ['Play', 'Play as ambience', 'Open elsewhere']
