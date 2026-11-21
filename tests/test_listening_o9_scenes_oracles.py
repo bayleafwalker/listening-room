@@ -423,12 +423,19 @@ class EngineReads(unittest.TestCase):
     The engine copies each effect with dict(); a recording dict in its place sees every key it looks up while preparing the
     scene and rendering frames across the loop. Replaces the source-text searches of motion_engine.py.
     """
+    # [ORIGINAL, superseded by the empty KNOWN_UNREAD below (O10-HYGIENE acceptance author, coordinator decision: the 17
+    # unread `color` keys are removed, not honoured). Kept as it was at e45d947 so the history stays visible; it is data,
+    # no longer the list this oracle tolerates (see UNREAD_AT_E45D947).]
     # Shipped keys that the engine never reads for their own effect: the electrical and water branches finish before the
     # shared colour step. Recorded at main 25cda4a as a finding, held exactly so a new dead key or a fix both show up.
-    KNOWN_UNREAD = {('after-hours', 2, 'water', 'color')} | {
+    UNREAD_AT_E45D947 = {('after-hours', 2, 'water', 'color')} | {
         (room, index, 'electrical', 'color') for room, indices in (('after-hours', (5, 6, 7, 8, 9)), ('atomic-lounge', (0, 1, 2, 3, 4, 5)),
                                                                    ('midnight-library', (5, 6)), ('velvet-circuit', (0, 1, 2)))
         for index in indices}
+    # Revision (O10-HYGIENE): no shipped key may be unread. The test below still reports any unread key as a failure, so a
+    # newly dead key is caught exactly as before; a key that is read again would be a rendering change, which the
+    # O10-HYGIENE oracles (test_listening_o10h_oracles.py) check separately against the e45d947 tuning.
+    KNOWN_UNREAD = set()
 
     @classmethod
     def render(cls, scene):
@@ -511,6 +518,14 @@ class EngineReads(unittest.TestCase):
     def test_unread_keys_on_their_own_effect_are_exactly_the_known_ones(self):
         self.assertEqual(sorted(self.unread - self.KNOWN_UNREAD), [], 'shipped keys the engine never reads for their effect')
         self.assertEqual(sorted(self.KNOWN_UNREAD - self.unread), [], 'a known unread key is now read or gone: shrink KNOWN_UNREAD')
+
+    def test_the_seventeen_keys_held_at_e45d947_are_gone(self):
+        # O10-HYGIENE revision: the keys listed in UNREAD_AT_E45D947 must no longer be shipped at all (removed, not honoured).
+        shipped = {(path.stem, index, effect['kind'], key)
+                   for path in sorted((SOURCE / 'scene_tuning').glob('*.json'))
+                   for index, effect in enumerate(json.loads(path.read_text()).get('effects', [])) for key in effect}
+        self.assertEqual(len(self.UNREAD_AT_E45D947), 17)
+        self.assertEqual(sorted(self.UNREAD_AT_E45D947 & shipped), [], 'unread colour keys still shipped')
 
     def test_the_engine_reads_no_lick_parameter(self):
         scene = json.loads(json.dumps(SCENES['room-midnight-library']))
