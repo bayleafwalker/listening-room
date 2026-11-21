@@ -716,6 +716,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.kick_idle()
 
     def apply_layout(self):
+        self.listen.fit_bar()
         self.mini_player.add_css_class('narrow') if self.mini_layout else self.mini_player.remove_css_class('narrow')
         self.show_page(self.page_name)
         if self.mini_layout:

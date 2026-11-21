@@ -425,12 +425,20 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
     def adapt_geometry(self, widget, _clock):
         """Stack the station page's two columns and its mood rows below 1000 px."""
         self.fit_scope_chips()
+        self.fit_bar()
         compact = widget.get_width() < 1000
         if compact == self.station_compact:
             return GLib.SOURCE_CONTINUE
         self.station_compact = compact
         self.set_station_orientation(Gtk.Orientation.VERTICAL if compact else Gtk.Orientation.HORIZONTAL)
         return GLib.SOURCE_CONTINUE
+
+    def fit_bar(self):
+        """The now-playing bar's volume slider is for windows wider than the mini layout; without it the bar
+        fits 360 px."""
+        narrow = self.window.mini_layout
+        if self.bar_volume_box.get_visible() == narrow:
+            self.bar_volume_box.set_visible(not narrow)
 
     def fit_scope_chips(self):
         """Give each chip group its natural width once it is on screen, so a narrow window scrolls the chips
@@ -513,7 +521,7 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
         name_it(self.bar_play, 'Pause the room')
         self.bar_play.connect('clicked', lambda *_: self.window.toggle_room())
         bar.append(self.bar_play)
-        volume = Gtk.Box(spacing=8)
+        volume = self.bar_volume_box = Gtk.Box(spacing=8)
         volume.set_valign(Gtk.Align.CENTER)
         volume.append(Gtk.Image(icon_name='audio-volume-high-symbolic'))
         self.bar_volume = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
@@ -1315,7 +1323,7 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
     def row(self, entry):
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
         box.add_css_class('listen-row')
-        box.append(self.art_picture(entry['art']) if entry.get('art') else self.tile(entry.get('name'), 'row-tile'))
+        box.append(self.art_slot(entry.get('art')) if entry.get('slot') else self.tile(entry.get('name'), 'row-tile'))
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         text.set_hexpand(True)
         text.set_valign(Gtk.Align.CENTER)
@@ -1468,7 +1476,7 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
         menu.append(('Open elsewhere', lambda url=url: self.open_external(url)))
         return {'kind': 'channel', 'name': item.get('name') or item.get('login') or 'Channel',
                 'detail': channel_browse.channel_detail(item), 'keywords': item.get('title') or '',
-                'subtitle': item.get('title') or '', 'art': self.channel_art(item), 'dim': item.get('live') is False,
+                'subtitle': item.get('title') or '', 'slot': True, 'art': self.channel_art(item), 'dim': item.get('live') is False,
                 'action': ('Tune in', lambda item=item: self.tune_channel(item)), 'menu': menu,
                 'ambience': lambda item=item: self.play_ambience(item)}
 

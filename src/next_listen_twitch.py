@@ -17,7 +17,7 @@ from gi.repository import Adw, Gtk
 
 import channel_browse
 from next_async import error_text, run_async
-from next_widgets import FocalPicture, label, name_it, show_texture
+from next_widgets import label, name_it, texture_for
 
 STYLE_NAMES = {'music': 'Music', 'asmr': 'ASMR'}
 FIXED_CHIPS = (('all', 'All'), ('music', 'Music'), ('asmr', 'ASMR'))
@@ -450,12 +450,13 @@ class TwitchShelfMixin:
                 tuple((key, page.get('cursor'), len(page['channels'])) for key, page in self.twitch_pages.items()),
                 self.thumbs_version, tuple(item['login'] for item in self.twitch_yours))
 
-    def art_picture(self, path):
-        picture = FocalPicture((.5, .5))
-        picture.set_size_request(44, 44)
-        picture.set_hexpand(False)
-        picture.set_vexpand(False)
-        picture.set_valign(Gtk.Align.CENTER)
-        picture.set_halign(Gtk.Align.CENTER)
-        show_texture(picture, path)
-        return picture
+    def art_slot(self, path):
+        """The row's picture: the stream preview once it is loaded, an avatar placeholder until then (or when
+        the channel has none)."""
+        avatar = Adw.Avatar(size=44, show_initials=False, valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER)
+        avatar.set_icon_name('video-display-symbolic')
+        avatar.set_hexpand(False)
+        texture = texture_for(path) if path else None
+        if texture is not None:
+            avatar.set_custom_image(texture)
+        return avatar
