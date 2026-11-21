@@ -5,6 +5,8 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-21
+
 ### Added
 - The session controller pushes changes: a `subscribe` action streams one JSON line
   per snapshot change over the private socket (heartbeat every 15 s when idle), and
