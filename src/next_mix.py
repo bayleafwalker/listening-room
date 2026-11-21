@@ -138,6 +138,11 @@ class LayerRow(Gtk.Box):
         if not self.updating:
             self.send(*(self.args('motion') if row.get_active() else self.args('still', still=True)))
 
+    def set_change_label(self, text):
+        # GTK rebuilds a MenuButton's child on every set_label, so only when the words change.
+        if self.change.get_label() != text:
+            self.change.set_label(text)
+
     def update(self, row):
         self.updating = True
         state = row['state']
@@ -147,7 +152,7 @@ class LayerRow(Gtk.Box):
         self.subtitle.remove_css_class('error')
         if self.layer == 'atmosphere':
             # With nothing playing there is nothing to level, mute or stop: only the way to choose one.
-            self.change.set_label('Choose ambience' if empty else 'Change…')
+            self.set_change_label('Choose ambience' if empty else 'Change…')
             (self.change.add_css_class if empty else self.change.remove_css_class)('suggested-action')
             for widget in (self.controls, self.mute, self.menu):
                 widget.set_visible(not empty)
@@ -170,7 +175,7 @@ class LayerRow(Gtk.Box):
             self.placement.set_active_name(row['placement'])
             self.moving.set_active(row['moving'])
             self.close.set_visible(not row['closed'])
-            self.change.set_label('Open scene' if row['closed'] else 'Change…')
+            self.set_change_label('Open scene' if row['closed'] else 'Change…')
         self.updating = False
 
 

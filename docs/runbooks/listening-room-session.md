@@ -182,6 +182,7 @@ listening-roomctl volume        # print the room volume
 listening-roomctl volume 60     # set it (0-100); +5 and -5 change it
 listening-room --mini          # the mini player (--desk is the old name)
 listening-roomctl popover      # the Waybar left-click controls
+listening-roomctl status --follow  # Waybar: one line per status change (exec, no interval)
 ```
 
 Room volume is one session multiplier (percent) over Music and Ambience. It
@@ -213,7 +214,8 @@ window shows it instead (AdwBreakpoint), and Expand (or widening the window) goe
 single instance: a second `listening-room` with `--mini`, `--inside`, `--preview-link` or a
 `listening-room://open` URI is delivered to the running window. `listening-roomctl popover`
 (Waybar left-click) is the same component with Break 10 min, Wind down 30 min and Leave room;
-it closes on Esc or when it loses focus. Desk mode is retired. Menu › Other players… lists
+it closes on Esc, its close control, Open the room window or a second Waybar click, and stays
+open when it loses focus. Desk mode is retired. Menu › Other players… lists
 players outside the room (browsers, Jellyfin, KDE Connect) with transport and volume, and
 system volume with Mute.
 
@@ -335,6 +337,56 @@ Supported destinations are shown for each link. Search pages open in their
 original service. No browser account or cookies are imported. A URI or
 `--preview-link` request, on the first launch or delivered to the running window,
 opens Listen's link sheet (nothing plays until a destination is chosen).
+
+### Push updates (`subscribe`)
+
+Clients learn about controller changes when they happen. The `subscribe` action
+streams one JSON line per change over the same private socket, with the same peer,
+permission and size checks as every request. `inspect` reports the protocol
+`version` (2 since `subscribe`); the actions, whether each runs at once or waits
+behind the generation-checked queue, and their argument types are declared once in
+the `room_session` action registry. Unknown actions and wrongly typed arguments
+fail at once with a plain error.
+
+- Request: `{"action": "subscribe", "args": {"fields": ["active", "layers"]}}`;
+  `fields` (up to 64 top-level snapshot keys) is optional and limits both the
+  content and the lines to changes in those keys.
+- Each line: `{"ok": true, "result": {"event": "snapshot", "version": 2, "session": S,
+  "revision": N, "heartbeat": 15, "snapshot": {...}}}`. The first line is the
+  current snapshot. A revision exists only when the snapshot changed (the clock
+  field `now` alone is not a change); revisions increase within one controller
+  `session`, and a gap means changes were coalesced or filtered.
+- Idle: a `{"event": "heartbeat"}` line every 15 seconds and nothing else; an
+  idle subscriber sleeps until a change or its heartbeat.
+- Errors are an `{"ok": false, "error": ...}` line, then the stream closes.
+- At most 64 subscribers. A subscriber that does not take a line within 5 seconds
+  is dropped, and one that hangs up is released at once; neither delays the
+  controller or other clients, which always receive the latest snapshot.
+
+The client API is in `session_client.py`:
+
+```python
+import session_client
+
+for update in session_client.Subscription(fields=['active', 'layers']):
+    if update.connected:
+        show(update.snapshot, update.revision)
+    else:
+        show_offline(update.error)
+
+subscription = session_client.subscribe(callback)   # runs on a daemon thread
+subscription.close()
+```
+
+An `Update` is `(snapshot, revision, session, connected, error)`. A
+`connected=False` update arrives once per outage; the client then reconnects with
+jittered backoff (0.25 s up to 10 s) and yields a fresh snapshot, with a new
+`session` after a controller restart. A silent connection is dropped after three
+missed heartbeats. It never starts playback: by default it only waits for the
+controller, and `start=True` calls `ensure_service`, which starts only idle
+infrastructure. The callback form runs on its own thread, so a GTK client hands
+updates to its main loop with `GLib.idle_add`. Clients that poll `inspect` keep
+working unchanged.
 
 ## Audio setup
 

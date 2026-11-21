@@ -22,6 +22,26 @@ class FakePicture:
         self.sets += 1
 
 
+class Stylesheets(unittest.TestCase):
+    def test_each_stylesheet_is_installed_once_by_the_one_helper(self):
+        with mock.patch.object(next_widgets.Gtk.StyleContext, 'add_provider_for_display') as add, \
+                mock.patch.dict(next_widgets._STYLES, clear=True):
+            first = next_widgets.install_css('display', '.probe-a { color: #fff; }', 2)
+            again = next_widgets.install_css('display', '.probe-a { color: #fff; }', 2)
+            other = next_widgets.install_css('display', '.probe-b { color: #000; }')
+        self.assertIs(first, again)
+        self.assertIsNot(first, other)
+        self.assertEqual([call.args[2] for call in add.call_args_list],
+                         [next_widgets.Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2,
+                          next_widgets.Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION])
+
+    def test_no_module_keeps_its_own_copy(self):
+        source = Path(next_widgets.__file__).parent
+        copies = [path.name for path in sorted(source.glob('next_*.py'))
+                  if path.name != 'next_widgets.py' and 'def install_css' in path.read_text()]
+        self.assertEqual(copies, [])
+
+
 class TextureCache(unittest.TestCase):
     def setUp(self):
         next_widgets._TEXTURES.clear()
@@ -50,6 +70,25 @@ class TextureCache(unittest.TestCase):
         os.utime(self.path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
         self.assertIsNot(next_widgets.texture_for(self.path), first)
         self.assertEqual(self.loader.call_count, 2)
+
+    def test_the_cache_keeps_about_64_textures_dropping_the_least_recently_shown(self):
+        paths = []
+        for index in range(next_widgets.TEXTURE_LIMIT + 6):
+            path = os.path.join(self.dir.name, 'art-%d.jpg' % index)
+            Path(path).write_bytes(b'not really a jpeg')
+            paths.append(path)
+        self.assertEqual(next_widgets.TEXTURE_LIMIT, 64)
+        first = next_widgets.texture_for(paths[0])
+        for path in paths[1:next_widgets.TEXTURE_LIMIT]:
+            next_widgets.texture_for(path)
+        self.assertIs(next_widgets.texture_for(paths[0]), first, 'a recent texture was decoded again')
+        for path in paths[next_widgets.TEXTURE_LIMIT:]:
+            next_widgets.texture_for(path)
+        self.assertEqual(len(next_widgets._TEXTURES), next_widgets.TEXTURE_LIMIT)
+        self.assertIs(next_widgets.texture_for(paths[0]), first, 'the most recently shown texture was dropped')
+        loads = self.loader.call_count
+        next_widgets.texture_for(paths[1])     # the least recently shown went first: decoded again
+        self.assertEqual(self.loader.call_count, loads + 1)
 
     def test_missing_or_empty_path_shows_nothing(self):
         picture = FakePicture()

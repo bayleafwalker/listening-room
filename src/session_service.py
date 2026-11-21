@@ -8,6 +8,7 @@ import logging
 import math
 import os
 from pathlib import Path
+import select
 import signal
 import socket
 import socketserver
@@ -15,7 +16,9 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 
+import room_session
 from room_session import Controller, SessionError
 from session_client import MAX_MESSAGE, socket_path
 
@@ -112,22 +115,52 @@ def mpris_values(snapshot):
             'CanPause': has_track, 'CanSeek': seekable, 'CanControl': True}
 
 
+# Guarantees the action registry must keep: these interrupt or answer at once and never
+# wait behind a queued load (Quiet/Stop bypass the queue; rename is a bounded edit).
+MUST_RUN_IMMEDIATELY = ('inspect', 'quiet', 'stop', 'resume', 'leave', 'rename', 'room_volume')
+if not (all(room_session.ACTIONS[name].runs_immediately({}) for name in MUST_RUN_IMMEDIATELY)
+        and all(room_session.ACTIONS[name].runs_immediately({'action': stop})
+                for name in ('layer', 'picture') for stop in ('pause', 'stop'))):
+    raise RuntimeError('The action registry queues an action that must run at once')
+# A subscriber that has not taken a line for this long is dropped.
+SEND_TIMEOUT = 5
+
+
 class Service:
     def __init__(self, controller):
         self.controller = controller
+        self._feed = None
+        self._feed_lock = threading.Lock()
+
+    @property
+    def feed(self):
+        """The controller's snapshot feed, created on first use (subscribe or MPRIS)."""
+        with self._feed_lock:
+            if self._feed is None:
+                self._feed = room_session.SnapshotFeed(self.controller)
+            return self._feed
+
+    def close(self):
+        """Ends every subscriber stream."""
+        with self._feed_lock:
+            if self._feed is not None:
+                self._feed.close()
+
+    def _notify(self):
+        # Some handlers change saved state without a controller callback.
+        if self._feed is not None:
+            self._feed.notify()
 
     def execute(self, action, args):
-        # These calls are bounded state operations or interrupt an in-flight load.
-        immediate = action in ('inspect', 'get', 'enter', 'music', 'online', 'return',
-                               'quiet', 'resume', 'stop', 'leave', 'wind_down', 'variants', 'delete', 'rename', 'settings',
-                               'room_volume')
-        immediate = immediate or (action in ('layer', 'picture') and args.get('action') in ('pause', 'stop'))
-        # Station handlers persist small local recipes or schedule their own
-        # cancellable playback work. Lists and edits must return their actual
-        # result rather than disappear behind a generic queued acknowledgement.
-        immediate = immediate or action.startswith(('station.', 'metadata.'))
-        if immediate:
-            return self.controller.dispatch(action, args)
+        spec = room_session.action_spec(action)
+        spec.check(args)
+        if spec.stream:
+            raise SessionError(action + ' streams over the session socket')
+        if spec.runs_immediately(args):
+            try:
+                return self.controller.dispatch(action, args)
+            finally:
+                self._notify()
         generation, cancel = self.controller.generation, self.controller.cancel
         queued_args = dict(args, _request_generation=generation, _cancel_event=cancel)
         def run():
@@ -141,8 +174,15 @@ class Service:
                         return
                     self.controller.errors[args.get('layer') or ('atmosphere' if action == 'atmosphere' else 'session')] = str(error)
                 self.controller._changed()
+            finally:
+                self._notify()
         self.controller.worker.submit(run)
         return {'accepted': True, 'message': 'Updating room'}
+
+
+def _line(response):
+    encoded = json.dumps(response, ensure_ascii=False, allow_nan=False).encode() + b'\n'
+    return encoded if len(encoded) <= MAX_MESSAGE else b'{"ok":false,"error":"Listening response is too large"}\n'
 
 
 class RequestHandler(socketserver.StreamRequestHandler):
@@ -163,16 +203,77 @@ class RequestHandler(socketserver.StreamRequestHandler):
             args = request.get('args') or {}
             if not isinstance(args, dict):
                 raise SessionError('Listening arguments must be an object')
+            spec = room_session.action_spec(request['action'])
+            if spec.stream:
+                spec.check(args)
+                return self.subscribe(args)
             response = {'ok': True, 'result': self.server.service.execute(request['action'], args)}
         except Exception as error:
             response = {'ok': False, 'error': str(error)}
         try:
-            encoded = json.dumps(response, ensure_ascii=False, allow_nan=False).encode() + b'\n'
-            if len(encoded) > MAX_MESSAGE:
-                encoded = b'{"ok":false,"error":"Listening response is too large"}\n'
-            self.wfile.write(encoded)
+            self.wfile.write(_line(response))
         except (OSError, ValueError):
             pass
+
+    def subscribe(self, args):
+        """Stream one line per new revision, coalescing to the latest, plus a heartbeat when idle.
+
+        Each subscriber has its own thread and send timeout, so a slow or vanished
+        subscriber only ever delays itself. The subscriber sends nothing after its
+        request; input or hang-up ends the stream at once.
+        """
+        fields = args.get('fields')
+        if fields is not None and (len(fields) > 64 or not all(isinstance(f, str) and 0 < len(f) <= 64 for f in fields)):
+            raise SessionError('subscribe: fields must be up to 64 snapshot key names')
+        feed = self.server.service.feed
+        pipe = feed.open()
+        try:
+            self.connection.settimeout(SEND_TIMEOUT)
+            poller = select.poll()
+            poller.register(self.connection.fileno(), select.POLLIN)
+            poller.register(pipe[0], select.POLLIN)
+            sent, view = None, None
+            heartbeat_due = 0
+            while not feed.closed:
+                try:
+                    os.read(pipe[0], 4096)   # drain before reading the latest revision
+                except BlockingIOError:
+                    pass
+                revision, snapshot, encoded = feed.latest()
+                body = None
+                if revision != sent:
+                    sent = revision
+                    if fields is not None:
+                        projection = {name: snapshot.get(name) for name in fields}
+                        if projection != view:
+                            view = projection
+                            body = self.event(feed, revision, json.dumps(projection, ensure_ascii=False, allow_nan=False).encode())
+                    else:
+                        body = self.event(feed, revision, encoded)
+                elif time.monotonic() >= heartbeat_due:
+                    body = b'{"ok":true,"result":{"event":"heartbeat","revision":%d}}\n' % revision
+                if body is not None:
+                    self.connection.sendall(body)
+                    if body.startswith(b'{"ok":false'):
+                        return
+                    heartbeat_due = time.monotonic() + room_session.HEARTBEAT_SECONDS
+                wait = max(0, heartbeat_due - time.monotonic())
+                for descriptor, _ in poller.poll(wait * 1000):
+                    if descriptor != pipe[0]:
+                        return   # input or hang-up from the subscriber
+        except (OSError, ValueError):
+            pass   # the subscriber is gone or too slow; others are unaffected
+        finally:
+            feed.release(pipe)
+
+    @staticmethod
+    def event(feed, revision, encoded):
+        if encoded is None:
+            return b'{"ok":false,"error":"Listening snapshot could not be encoded"}\n'
+        head = json.dumps({'event': 'snapshot', 'version': room_session.PROTOCOL_VERSION, 'session': feed.session,
+                           'revision': revision, 'heartbeat': room_session.HEARTBEAT_SECONDS})
+        line = b'{"ok":true,"result":' + head[:-1].encode() + b',"snapshot":' + encoded + b'}}\n'
+        return line if len(line) <= MAX_MESSAGE else b'{"ok":false,"error":"Listening response is too large"}\n'
 
 
 class UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
@@ -191,7 +292,8 @@ class Mpris:
         self.previous = {}
         self.owner = Gio.bus_own_name(Gio.BusType.SESSION, MPRIS_NAME, Gio.BusNameOwnerFlags.NONE,
                                      self.acquired, None, self.lost)
-        service.controller.callbacks.append(lambda: GLib.idle_add(self.changed))
+        # Only a new snapshot revision schedules a PropertiesChanged comparison.
+        service.feed.add_listener(lambda *_: GLib.idle_add(self.changed))
 
     def lost(self, *_):
         # RPC remains available if session D-Bus is temporarily unavailable.
@@ -279,7 +381,7 @@ class Mpris:
     def changed(self):
         if not self.connection:
             return False
-        plain = mpris_values(self.service.controller.snapshot())
+        plain = mpris_values(self.service.feed.latest()[1])
         changed = {name: value for name, value in plain.items()
                    if name not in ('Position', 'CanControl') and self.previous.get(name) != value}
         self.previous = plain
@@ -390,6 +492,7 @@ def main():
             loop.run()
     finally:
         stopping.set()
+        service.close()
         controller.close()
         server.shutdown()
         server.server_close()

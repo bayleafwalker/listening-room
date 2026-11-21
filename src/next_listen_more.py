@@ -13,9 +13,10 @@ import threading
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gtk
 
 import next_station
+from next_async import error_text, run_async
 from next_widgets import name_it
 
 LIBRARY_KINDS = (('albums', 'Albums'), ('playlists', 'Playlists'), ('recent', 'Recently added'), ('tracks', 'Tracks'))
@@ -160,15 +161,9 @@ class ServicesMixin:
         if slot['state'] not in ('idle', 'failed', 'unavailable'):
             return
         slot['state'] = 'loading'
-        future = self.executor.submit(self.browse_kind, kind, '', threading.Event())
-
-        def done(f):
-            try:
-                items, error = f.result(), None
-            except Exception as problem:
-                items, error = [], str(problem) or type(problem).__name__
-            GLib.idle_add(self.kind_loaded, kind, items, error)
-        future.add_done_callback(done)
+        run_async(lambda: self.browse_kind(kind, '', threading.Event()),
+                  lambda items: self.kind_loaded(kind, items, None),
+                  lambda error: self.kind_loaded(kind, [], error_text(error)), self.executor)
         self.refresh()
 
     def kind_loaded(self, kind, items, error):
@@ -204,15 +199,8 @@ class ServicesMixin:
         def work():
             import online_services
             return online_services.jellyfin_queue(item)
-        future = self.executor.submit(work)
-
-        def done(f):
-            try:
-                tracks, error = f.result(), None
-            except Exception as problem:
-                tracks, error = [], str(problem) or type(problem).__name__
-            GLib.idle_add(self.album_loaded, item_id, tracks, error)
-        future.add_done_callback(done)
+        run_async(work, lambda tracks: self.album_loaded(item_id, tracks, None),
+                  lambda error: self.album_loaded(item_id, [], error_text(error)), self.executor)
         self.refresh()
 
     def album_loaded(self, item_id, tracks, error):
@@ -283,15 +271,8 @@ class ServicesMixin:
         def work():
             import online_services
             return online_services.ma_players()
-        future = self.executor.submit(work)
-
-        def done(f):
-            try:
-                rows, error = f.result(), None
-            except Exception as problem:
-                rows, error = [], str(problem) or type(problem).__name__
-            GLib.idle_add(self.speakers_loaded, rows, error)
-        future.add_done_callback(done)
+        run_async(work, lambda rows: self.speakers_loaded(rows, None),
+                  lambda error: self.speakers_loaded([], error_text(error)), self.executor)
         self.load_ma_items()
         self.refresh()
 
@@ -343,15 +324,8 @@ class ServicesMixin:
         def work():
             import online_services
             return online_services.browse_music_assistant('', kind, None, provider, False)
-        future = self.executor.submit(work)
-
-        def done(f):
-            try:
-                rows, error = f.result(), None
-            except Exception as problem:
-                rows, error = [], str(problem) or type(problem).__name__
-            GLib.idle_add(self.ma_items_loaded, (kind, provider), rows, error)
-        future.add_done_callback(done)
+        run_async(work, lambda rows: self.ma_items_loaded((kind, provider), rows, None),
+                  lambda error: self.ma_items_loaded((kind, provider), [], error_text(error)), self.executor)
 
     def ma_items_loaded(self, key, rows, error):
         if not self.closed:
@@ -451,15 +425,7 @@ class ServicesMixin:
         def work():
             import online_services
             return online_services.remembered()[:20]
-        future = self.executor.submit(work)
-
-        def done(f):
-            try:
-                rows = f.result()
-            except Exception:
-                rows = []
-            GLib.idle_add(self.remembered_loaded, rows)
-        future.add_done_callback(done)
+        run_async(work, self.remembered_loaded, lambda _error: self.remembered_loaded([]), self.executor)
 
     def remembered_loaded(self, rows):
         if not self.closed:
@@ -474,16 +440,8 @@ class ServicesMixin:
         def work():
             import online_services
             return online_services.bookmark(snapshot, note)
-        future = self.executor.submit(work)
-
-        def done(f):
-            try:
-                f.result()
-                message = 'Remembered. Bookmarks stay on this computer.'
-            except Exception as problem:
-                message = str(problem) or 'This could not be remembered.'
-            GLib.idle_add(self.remembered_done, message)
-        future.add_done_callback(done)
+        run_async(work, lambda _result: self.remembered_done('Remembered. Bookmarks stay on this computer.'),
+                  lambda problem: self.remembered_done(str(problem) or 'This could not be remembered.'), self.executor)
 
     def remembered_done(self, message):
         if not self.closed:
@@ -501,15 +459,9 @@ class ServicesMixin:
 
         def work():
             return project(fetch())
-        future = self.executor.submit(work)
-
-        def done(f):
-            try:
-                rows, error = f.result(), None
-            except Exception as problem:
-                rows, error = [], str(problem) or 'ListenBrainz could not be read.'
-            GLib.idle_add(self.extra_loaded, title, rows, error)
-        future.add_done_callback(done)
+        run_async(work, lambda rows: self.extra_loaded(title, rows, None),
+                  lambda problem: self.extra_loaded(title, [], str(problem) or 'ListenBrainz could not be read.'),
+                  self.executor)
 
     def extra_loaded(self, title, rows, error):
         if self.closed:

@@ -68,6 +68,178 @@ def _copy(value):
     return copy.deepcopy(value)
 
 
+# Protocol 2 adds the action registry, `version` in inspect and the `subscribe` stream.
+PROTOCOL_VERSION = 2
+# An idle subscriber receives one line per this many seconds and nothing else.
+HEARTBEAT_SECONDS = 15
+MAX_SUBSCRIBERS = 64
+
+
+def _is_number(value):
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    try:
+        return isinstance(value, str) and math.isfinite(float(value))   # older clients send text
+    except ValueError:
+        return False
+
+
+_ARGUMENT_KINDS = {'number': (_is_number, 'a number'), 'text': (lambda value: isinstance(value, str), 'text'),
+                   'object': (lambda value: isinstance(value, dict), 'an object'),
+                   'list': (lambda value: isinstance(value, list), 'a list'),
+                   'bool': (lambda value: isinstance(value, bool), 'true or false')}
+
+
+class Action:
+    """One controller action: its handler, whether it runs at once, and its argument shape.
+
+    `immediate` is True, False or a predicate over the arguments. Immediate actions
+    run on the request thread; the others are queued behind the generation check on
+    the controller worker, so Quiet and Stop invalidate them. `args` names the
+    arguments whose type is checked when present; handlers check values and other keys.
+    A `stream` action is served by the socket layer rather than `dispatch`.
+    """
+    def __init__(self, name, handler, immediate, args, stream):
+        self.name, self.handler, self.immediate, self.args, self.stream = name, handler, immediate, args, stream
+
+    def runs_immediately(self, args):
+        return bool(self.immediate(args) if callable(self.immediate) else self.immediate)
+
+    def check(self, args):
+        if not isinstance(args, dict):
+            raise SessionError('Session arguments must be an object')
+        for field, kind in self.args.items():
+            valid, words = _ARGUMENT_KINDS[kind]
+            if args.get(field) is not None and not valid(args[field]):
+                raise SessionError('%s: %s must be %s' % (self.name, field, words))
+
+
+ACTIONS = {}
+
+
+def action(name, immediate=True, args=None, stream=False):
+    """Register the decorated Controller method as the handler of `name`."""
+    def register(handler):
+        if name in ACTIONS:
+            raise RuntimeError('Listening action declared twice: ' + name)
+        ACTIONS[name] = Action(name, handler, immediate, dict(args or {}), stream)
+        return handler
+    return register
+
+
+def action_spec(name):
+    spec = ACTIONS.get(name) if isinstance(name, str) else None
+    if spec is None:
+        raise SessionError('Unknown listening session action: ' + str(name))
+    return spec
+
+
+class SnapshotFeed:
+    """Revisioned controller snapshots for subscribers and in-process listeners.
+
+    Controller threads only set an event (`notify`), so a change never waits for a
+    subscriber. One feed thread takes the snapshot, and a new revision exists only
+    when it differs from the last one apart from the clock field `now`. Subscribers
+    hold a non-blocking pipe that receives a byte per revision, so an idle
+    subscriber sleeps in poll() until a change or its heartbeat.
+    """
+    def __init__(self, controller, limit=MAX_SUBSCRIBERS):
+        self.controller = controller
+        self.limit = limit
+        self.session = os.urandom(8).hex()   # revisions restart with each controller process
+        self._lock = threading.Lock()
+        self._dirty = threading.Event()
+        self._closed = False
+        self._revision, self._key, self._snapshot, self._encoded = 0, None, None, None
+        self._wakers = set()
+        self._listeners = []
+        self._publish()
+        controller.callbacks.append(self.notify)
+        threading.Thread(target=self._run, name='room-feed', daemon=True).start()
+
+    @property
+    def closed(self):
+        return self._closed
+
+    def notify(self):
+        self._dirty.set()
+
+    def _run(self):
+        while True:
+            self._dirty.wait()
+            if self._closed:
+                return
+            self._dirty.clear()
+            try:
+                self._publish()
+            except Exception:   # the next change publishes again
+                pass
+
+    def _publish(self):
+        snapshot = self.controller.snapshot()
+        key = {name: value for name, value in snapshot.items() if name != 'now'}
+        with self._lock:
+            if key == self._key:
+                return
+            try:
+                encoded = json.dumps(snapshot, ensure_ascii=False, allow_nan=False).encode()
+            except (TypeError, ValueError):
+                encoded = None
+            self._revision += 1
+            self._key, self._snapshot, self._encoded = key, snapshot, encoded
+            revision, listeners = self._revision, list(self._listeners)
+            # Written under the lock so release() never closes a pipe mid-write.
+            for waker in self._wakers:
+                try:
+                    os.write(waker, b'.')
+                except OSError:   # full pipe: the subscriber is already woken
+                    pass
+        for listener in listeners:
+            try:
+                listener(revision, snapshot)
+            except Exception:
+                pass
+
+    def latest(self):
+        """(revision, snapshot, encoded JSON or None). Callers must not change the snapshot."""
+        with self._lock:
+            return self._revision, self._snapshot, self._encoded
+
+    def add_listener(self, listener):
+        """Call `listener(revision, snapshot)` on the feed thread for each new revision."""
+        with self._lock:
+            self._listeners.append(listener)
+
+    def open(self):
+        """A (read, write) pipe for one subscriber; release it with release()."""
+        read, write = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        with self._lock:
+            if self._closed or len(self._wakers) >= self.limit:
+                os.close(read)
+                os.close(write)
+                raise SessionError('Too many listening subscribers; close one and retry')
+            self._wakers.add(write)
+        return read, write
+
+    def release(self, pipe):
+        with self._lock:
+            self._wakers.discard(pipe[1])
+            for descriptor in pipe:
+                os.close(descriptor)
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+            for waker in self._wakers:
+                try:
+                    os.write(waker, b'.')
+                except OSError:
+                    pass
+        self._dirty.set()
+
+
 class Backend:
     """Small adapter to existing owned players; never adopts a random MPRIS app."""
     def __init__(self):
@@ -1705,6 +1877,13 @@ class Controller:
         return {'message': 'Room lighting will slowly move from dusk to night'}
 
     def apply_settings(self, values):
+        # {'undo': True} among the values marks an Undo: the values put back what a change replaced, so the
+        # placement "chosen" mark goes back to what it was before that change instead of being set. Old clients
+        # never send it; it is not a setting and is never stored.
+        restore = False
+        if isinstance(values, dict) and 'undo' in values:
+            values = dict(values)
+            restore = values.pop('undo') is True
         allowed = {'placement', 'still', 'reduced_motion', 'preferred_output', 'pause_on_disconnect',
                    'duck_on_call', 'preferred_display', 'display', 'lighting_sequence', 'keep_controls'}
         if not isinstance(values, dict) or set(values) - allowed:
@@ -1728,7 +1907,11 @@ class Controller:
             self.settings = dict(previous, **values)
             chosen_before = self.placement_chosen
             if 'placement' in values:
-                self.placement_chosen = True
+                if restore:
+                    self.placement_chosen = getattr(self, '_placement_chosen_undo', chosen_before)
+                else:
+                    self._placement_chosen_undo = chosen_before   # what an Undo of this change restores
+                    self.placement_chosen = True
             try:
                 self._persist()
             except (OSError, ValueError):
@@ -1786,258 +1969,381 @@ class Controller:
                 repr(selection.get('reference')))
 
     def dispatch(self, action, args=None):
+        """Run one registered action (see ACTIONS); the socket layer serves stream actions."""
         args = args or {}
-        if not isinstance(args, dict):
-            raise SessionError('Session arguments must be an object')
-        if action in ('inspect', 'get'):
-            return self.snapshot()
-        if action.startswith('metadata.'):
-            if action == 'metadata.status':
-                import metadata_pipeline
-                return {'acoustid_ready': bool(metadata_pipeline.acoustid_client_key())}
-            if action == 'metadata.configure_acoustid':
-                import metadata_pipeline
-                result = metadata_pipeline.configure_acoustid_client_key(args.get('client_key'))
-                return {'message': 'AcoustID application key saved' if result['configured'] else 'AcoustID application key cleared', 'acoustid_ready': result['configured']}
-            if action == 'metadata.list':
-                page = self.metadata_store.export_page(limit=100)
-                return {'records': page['records'], 'truncated': page['next_cursor'] is not None}
-            if action == 'metadata.export':
-                return self.metadata_store.export_page(cursor=args.get('cursor'), limit=args.get('limit', 50))
-            if action == 'metadata.import':
-                return {'imported': self.metadata_store.import_records(args.get('records'))}
-            if action == 'metadata.inspect':
-                return {'record': self.metadata_store.current(args.get('origin'), args.get('item_id'))}
-            if action == 'metadata.lookup_reference':
-                return {'record': self._metadata_cached(args.get('reference'))}
-            if action == 'metadata.jobs':
-                with self.lock:
-                    return {'jobs': [{k: v for k, v in job.items() if not k.startswith('_')} for job in self.metadata_jobs.values()]}
-            if action == 'metadata.cancel':
-                with self.lock:
-                    job = self.metadata_jobs.get(args.get('job_id'))
-                    if not job:
-                        raise SessionError('Metadata job not found')
+        spec = action_spec(action)
+        spec.check(args)
+        if spec.stream:
+            raise SessionError(action + ' streams over the session socket')
+        return spec.handler(self, args)
+
+    @action('inspect')
+    @action('get')
+    def _act_inspect(self, args):
+        return dict(self.snapshot(), version=PROTOCOL_VERSION)
+
+    @action('subscribe', args={'fields': 'list'}, stream=True)
+    def _act_subscribe(self, args):
+        raise SessionError('subscribe streams over the session socket')
+
+    # Metadata handlers persist small records or start their own cancellable jobs,
+    # so they return their actual result rather than a queued acknowledgement.
+    @action('metadata.status')
+    def _act_metadata_status(self, args):
+        import metadata_pipeline
+        return {'acoustid_ready': bool(metadata_pipeline.acoustid_client_key())}
+
+    @action('metadata.configure_acoustid')
+    def _act_metadata_configure_acoustid(self, args):
+        import metadata_pipeline
+        result = metadata_pipeline.configure_acoustid_client_key(args.get('client_key'))
+        return {'message': 'AcoustID application key saved' if result['configured'] else 'AcoustID application key cleared', 'acoustid_ready': result['configured']}
+
+    @action('metadata.list')
+    def _act_metadata_list(self, args):
+        page = self.metadata_store.export_page(limit=100)
+        return {'records': page['records'], 'truncated': page['next_cursor'] is not None}
+
+    @action('metadata.export')
+    def _act_metadata_export(self, args):
+        return self.metadata_store.export_page(cursor=args.get('cursor'), limit=args.get('limit', 50))
+
+    @action('metadata.import')
+    def _act_metadata_import(self, args):
+        return {'imported': self.metadata_store.import_records(args.get('records'))}
+
+    @action('metadata.inspect')
+    def _act_metadata_inspect(self, args):
+        return {'record': self.metadata_store.current(args.get('origin'), args.get('item_id'))}
+
+    @action('metadata.lookup_reference')
+    def _act_metadata_lookup_reference(self, args):
+        return {'record': self._metadata_cached(args.get('reference'))}
+
+    @action('metadata.jobs')
+    def _act_metadata_jobs(self, args):
+        with self.lock:
+            return {'jobs': [{k: v for k, v in job.items() if not k.startswith('_')} for job in self.metadata_jobs.values()]}
+
+    @action('metadata.cancel')
+    def _act_metadata_cancel(self, args):
+        with self.lock:
+            job = self.metadata_jobs.get(args.get('job_id'))
+            if not job:
+                raise SessionError('Metadata job not found')
+            job['_cancel'].set()
+        return {'message': 'Cancellation requested'}
+
+    @action('metadata.confirm_identity')
+    def _act_metadata_confirm_identity(self, args):
+        import metadata_pipeline
+        with self.lock:
+            job = self.metadata_jobs.get(args.get('job_id'))
+            candidates = (job.get('result') or {}).get('candidates', []) if job and job['kind'] == 'match' and job['status'] == 'completed' else []
+            selected = next ( (c for c in candidates if c['provider_id'] == args.get('provider_id')), None)
+            if not selected or not job.get('_record') or job['_record'][0] != metadata_pipeline.library_origin():
+                raise SessionError('Choose a candidate from the current library')
+            origin, item_id = job['_record']
+            record = self.metadata_store.current(origin, item_id)
+            if not record:
+                raise SessionError('Recording no longer available')
+            revision = job.get('_revision')
+            revision_hash = hashlib.sha256(json.dumps(revision, sort_keys=True, separators=(',', ':')).encode()).hexdigest() if revision is not None else None
+            if not revision_hash or not any(x.get('name') == 'revision' and x.get('value') == revision_hash for x in record['identities']):
+                raise SessionError('Recording changed; search again')
+            identity = {'provider': selected['provider'], 'provider_id': selected['provider_id'], 'name': 'recording', 'method': 'user selected candidate', 'status': 'confirmed'}
+            identities = [x for x in record['identities'] if not (x.get('provider') == 'MusicBrainz' and x.get('name') == 'recording')] + [identity]
+            self._metadata_observe(origin, item_id, record['audio_sha256'], identities, record['features'])
+        return {'message': 'Recording identity confirmed'}
+
+    @action('metadata.match')
+    def _act_metadata_match(self, args):
+        return self._metadata_job('match', args)
+
+    @action('metadata.analyze')
+    def _act_metadata_analyze(self, args):
+        return self._metadata_job('analyze', args)
+
+    @action('metadata.enrich')
+    def _act_metadata_enrich(self, args):
+        return self._metadata_job('enrich', args)
+
+    @action('metadata.review')
+    def _act_metadata_review(self, args):
+        if args.get('acknowledged') is not True:
+            raise SessionError('Confirm that you reviewed the whole recording')
+        if args.get('classification') not in ('instrumental', 'vocal', 'spoken', 'unknown'):
+            raise SessionError('Choose a review classification')
+        return self._metadata_job('review', args)
+
+    @action('metadata.revoke')
+    def _act_metadata_revoke(self, args):
+        with self.lock:
+            for job in self.metadata_jobs.values():
+                if job.get('_record') == (args.get('origin'), args.get('item_id')) and job['status'] in ('queued', 'running'):
                     job['_cancel'].set()
-                return {'message': 'Cancellation requested'}
-            if action == 'metadata.confirm_identity':
-                import metadata_pipeline
-                with self.lock:
-                    job = self.metadata_jobs.get(args.get('job_id'))
-                    candidates = (job.get('result') or {}).get('candidates', []) if job and job['kind'] == 'match' and job['status'] == 'completed' else []
-                    selected = next ( (c for c in candidates if c['provider_id'] == args.get('provider_id')), None)
-                    if not selected or not job.get('_record') or job['_record'][0] != metadata_pipeline.library_origin():
-                        raise SessionError('Choose a candidate from the current library')
-                    origin, item_id = job['_record']
-                    record = self.metadata_store.current(origin, item_id)
-                    if not record:
-                        raise SessionError('Recording no longer available')
-                    import json
-                    revision = job.get('_revision')
-                    revision_hash = hashlib.sha256(json.dumps(revision, sort_keys=True, separators=(',', ':')).encode()).hexdigest() if revision is not None else None
-                    if not revision_hash or not any(x.get('name') == 'revision' and x.get('value') == revision_hash for x in record['identities']):
-                        raise SessionError('Recording changed; search again')
-                    identity = {'provider': selected['provider'], 'provider_id': selected['provider_id'], 'name': 'recording', 'method': 'user selected candidate', 'status': 'confirmed'}
-                    identities = [x for x in record['identities'] if not (x.get('provider') == 'MusicBrainz' and x.get('name') == 'recording')] + [identity]
-                    self._metadata_observe(origin, item_id, record['audio_sha256'], identities, record['features'])
-                return {'message': 'Recording identity confirmed'}
-            if action in ('metadata.match', 'metadata.analyze'):
-                return self._metadata_job(action.split('.', 1)[1], args)
-            if action == 'metadata.enrich':
-                return self._metadata_job('enrich', args)
-            if action == 'metadata.review':
-                if args.get('acknowledged') is not True:
-                    raise SessionError('Confirm that you reviewed the whole recording')
-                if args.get('classification') not in ('instrumental', 'vocal', 'spoken', 'unknown'):
-                    raise SessionError('Choose a review classification')
-                return self._metadata_job('review', args)
-            if action == 'metadata.revoke':
-                with self.lock:
-                    for job in self.metadata_jobs.values():
-                        if job.get('_record') == (args.get('origin'), args.get('item_id')) and job['status'] in ('queued', 'running'):
-                            job['_cancel'].set()
-                    record = self.metadata_store.current(args.get('origin'), args.get('item_id'))
-                    if not record or not record['audio_sha256']:
-                        raise SessionError('Recording not found')
-                    self.metadata_store.revoke(record['origin'], record['item_id'], record['audio_sha256'])
-                    self._check_pending_review()
-                return {'message': 'Review revoked'}
-            raise SessionError('Unknown metadata action')
-        if action.startswith('station.'):
-            with self.lock:
-                if action == 'station.list':
-                    return {'stations': self.stations()}
-                if action == 'station.recent':
-                    return {'recent': _copy(self.station_history)}
-                if action in ('station.save', 'station.update'):
-                    if self.transition:
-                        raise SessionError('Wait until the current room change finishes before saving a station')
-                    existing = next((s for s in self.stations() if s['id'] == args.get('id')), None)
-                    if action == 'station.update':
-                        if not existing:
-                            raise SessionError('Station not found')
-                        value = dict(existing, preferences=dict(existing['preferences'], **(args.get('preferences') or {})))
-                    else:
-                        value = args.get('station')
-                    station = station_engine.normalize(value)
-                    if (self.active and self.active.get('music', {}).get('station', {}).get('id') == station['id']
-                            and station['preferences'].get('speech') == 'Strict instrumental'):
-                        raise SessionError('Strict instrumental cannot be enabled while an unverified source is playing; stop it first')
-                    with self.lock:
-                        hub.save_json(self.directory / 'stations.json', [s for s in self.stations() if s['id'] != station['id']] + [station])
-                        if self.program and self.program.station['id'] == station['id']:
-                            self.program.station = _copy(station)
-                            self.program.retune()
-                            if station['preferences'].get('speech') == 'Likely instrumental':
-                                self._schedule_analysis(self.program.candidates)
-                            if self.active:
-                                self.active['music']['station'] = _copy(station)
-                                self.last_session = _copy(self.active)
-                                self._persist()
-                    return {'message': 'Station saved', 'station': station}
-                if action == 'station.play_next':
-                    if not self.program or not self.active or self.transition:
-                        raise SessionError('Start a library station first')
-                    self.program.play_next(args.get('item'))
-                    return {'message': 'Added to play next'}
-                if action == 'station.feedback':
-                    if not self.program or not self.active or self.transition:
-                        raise SessionError('Start a library station first')
-                    self.program.feedback(args.get('rating'))
-                    saved_memory = self.station_memory.get(self.program.station['id']) or {}
-                    self.station_memory[self.program.station['id']] = {'liked_artists': sorted(self.program.liked_artists)[-100:],
-                                                                       'disliked': [list(x) for x in list(self.program.disliked)[-100:]],
-                                                                       'reset_at': saved_memory.get('reset_at', -1)}
-                    self._persist()
-                    return {'message': 'Upcoming selections updated'}
-                if action == 'station.reset_memory':
-                    identity = args.get('id')
-                    if self.transition:
-                        raise SessionError('Wait until the current room change finishes')
-                    if not any(s['id'] == identity for s in self.stations()):
-                        raise SessionError('Station not found')
-                    self.station_memory[identity] = {'reset_at': self.clock()}
-                    if self.program and self.program.station['id'] == identity:
-                        self.program.liked_artists.clear()
-                        self.program.disliked.clear()
-                        self.program.retune()
-                    self._persist()
-                    return {'message': 'Station memory reset'}
-                if action == 'station.delete':
-                    identity = args.get('id')
-                    if self.transition or (self.active and self.active.get('music', {}).get('station', {}).get('id') == identity):
-                        raise SessionError('Stop or leave this station before removing it')
-                    values = self.stations()
-                    if not any(s['id'] == identity for s in values):
-                        raise SessionError('Station not found')
-                    hub.save_json(self.directory / 'stations.json', [s for s in values if s['id'] != identity])
-                    self.station_memory.pop(identity, None)
-                    self._persist()
-                    return {'message': 'Station removed'}
-                if action == 'station.hold':
-                    if not self.program or not self.active or self.transition or not isinstance(args.get('hold'), bool):
-                        raise SessionError('Choose whether to hold the current mood')
-                    self.program.hold = args['hold']
-                    return {'message': 'Mood held' if self.program.hold else 'Program arc resumed'}
-                if action in ('station.start', 'station.replay'):
-                    history = next((s for s in self.station_history if s['id'] == args.get('id')), None) if action == 'station.replay' else None
-                    station = history['station'] if history else next((s for s in self.stations() if s['id'] == args.get('id')), None)
-                    if not station:
-                        raise SessionError('Station not found')
-                    if action == 'station.replay' and (not history or not history.get('tracks')):
-                        raise SessionError('This listening history has no recorded tracks to replay')
-                    previous = next((entry for entry in self.station_history if (entry.get('station') or {}).get('id') == station['id']), None)
-                    previous_index = (previous or {}).get('source_index', -1)
-                    if not isinstance(previous_index, int) or isinstance(previous_index, bool):
-                        previous_index = -1
-                    source_index = (history.get('source_index', 0) if history else (previous_index + 1) % len(station['sources']))
-                    if not isinstance(source_index, int) or not 0 <= source_index < len(station['sources']):
-                        source_index = 0
-                    source = _copy(station['sources'][source_index])
-                    if history:
-                        source = {'reference': _copy(history['tracks'][0])}
-                    source['station'] = station
-                    source['station_source_index'] = source_index
-                    if history:
-                        source['_station_replay'] = _copy(history['tracks'])
-                    source['source_id'] = source.get('source_id') or source.get('id') or 'library'
-                    if self.active:
-                        source.setdefault('volume', self.active['music'].get('volume', 50))
-                        source.setdefault('muted', self.active['music'].get('muted', False))
-                    return self.enter({'music': source})
-        if action == 'enter':
-            return self.enter(args)
-        if action == 'return':
-            if not self.last_session:
-                raise SessionError('There is no previous room to return to')
-            return self.enter({'recipe': _copy(self.last_session)})
-        if action == 'save':
-            return self.save(args)
-        if action == 'variants':
-            return {'variants': self.variants()}
-        if action == 'rename':
-            return self.rename(args)
-        if action == 'delete':
-            hub.save_json(self.directory / 'room-variants.json', [v for v in self.variants() if v['id'] != args.get('id')])
-            return {'message': 'Saved room removed'}
-        if action == 'room_volume':
-            return self.set_room_volume(args.get('value'), args.get('delta'))
-        if action == 'quiet':
-            return self.quiet(args.get('minutes'))
-        if action == 'resume':
-            return self.resume()
-        if action == 'stop':
-            return self.stop()
-        if action == 'leave':
-            return self.leave(args.get('fade_seconds', 1.2))
-        if action == 'wind_down':
-            minutes = float(args.get('minutes', 30))
-            if not math.isfinite(minutes) or not 0 <= minutes <= 1440:
-                raise SessionError('Choose a wind down from 1 to 1440 minutes')
-            if not minutes:
-                self._invalidate()
+            record = self.metadata_store.current(args.get('origin'), args.get('item_id'))
+            if not record or not record['audio_sha256']:
+                raise SessionError('Recording not found')
+            self.metadata_store.revoke(record['origin'], record['item_id'], record['audio_sha256'])
+            self._check_pending_review()
+        return {'message': 'Review revoked'}
+
+    # Station handlers persist small local recipes or schedule their own
+    # cancellable playback work. Lists and edits return their actual result.
+    @action('station.list')
+    def _act_station_list(self, args):
+        with self.lock:
+            return {'stations': self.stations()}
+
+    @action('station.recent')
+    def _act_station_recent(self, args):
+        with self.lock:
+            return {'recent': _copy(self.station_history)}
+
+    @action('station.save')
+    def _act_station_save(self, args):
+        return self._save_station(args, update=False)
+
+    @action('station.update', args={'preferences': 'object'})
+    def _act_station_update(self, args):
+        return self._save_station(args, update=True)
+
+    def _save_station(self, args, update):
+        with self.lock:
+            if self.transition:
+                raise SessionError('Wait until the current room change finishes before saving a station')
+            existing = next((s for s in self.stations() if s['id'] == args.get('id')), None)
+            if update:
+                if not existing:
+                    raise SessionError('Station not found')
+                value = dict(existing, preferences=dict(existing['preferences'], **(args.get('preferences') or {})))
+            else:
+                value = args.get('station')
+            station = station_engine.normalize(value)
+            if (self.active and self.active.get('music', {}).get('station', {}).get('id') == station['id']
+                    and station['preferences'].get('speech') == 'Strict instrumental'):
+                raise SessionError('Strict instrumental cannot be enabled while an unverified source is playing; stop it first')
+            hub.save_json(self.directory / 'stations.json', [s for s in self.stations() if s['id'] != station['id']] + [station])
+            if self.program and self.program.station['id'] == station['id']:
+                self.program.station = _copy(station)
+                self.program.retune()
+                if station['preferences'].get('speech') == 'Likely instrumental':
+                    self._schedule_analysis(self.program.candidates)
                 if self.active:
-                    self.backend.music_control('volume', self._effective(self.active['music'].get('volume', 50)))
-                return {'message': 'Wind down cancelled; music level restored'}
-            return self._fade(minutes * 60)
-        if action in ('layer', 'picture'):
-            if action == 'picture':
-                args = dict(args, layer='picture')
-            return self.layer(args)
-        if action == 'settings':
-            return self.apply_settings(args.get('values') or {})
-        if action == 'online':
-            reference = args.get('item')
-            if not isinstance(reference, dict):
-                raise SessionError('Choose a library item')
-            if reference.get('provider') == 'link':
-                return self.open_link({'url': reference.get('url'), 'destination': reference.get('route', 'music')})
-            if reference.get('provider') == 'music_assistant' and reference.get('action') == 'transfer':
-                import online_services
-                online_services.ma_transfer(reference.get('source_player_id'), reference.get('player_id'))
-                if self.active and self.active['music'].get('reference', {}).get('provider') == 'music_assistant':
-                    self.active['music']['reference']['player_id'] = reference['player_id']
-                    if getattr(self.backend, 'remote', None):
-                        self.backend.remote['player_id'] = reference['player_id']
-                return {'message': 'Music queue transferred; local atmosphere and picture stay here'}
-            return self.enter({'music': {'reference': reference, 'name': reference.get('name', 'Library music'),
-                                         'source_id': 'library', 'volume': 50, 'muted': False}})
-        if action == 'music':
-            item = args.get('item') or {}
-            music = dict(item, source_id=item.get('id') or args.get('source_id'))
+                    self.active['music']['station'] = _copy(station)
+                    self.last_session = _copy(self.active)
+                    self._persist()
+            return {'message': 'Station saved', 'station': station}
+
+    @action('station.play_next')
+    def _act_station_play_next(self, args):
+        with self.lock:
+            if not self.program or not self.active or self.transition:
+                raise SessionError('Start a library station first')
+            self.program.play_next(args.get('item'))
+            return {'message': 'Added to play next'}
+
+    @action('station.feedback')
+    def _act_station_feedback(self, args):
+        with self.lock:
+            if not self.program or not self.active or self.transition:
+                raise SessionError('Start a library station first')
+            self.program.feedback(args.get('rating'))
+            saved_memory = self.station_memory.get(self.program.station['id']) or {}
+            self.station_memory[self.program.station['id']] = {'liked_artists': sorted(self.program.liked_artists)[-100:],
+                                                               'disliked': [list(x) for x in list(self.program.disliked)[-100:]],
+                                                               'reset_at': saved_memory.get('reset_at', -1)}
+            self._persist()
+            return {'message': 'Upcoming selections updated'}
+
+    @action('station.reset_memory')
+    def _act_station_reset_memory(self, args):
+        with self.lock:
+            identity = args.get('id')
+            if self.transition:
+                raise SessionError('Wait until the current room change finishes')
+            if not any(s['id'] == identity for s in self.stations()):
+                raise SessionError('Station not found')
+            self.station_memory[identity] = {'reset_at': self.clock()}
+            if self.program and self.program.station['id'] == identity:
+                self.program.liked_artists.clear()
+                self.program.disliked.clear()
+                self.program.retune()
+            self._persist()
+            return {'message': 'Station memory reset'}
+
+    @action('station.delete')
+    def _act_station_delete(self, args):
+        with self.lock:
+            identity = args.get('id')
+            if self.transition or (self.active and self.active.get('music', {}).get('station', {}).get('id') == identity):
+                raise SessionError('Stop or leave this station before removing it')
+            values = self.stations()
+            if not any(s['id'] == identity for s in values):
+                raise SessionError('Station not found')
+            hub.save_json(self.directory / 'stations.json', [s for s in values if s['id'] != identity])
+            self.station_memory.pop(identity, None)
+            self._persist()
+            return {'message': 'Station removed'}
+
+    @action('station.hold')
+    def _act_station_hold(self, args):
+        with self.lock:
+            if not self.program or not self.active or self.transition or not isinstance(args.get('hold'), bool):
+                raise SessionError('Choose whether to hold the current mood')
+            self.program.hold = args['hold']
+            return {'message': 'Mood held' if self.program.hold else 'Program arc resumed'}
+
+    @action('station.start')
+    def _act_station_start(self, args):
+        return self._start_station(args, replay=False)
+
+    @action('station.replay')
+    def _act_station_replay(self, args):
+        return self._start_station(args, replay=True)
+
+    def _start_station(self, args, replay):
+        with self.lock:
+            history = next((s for s in self.station_history if s['id'] == args.get('id')), None) if replay else None
+            station = history['station'] if history else next((s for s in self.stations() if s['id'] == args.get('id')), None)
+            if not station:
+                raise SessionError('Station not found')
+            if replay and (not history or not history.get('tracks')):
+                raise SessionError('This listening history has no recorded tracks to replay')
+            previous = next((entry for entry in self.station_history if (entry.get('station') or {}).get('id') == station['id']), None)
+            previous_index = (previous or {}).get('source_index', -1)
+            if not isinstance(previous_index, int) or isinstance(previous_index, bool):
+                previous_index = -1
+            source_index = (history.get('source_index', 0) if history else (previous_index + 1) % len(station['sources']))
+            if not isinstance(source_index, int) or not 0 <= source_index < len(station['sources']):
+                source_index = 0
+            source = _copy(station['sources'][source_index])
+            if history:
+                source = {'reference': _copy(history['tracks'][0])}
+            source['station'] = station
+            source['station_source_index'] = source_index
+            if history:
+                source['_station_replay'] = _copy(history['tracks'])
+            source['source_id'] = source.get('source_id') or source.get('id') or 'library'
             if self.active:
-                music.setdefault('volume', self.active['music'].get('volume', 50))
-                music.setdefault('muted', self.active['music'].get('muted', False))
-            options = {'music': music}
-            if '_request_generation' in args:
-                options['_request_generation'] = args['_request_generation']
-            return self.enter(options)
-        if action == 'atmosphere':
-            return self.layer(dict(args, layer='atmosphere', action='select',
-                                   source_id=args.get('source_id') or args.get('id')))
-        if action == 'link':
-            return self.open_link(args)
-        raise SessionError('Unknown listening session action: ' + str(action))
+                source.setdefault('volume', self.active['music'].get('volume', 50))
+                source.setdefault('muted', self.active['music'].get('muted', False))
+            return self.enter({'music': source})
+
+    @action('enter', args={'room_id': 'text', 'variant_id': 'text', 'recipe': 'object',
+                           'music': 'object', 'atmosphere': 'object', 'picture': 'object'})
+    def _act_enter(self, args):
+        return self.enter(args)
+
+    @action('return')
+    def _act_return(self, args):
+        if not self.last_session:
+            raise SessionError('There is no previous room to return to')
+        return self.enter({'recipe': _copy(self.last_session)})
+
+    @action('save', immediate=False, args={'music': 'object', 'atmosphere': 'object', 'picture': 'object'})
+    def _act_save(self, args):
+        return self.save(args)
+
+    @action('variants')
+    def _act_variants(self, args):
+        return {'variants': self.variants()}
+
+    @action('rename')
+    def _act_rename(self, args):
+        return self.rename(args)
+
+    @action('delete')
+    def _act_delete(self, args):
+        hub.save_json(self.directory / 'room-variants.json', [v for v in self.variants() if v['id'] != args.get('id')])
+        return {'message': 'Saved room removed'}
+
+    @action('room_volume')
+    def _act_room_volume(self, args):
+        return self.set_room_volume(args.get('value'), args.get('delta'))
+
+    @action('quiet', args={'minutes': 'number'})
+    def _act_quiet(self, args):
+        return self.quiet(args.get('minutes'))
+
+    @action('resume')
+    def _act_resume(self, args):
+        return self.resume()
+
+    @action('stop')
+    def _act_stop(self, args):
+        return self.stop()
+
+    @action('leave', args={'fade_seconds': 'number'})
+    def _act_leave(self, args):
+        return self.leave(args.get('fade_seconds', 1.2))
+
+    @action('wind_down', args={'minutes': 'number'})
+    def _act_wind_down(self, args):
+        minutes = float(args.get('minutes', 30))
+        if not math.isfinite(minutes) or not 0 <= minutes <= 1440:
+            raise SessionError('Choose a wind down from 1 to 1440 minutes')
+        if not minutes:
+            self._invalidate()
+            if self.active:
+                self.backend.music_control('volume', self._effective(self.active['music'].get('volume', 50)))
+            return {'message': 'Wind down cancelled; music level restored'}
+        return self._fade(minutes * 60)
+
+    # Pause and Stop interrupt like Quiet; other layer changes wait their turn.
+    @action('layer', immediate=lambda args: args.get('action') in ('pause', 'stop'),
+            args={'layer': 'text', 'action': 'text', 'minutes': 'number'})
+    def _act_layer(self, args):
+        return self.layer(args)
+
+    @action('picture', immediate=lambda args: args.get('action') in ('pause', 'stop'),
+            args={'action': 'text', 'minutes': 'number'})
+    def _act_picture(self, args):
+        return self.layer(dict(args, layer='picture'))
+
+    @action('settings')
+    def _act_settings(self, args):
+        return self.apply_settings(args.get('values') or {})
+
+    @action('online')
+    def _act_online(self, args):
+        reference = args.get('item')
+        if not isinstance(reference, dict):
+            raise SessionError('Choose a library item')
+        if reference.get('provider') == 'link':
+            return self.open_link({'url': reference.get('url'), 'destination': reference.get('route', 'music')})
+        if reference.get('provider') == 'music_assistant' and reference.get('action') == 'transfer':
+            import online_services
+            online_services.ma_transfer(reference.get('source_player_id'), reference.get('player_id'))
+            if self.active and self.active['music'].get('reference', {}).get('provider') == 'music_assistant':
+                self.active['music']['reference']['player_id'] = reference['player_id']
+                if getattr(self.backend, 'remote', None):
+                    self.backend.remote['player_id'] = reference['player_id']
+            return {'message': 'Music queue transferred; local atmosphere and picture stay here'}
+        return self.enter({'music': {'reference': reference, 'name': reference.get('name', 'Library music'),
+                                     'source_id': 'library', 'volume': 50, 'muted': False}})
+
+    @action('music', args={'item': 'object', 'source_id': 'text'})
+    def _act_music(self, args):
+        item = args.get('item') or {}
+        music = dict(item, source_id=item.get('id') or args.get('source_id'))
+        if self.active:
+            music.setdefault('volume', self.active['music'].get('volume', 50))
+            music.setdefault('muted', self.active['music'].get('muted', False))
+        options = {'music': music}
+        if '_request_generation' in args:
+            options['_request_generation'] = args['_request_generation']
+        return self.enter(options)
+
+    @action('atmosphere', immediate=False, args={'source_id': 'text', 'id': 'text'})
+    def _act_atmosphere(self, args):
+        return self.layer(dict(args, layer='atmosphere', action='select',
+                               source_id=args.get('source_id') or args.get('id')))
+
+    @action('link', immediate=False, args={'destination': 'text'})
+    def _act_link(self, args):
+        return self.open_link(args)
 
     def close(self):
         if self.verified_audio:

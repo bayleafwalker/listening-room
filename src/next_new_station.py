@@ -9,12 +9,13 @@ import threading
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gtk
 
 import listening_hub as hub
 import next_links
 import next_station
 import youtube_search
+from next_async import error_text, run_async
 from next_widgets import label, name_it
 
 MODES = (('link', 'Stream link'), ('search', 'Search'), ('builtin', 'Built-in radio'))
@@ -347,15 +348,9 @@ class NewStationDialog(Adw.Dialog):
         cancel = threading.Event()
         self.cancel = cancel
         serial = self.serial
-        future = self.host.executor.submit(seed_rows, scope, text, self.host, cancel)
-
-        def done(f):
-            try:
-                rows, error = f.result(), None
-            except Exception as problem:
-                rows, error = [], str(problem) or type(problem).__name__
-            GLib.idle_add(self.show_results, serial, scope, rows, error)
-        future.add_done_callback(done)
+        run_async(lambda: seed_rows(scope, text, self.host, cancel),
+                  lambda rows: self.show_results(serial, scope, rows, None),
+                  lambda error: self.show_results(serial, scope, [], error_text(error)), self.host.executor)
 
     def show_results(self, serial, scope, rows, error):
         if serial != self.serial or self.closed_flag:

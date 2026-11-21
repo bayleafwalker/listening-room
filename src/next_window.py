@@ -5,7 +5,7 @@ touches players itself, and never sends a command that starts or changes
 playback while you browse. Listen is provisional here; Rooms (next_rooms), Now, Mix,
 Timer, Output, toasts and banners are the finished shell.
 """
-import concurrent.futures
+import collections
 import json
 import subprocess
 import sys
@@ -22,7 +22,8 @@ import listening_hub as hub
 import session_client
 import next_model as model
 from next_actions import RoomActions, Ticket
-from next_mini import MiniPlayer, MiniWindow, install_mini_css
+from next_async import call_on_main, error_text, pool, run_async
+from next_mini import MINI_CSS, MiniPlayer, MiniWindow
 from next_mix import MixSheet
 from next_rooms import RoomsPage
 from next_widgets import (FocalPicture, choose_renderer, show_texture, OutputPopover, Scene, TimerPopover, accent_css, icon_button,
@@ -30,6 +31,7 @@ from next_widgets import (FocalPicture, choose_renderer, show_texture, OutputPop
 
 APP_ID = 'app.kotona.ListeningRoom'
 POLL_MS = 900
+FALLBACK_POLL_MS = 5000      # while a stream that worked is down; a controller with no stream is polled at POLL_MS
 IDLE_MS = 4000
 BREAKPOINT = 1000
 MINI_WIDTH = 560  # below this the mini layout replaces the window
@@ -37,6 +39,7 @@ FULL_SIZE = (1000, 720)
 START_GRACE_S = 8  # how long a start command may take before Now is abandoned
 TOAST_GAP = 12                  # between a toast and what it sits above
 NOW_CONTROLS_CLEARANCE = 140    # Now's control row (play, volume, Mix) and its bottom padding
+CARD_GAP = 16                   # at least this much between the start card and the room's name and chip
 MINI_CONTROLS_CLEARANCE = 96    # the mini layout's control row
 TOAST_ROOM = 120                # window height kept free for a toast above the open Mix
 MUSIC_STARTS = ('music', 'online', 'link', 'station.start', 'station.replay')  # starts that replace a room's music
@@ -82,21 +85,25 @@ class NextWindow(Adw.ApplicationWindow):
         self.now_origin = 'rooms'      # where Back and Esc in Now return to: 'rooms' or 'listen'
         self.listen_origin = None      # where Esc in Listen returns to: 'now', 'rooms' or None (stay)
         self.section_errors = {}       # surface -> the last exception its render raised
+        self.rendered = None           # the snapshot last drawn: the next one draws only what differs from it
+        self.drawn = {}                # surface -> the window state it last drew with (see due)
+        self.rebuilds = collections.Counter()   # draws per surface: the partial-rebuild tests read it
         self.offline = False           # the room service did not answer the last poll
         self.offline_error = ''
         self.config_generation = None  # library connections and favourites, as the controller last saw them
         self.browse_narrow = False     # Browse rooms was chosen in the narrow (mini) layout
         self.listen_first = False      # the active room began with Tune in, not with a room
-        self.toast_margin = self.toast_key = None
+        self.toast_margin = self.toast_key = self.pending_key = None
         self.room_key = self.cards_key = self.sources_key = None
         self.volume_timer = self.idle_timer = None
         self.selected_room = self.surface = None
         self.outputs, self.radio = [], []
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
-        self.urgent = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.executor = pool('room-window', 3)
+        self.urgent = pool('room-urgent')
+        self.poll_pool = pool('room-poll')     # reads only: a slow command never delays a poll
         display = Gdk.Display.get_default()
         install_css(display)
-        install_mini_css(display)
+        install_css(display, MINI_CSS, 1)
         self.accent_provider = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(display, self.accent_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
         self.actions = RoomActions(self.command, self.toast, lambda: self.snapshot)
@@ -106,7 +113,11 @@ class NextWindow(Adw.ApplicationWindow):
         self.connect('map', self.watch_surface)
         self.add_tick_callback(self.adapt)
         GLib.idle_add(self.load_static)
-        self.poll_source = GLib.timeout_add(POLL_MS, self.poll)
+        self.stream, self.stream_up, self.stream_seen = None, False, False   # pushed snapshots (subscribe)
+        self.push_mark = 0             # polls_sent when the last pushed snapshot arrived
+        self.polled_at = 0.
+        self.poll_source = GLib.timeout_add(POLL_MS, self.timed_poll)
+        self.subscribe()
         self.poll()
 
     # ---- structure --------------------------------------------------------
@@ -152,6 +163,9 @@ class NextWindow(Adw.ApplicationWindow):
         self.pages.add_named(self.sheet, 'now')
         self.mini_player = MiniPlayer(self, closable=False)
         self.pages.add_named(self.mini_player, 'mini')
+        self.listen_shown = False
+        for stack in (self.pages, self.browse):
+            stack.connect('notify::visible-child', lambda *_: self.listen_visibility())
         breakpoint = Adw.Breakpoint.new(Adw.BreakpointCondition.parse('max-width: %dpx' % (MINI_WIDTH - 1)))
         breakpoint.add_setter(self, 'mini-layout', True)
         self.add_breakpoint(breakpoint)
@@ -338,6 +352,7 @@ class NextWindow(Adw.ApplicationWindow):
         for widget in (chips, self.room_name, line, self.choose_scene):
             text.append(widget)
         column.append(text)
+        self.now_overlay, self.now_column, self.now_text = overlay, column, text
         self.controls = Gtk.CenterBox()
         self.mix_button = Gtk.Button(halign=Gtk.Align.START)
         self.mix_button.add_css_class('glass')
@@ -549,6 +564,7 @@ class NextWindow(Adw.ApplicationWindow):
 
     def render_pending(self):
         pending = self.pending
+        self.drawn.pop('now', None)     # the card writes over Now's name and chip: Now draws in full after it
         card = self.pending_card
         connecting = bool(pending and pending['state'] == 'connecting')
         failed = bool(pending and pending['state'] == 'failed')
@@ -570,7 +586,10 @@ class NextWindow(Adw.ApplicationWindow):
             self.play.set_child(Gtk.Spinner(spinning=True))
             self.room_name.set_text(pending['name'])
             self.chip.set_text('Connecting')
+            self.chip.set_visible(True)
             self.changed_chip.set_visible(False)
+            self.banner.set_visible(False)      # the last room's layer news is not about this start
+            self.marker.set_visible(False)
             self.choose_scene.set_visible(False)
             self.now_line.set_text('')
             self.now_detail.set_visible(False)
@@ -578,6 +597,10 @@ class NextWindow(Adw.ApplicationWindow):
                 self.scene.show_room({'still': pending['art'], 'poster': pending['art'], 'loop': None}, False)
         else:
             previous = (self.snapshot.get('active') or {}).get('name')
+            if previous:
+                self.render_now(self.snapshot)  # the room that is still there, not "Connecting", under the card
+            else:
+                self.chip.set_visible(False)    # nothing is connecting any more; render_now brings it back
             self.pending_title.set_text('Couldn’t start ' + pending['name'])
             self.pending_detail.set_text(pending.get('error', '') + (' ' + previous + ' is still there.' if previous else ''))
             self.play.set_icon_name('media-playback-start-symbolic')
@@ -599,16 +622,19 @@ class NextWindow(Adw.ApplicationWindow):
             return
         ad_hoc = model.ad_hoc(snapshot, self.catalogue)
         self.chip.set_text('Not connected' if self.offline else info['chip'])
-        # A room started from Listen, or saved under a generic name, is named after what plays.
-        self.room_name.set_text(model.shown_name(snapshot, self.catalogue))
+        self.chip.set_visible(True)
+        # A room started from Listen, or saved under a generic name, is named after what plays; the line
+        # under it then says the track, never the same name again.
+        name, line, detail = model.now_text(snapshot, self.catalogue)
+        self.room_name.set_text(name)
         self.changed_chip.set_visible(model.room_changed(snapshot, self.catalogue))
         assets = model.scene_assets(snapshot.get('active'), self.presets)
         own_scene = bool(assets.get('still') or assets.get('loop'))
         self.choose_scene.set_visible((ad_hoc or self.listen_first or not own_scene) and bool(self.layer_options('picture')))
-        self.now_line.set_text(info['line'])
-        self.now_detail.set_text('· ' + info['detail'] if info['detail'] else '')
-        self.now_detail.set_visible(bool(info['detail']))
-        self.mix_summary.set_text(info['summary'])
+        self.now_line.set_text(line)
+        self.now_detail.set_text('· ' + detail if detail else '')
+        self.now_detail.set_visible(bool(detail))
+        self.mix_summary.set_text(model.layer_summary(snapshot, name))
         self.play.set_icon_name('media-playback-pause-symbolic' if info['state'] == 'playing' else 'media-playback-start-symbolic')
         name_it(self.play, 'Pause the room' if info['state'] == 'playing' else 'Play the room')
         self.skip.set_visible(info['can_next'])
@@ -694,6 +720,14 @@ class NextWindow(Adw.ApplicationWindow):
         self.browse.set_visible_child_name('listen')
         self.show_page('browse')
 
+    def listen_visibility(self):
+        """Leaving Listen by any route (a tab, Back, a shortcut, the mini layout) ends ambience mode,
+        so the next Listen or Music › Change… offers music again."""
+        shown = self.pages.get_visible_child_name() == 'browse' and self.browse.get_visible_child_name() == 'listen'
+        if self.listen_shown and not shown:
+            self.listen.end_ambience()
+        self.listen_shown = shown
+
     def show_now(self):
         if not self.snapshot.get('active'):
             self.toast('You are not in a room yet')
@@ -754,6 +788,7 @@ class NextWindow(Adw.ApplicationWindow):
         """Music and Ambience are chosen in Listen (Ambience in its own mode); Scene on its Mix row."""
         if layer == 'music':
             self.sheet.set_open(False)
+            self.listen.end_ambience()
             self.show_listen()
         elif layer == 'atmosphere':
             origin = 'mix' if self.sheet.get_open() else 'now'
@@ -773,17 +808,10 @@ class NextWindow(Adw.ApplicationWindow):
             return None
         ticket = Ticket()
         finish = ticket.finish
-        pool = self.urgent if urgent else self.executor
-        future = pool.submit(session_client.request, action, args or {}, 5)
-
-        def finished(f):
-            try:
-                result = f.result()
-            except Exception as error:
-                GLib.idle_add(self.failed, str(error) or type(error).__name__, quiet, failed, finish)
-                return
-            GLib.idle_add(self.succeeded, result, done, finish)
-        future.add_done_callback(finished)
+        run_async(lambda: session_client.request(action, args or {}, 5),
+                  lambda result: self.succeeded(result, done, finish),
+                  lambda error: self.failed(error_text(error), quiet, failed, finish),
+                  self.urgent if urgent else self.executor)
         return ticket
 
     def succeeded(self, result, done, finish=None):
@@ -867,16 +895,7 @@ class NextWindow(Adw.ApplicationWindow):
             preferred = (self.snapshot.get('settings') or {}).get('preferred_output')
             self.output_popover.show_outputs(self.outputs, preferred, value[1])
 
-        future = self.executor.submit(get)
-
-        def done(f):
-            try:
-                value = f.result()
-            except Exception:
-                GLib.idle_add(lambda: self.output_popover.show_outputs([], None, None) or False)
-                return
-            GLib.idle_add(lambda: apply(value) or False)
-        future.add_done_callback(done)
+        run_async(get, apply, lambda _error: self.output_popover.show_outputs([], None, None), self.executor)
 
     def choose_output(self, name):
         previous = (self.snapshot.get('settings') or {}).get('preferred_output')
@@ -894,16 +913,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.run_local(lambda: hub.set_volume(value, master=True), None)
 
     def run_local(self, work, message):
-        future = self.executor.submit(work)
-
-        def done(f):
-            try:
-                f.result()
-                if message:
-                    GLib.idle_add(lambda: self.toast(message) or False)
-            except Exception as error:
-                GLib.idle_add(lambda error=error: self.error_toast(error) or False)
-        future.add_done_callback(done)
+        run_async(work, (lambda _result: self.toast(message)) if message else None, self.error_toast, self.executor)
 
     # ---- dialogs and toasts -------------------------------------------------------
 
@@ -1111,7 +1121,44 @@ class NextWindow(Adw.ApplicationWindow):
             (widget.add_css_class if compact else widget.remove_css_class)('compact')
         self.fit_controls(width)
         self.place_toasts()
+        self.place_pending()
         return GLib.SOURCE_CONTINUE
+
+    def place_pending(self):
+        """Now's cards (the start card, or a layer's failure banner) never sit over the room's name and chip
+        ("Connecting"): a card moves up into the space above them, and in a window too short even for that, the
+        name and chip step aside while the card says the same thing. Measured rather than read from allocations,
+        and redone only when its inputs change."""
+        overlay = self.now_overlay
+        card = self.pending_card if self.pending_card.get_visible() else self.banner if self.banner.get_visible() else None
+        words = (self.pending_title, self.pending_detail, self.banner_title, self.banner_detail)
+        # While a card shows, what Now's text says (and which of its rows show) moves the room for it.
+        text_rows = (self.room_name, self.now_line, self.now_detail, self.chip, self.changed_chip, self.choose_scene)
+        key = (card, self.offline, overlay.get_width(), overlay.get_height(),
+               card is not None and tuple(label.get_text() for label in words),
+               card is not None and tuple((row.get_visible(), getattr(row, 'get_text', row.get_label)())
+                                          for row in text_rows))
+        if key == self.pending_key or not overlay.get_height():
+            return
+        self.pending_key = key
+        top = 140 if self.offline else 70     # below the offline banner when it shows
+        for other in (self.pending_card, self.banner):
+            if other is not card:
+                other.set_margin_top(top)
+        self.now_text.set_visible(True)       # measured as shown: a hidden box measures as nothing
+        if card is None:
+            return
+        width, height = overlay.get_width(), overlay.get_height()
+        card_width = min(card.measure(Gtk.Orientation.HORIZONTAL, -1)[1], width - 32)
+        card_height = card.measure(Gtk.Orientation.VERTICAL, card_width)[1]
+        column_width = width - self.now_column.get_margin_start() - self.now_column.get_margin_end()
+        controls = self.controls.measure(Gtk.Orientation.VERTICAL, column_width)[1]
+        text = self.now_text.measure(Gtk.Orientation.VERTICAL, column_width)[1]
+        text_top = height - self.now_column.get_margin_bottom() - controls - self.now_column.get_spacing() - text
+        margin = min(top, text_top - CARD_GAP - card_height)
+        fits = margin >= 8
+        card.set_margin_top(margin if fits else top)
+        self.now_text.set_visible(fits)
 
     def fit_controls(self, width):
         """Now's control row at medium widths: drop the Mix summary, then shorten the volume slider, so the
@@ -1166,16 +1213,44 @@ class NextWindow(Adw.ApplicationWindow):
             self.cards_key = self.sources_key = self.room_key = None
             if self.snapshot:
                 self.render(self.snapshot)
-        future = self.executor.submit(get)
-
-        def done(f):
-            try:
-                value = f.result()
-            except Exception:
-                return
-            GLib.idle_add(lambda: apply(value) or False)
-        future.add_done_callback(done)
+        run_async(get, apply, None, self.executor)
         return False
+
+    # ---- snapshots: pushed while the stream is up, polled otherwise ------------------------------
+
+    def subscribe(self):
+        """Take snapshots from the controller's stream when it has one; polling stays as the fallback."""
+        subscribe = getattr(session_client, 'subscribe', None)
+        if subscribe is None:
+            return
+        try:
+            self.stream = subscribe(lambda update: call_on_main(self.pushed, update))
+        except Exception as error:     # no stream: the window polls, as with an older controller
+            print('listening-room: no snapshot stream: %s' % error_text(error), file=sys.stderr)
+
+    def pushed(self, update):
+        """A snapshot (or an outage) from the stream, on the main loop."""
+        if self.closed:
+            return
+        if not update.connected:
+            self.stream_up = False
+            self.poll()                 # the stream is down: read now, then every FALLBACK_POLL_MS
+            return
+        self.stream_up = self.stream_seen = True
+        # A poll sent before this push may have read older state; its answer must not replace this one.
+        self.push_mark = self.polls_sent
+        self.show_snapshot(update.snapshot)
+
+    def timed_poll(self):
+        """The poll timer: nothing while the stream is up, every FALLBACK_POLL_MS while a stream that worked is
+        down, and every POLL_MS with a controller that has no stream."""
+        if self.closed:
+            return False
+        if self.stream_up:
+            return True
+        if self.stream_seen and (time.monotonic() - self.polled_at) * 1000 < FALLBACK_POLL_MS:
+            return True
+        return self.poll()
 
     def poll(self):
         if self.closed:
@@ -1184,16 +1259,13 @@ class NextWindow(Adw.ApplicationWindow):
             self.poll_again = True      # the read in flight may predate what the caller just changed
             return True
         self.polling = True
+        self.polled_at = time.monotonic()
         self.polls_sent += 1
         serial = self.polls_sent
-        future = self.executor.submit(session_client.request, 'inspect', {}, 3)
-
-        def done(f):
-            try:
-                GLib.idle_add(self.render_poll, f.result(), None, serial)
-            except Exception as error:
-                GLib.idle_add(self.render_poll, None, str(error), serial)
-        future.add_done_callback(done)
+        run_async(lambda: session_client.request('inspect', {}, 3),
+                  lambda snapshot: self.render_poll(snapshot, None, serial),
+                  lambda error: self.render_poll(None, error_text(error), serial),
+                  self.poll_pool)
         return True
 
     def fresh_since(self, mark):
@@ -1202,15 +1274,10 @@ class NextWindow(Adw.ApplicationWindow):
 
     def inspect_then(self, callback):
         """Read fresh state off the GTK thread, then call ``callback(snapshot)`` (None when unreadable) on it."""
-        future = self.executor.submit(session_client.request, 'inspect', {}, 3)
-
-        def done(f):
-            try:
-                snapshot = f.result()
-            except Exception:
-                snapshot = None
-            GLib.idle_add(lambda: (None if self.closed else callback(snapshot)) and False)
-        future.add_done_callback(done)
+        def answer(snapshot):
+            if not self.closed:
+                callback(snapshot)
+        run_async(lambda: session_client.request('inspect', {}, 3), answer, lambda _error: answer(None), self.poll_pool)
 
     def render_poll(self, snapshot, error, serial=0):
         self.polling = False
@@ -1226,12 +1293,22 @@ class NextWindow(Adw.ApplicationWindow):
             self.set_offline(error)
             return False
         if self.offline:
-            self.set_offline(None)
+            self.set_offline(None)      # the service answered, whatever this read is worth
         if serial and serial < self.snapshot_poll:
             return False        # an older read than the one shown never replaces it
+        if serial and serial <= self.push_mark:
+            # A pushed snapshot arrived after this read was sent: which is newer is unknown, so neither
+            # replace it nor count as fresh; ask again, and the next read is sent after the push.
+            GLib.idle_add(lambda: self.poll() and False)
+            return False
         self.snapshot_poll = max(self.snapshot_poll, serial)
-        self.render(snapshot)
+        self.show_snapshot(snapshot)
         return False
+
+    def show_snapshot(self, snapshot):
+        if self.offline:
+            self.set_offline(None)
+        self.render(snapshot)
 
     def set_offline(self, error):
         """While the room service does not answer: a persistent banner, and nothing that looks live."""
@@ -1245,11 +1322,12 @@ class NextWindow(Adw.ApplicationWindow):
                        self.listen.bar_volume):
             widget.set_sensitive(not offline and (widget is not self.play or not self.pending))
         # The banner sits over Now's top edge: stale layer news goes, and the start card moves below it.
-        self.pending_card.set_margin_top(140 if offline else 70)
+        self.pending_key = None         # place_pending moves the start card below the banner
         if offline:
             self.banner.set_visible(False)
             self.marker.set_visible(False)
             self.chip.set_text('Not connected')
+            self.chip.set_visible(True)
             self.now_line.set_text('The room service isn’t running')
             self.now_detail.set_visible(False)
         elif self.snapshot.get('active') and not self.pending:
@@ -1262,16 +1340,8 @@ class NextWindow(Adw.ApplicationWindow):
             return
         button.set_sensitive(False)
         button.set_label('Starting…')
-        future = self.executor.submit(session_client.ensure_service)
-
-        def finished(f):
-            try:
-                f.result()
-                error = None
-            except Exception as failure:
-                error = failure
-            GLib.idle_add(lambda: self.service_started(error) or False)
-        future.add_done_callback(finished)
+        run_async(session_client.ensure_service, lambda _result: self.service_started(None), self.service_started,
+                  self.executor)
 
     def service_started(self, error):
         if self.closed:
@@ -1285,7 +1355,11 @@ class NextWindow(Adw.ApplicationWindow):
         self.poll()
 
     def render(self, snapshot):
-        self.snapshot = snapshot
+        """Draw a snapshot. Each surface draws only when something it reads changed since the last draw;
+        drawing the same snapshot again (static data arrived) redraws everything."""
+        changed = model.snapshot_changes(self.rendered, snapshot)
+        playing_changed = model.now_changes(changed, self.rendered, snapshot)
+        self.snapshot = self.rendered = snapshot
         settings = snapshot.get('settings') or {}
         fading = (bool(settings.get('keep_controls')), bool(settings.get('reduced_motion')))
         if fading != getattr(self, 'fading_settings', fading):
@@ -1303,8 +1377,8 @@ class NextWindow(Adw.ApplicationWindow):
             if known is not None:
                 self.load_static()
                 self.listen.config_changed()
-        self.guard('rooms', self.rooms.render, snapshot)
-        self.guard('listen', self.listen.update, snapshot)
+        self.guard('rooms', self.rooms.render, snapshot, changed)
+        self.guard('listen', self.listen.update, snapshot, changed)
         active = snapshot.get('active')
         for item in self.menu_room_items:
             item.set_visible(bool(active))
@@ -1325,24 +1399,36 @@ class NextWindow(Adw.ApplicationWindow):
                 self.want_now = False
                 if (snapshot.get('errors') or {}).get('music'):
                     self.error_toast(snapshot['errors']['music'])
-        self.guard('mini', self.mini_player.update, snapshot)
-        if self.mini_window is not None:
+        if self.due('mini', playing_changed, self.catalogue, self.presets):
+            self.guard('mini', self.mini_player.update, snapshot)
+        if self.mini_window is not None and self.due('mini-window', playing_changed, self.mini_window, self.catalogue, self.presets):
             self.guard('mini-window', self.mini_window.player.update, snapshot)
         pending = self.pending
         if pending and pending['state'] == 'connecting' and pending['done'] and not snapshot.get('transition'):
             self.clear_pending()
             pending = None
+        now_state = (pending and pending['state'], self.offline, self.listen_first, self.catalogue, self.presets)
         if pending:
             self.guard('pending', self.render_pending) if pending['state'] == 'failed' else None
-            if active and pending['state'] == 'failed':
+            if active and pending['state'] == 'failed' and self.due('now', playing_changed, *now_state):
                 self.guard('now', self.render_now, snapshot)
         elif active:
-            self.guard('now', self.render_now, snapshot)
+            if self.due('now', playing_changed, *now_state):
+                self.guard('now', self.render_now, snapshot)
         elif self.current_page() == 'now':
             self.show_rooms()
         if not active and not self.pending:
             self.listen_first = False
         return False
+
+    def due(self, section, changed, *local):
+        """Whether a playing-room surface must draw: a snapshot key it reads changed (``changed`` None: all), or
+        the window state it also draws from (``local``) is not what it last drew. Counts the draws it allows."""
+        if not model.touches(changed, ignores=model.NOW_IGNORES) and self.drawn.get(section) == local:
+            return False
+        self.drawn[section] = local
+        self.rebuilds[section] += 1
+        return True
 
     def watch_surface(self, *_):
         """Follow the toplevel's state, once, so the scene pauses when it is hidden."""
@@ -1366,8 +1452,10 @@ class NextWindow(Adw.ApplicationWindow):
                 GLib.source_remove(source)
         self.listen.close()
         self.scene.close()
-        self.executor.shutdown(wait=False, cancel_futures=True)
-        self.urgent.shutdown(wait=False, cancel_futures=True)
+        if self.stream is not None:
+            self.stream.close()
+        for workers in (self.executor, self.urgent, self.poll_pool):
+            workers.shutdown(wait=False, cancel_futures=True)
         return False
 
 

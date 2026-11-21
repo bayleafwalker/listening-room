@@ -118,6 +118,7 @@ stdenvNoCC.mkDerivation {
     python3 tests/test_listening_atmosphere_character.py
     python3 tests/test_listening_devices.py
     python3 tests/test_listening_session.py
+    python3 tests/test_listening_session_push.py
     python3 tests/test_listening_online.py
     python3 tests/test_listening_experience.py
     python3 tests/test_listening_picture_races.py

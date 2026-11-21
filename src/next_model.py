@@ -20,6 +20,54 @@ def accent(value):
     return value if isinstance(value, str) and re.fullmatch(r'#[0-9a-fA-F]{6}', value) else DEFAULT_ACCENT
 
 
+# ---- what changed between two snapshots (partial rebuilds) -----------------------------------
+
+# Keys the playing-room surfaces (Now, the Mix, the mini player, Listen's bar) never read.
+NOW_IGNORES = frozenset({'stations', 'station_recent', 'station_learned', 'recent', 'config_generation',
+                         'minute', 'last_entered_at'})
+
+
+def snapshot_changes(old, new):
+    """The top-level keys whose values differ, or None when there is nothing to compare with (draw everything).
+
+    The controller clock ('now') moves on every snapshot, so it is left out; a 'minute' key stands in for
+    it when the minute turns, for the few places that say "5 min ago" or "Just now"."""
+    if old is None or new is None or old is new:
+        return None
+    changed = {key for key in set(old) | set(new) if key != 'now' and old.get(key) != new.get(key)}
+    if _minute(old) != _minute(new):
+        changed.add('minute')
+    return changed
+
+
+def now_changes(changed, old, new):
+    """``changed`` as the playing-room surfaces see it: they read only the active room's own saved variant,
+    so a change to another saved room (a rename, a save) is not theirs."""
+    if changed and 'variants' in changed and active_variant(old) == active_variant(new):
+        return changed - {'variants'}
+    return changed
+
+
+def active_variant(snapshot):
+    active = (snapshot or {}).get('active') or {}
+    return next((item for item in (snapshot or {}).get('variants') or []
+                 if isinstance(item, dict) and item.get('id') == active.get('id')), None)
+
+
+def _minute(snapshot):
+    now = snapshot.get('now')
+    return int(now // 60) if isinstance(now, (int, float)) else None
+
+
+def touches(changed, reads=None, ignores=frozenset()):
+    """Whether a section must draw: everything changed (None), or a key it reads changed. ``reads`` None means
+    every key except ``ignores``."""
+    if changed is None:
+        return True
+    keys = changed - ignores
+    return bool(keys if reads is None else keys & reads)
+
+
 def launch_view(snapshot):
     """Rooms unless a room is already active. Launching never starts playback."""
     return 'now' if (snapshot or {}).get('active') else 'rooms'
@@ -97,15 +145,22 @@ def now_line(snapshot):
     return primary, secondary
 
 
-def layer_summary(snapshot):
-    """Names of what is sounding, for the Mix button: Piano · Rain on glass · Scene."""
+def same_text(a, b):
+    return bool(a and b) and a.strip().casefold() == b.strip().casefold()
+
+
+def layer_summary(snapshot, room=''):
+    """Names of what is sounding, for the Mix button: Piano · Rain on glass · Scene. A layer named like the
+    ``room`` title above it is called by its kind (Music) rather than repeating the name."""
     parts = []
     music, ambience, picture = (_layer(snapshot, name) for name in LAYER_ORDER)
     active = snapshot.get('active') or {}
     if music.get('status') in ('Playing', 'Paused'):
-        parts.append(music.get('station') or music.get('name') or (active.get('music') or {}).get('name') or MUSIC)
+        named = music.get('station') or music.get('name') or (active.get('music') or {}).get('name')
+        parts.append(MUSIC if not named or same_text(named, room) else named)
     if ambience.get('status') in ('Playing', 'Paused') and ambience.get('kind', 'local') != 'none':
-        parts.append(ambience.get('name') or ambience.get('title') or AMBIENCE)
+        named = ambience.get('name') or ambience.get('title')
+        parts.append(AMBIENCE if not named or same_text(named, room) else named)
     if picture.get('status') in ('Playing', 'Paused'):
         parts.append(SCENE)
     return ' · '.join(parts) if parts else 'Nothing playing'
@@ -240,6 +295,22 @@ def shown_name(snapshot, catalogue=()):
     return active.get('name')
 
 
+def now_text(snapshot, catalogue=()):
+    """(name, line, detail) for Now: the room's title and what plays, never saying the same name twice. A room
+    named after its station shows the track (or nothing more) under the name, not the station again."""
+    name = shown_name(snapshot, catalogue) or ''
+    return (name,) + without_name(name, *now_line(snapshot))
+
+
+def without_name(name, line, detail):
+    """(line, detail) under a title ``name``, dropping whichever just repeats it."""
+    if same_text(detail, name):
+        detail = ''
+    if same_text(line, name):
+        line, detail = detail, ''
+    return line, detail
+
+
 def suggested_name(snapshot):
     """What Save as my room offers: the room's own name, else what plays."""
     name = ((snapshot or {}).get('active') or {}).get('name')
@@ -312,8 +383,7 @@ def _music_identity(music):
 def room_base(snapshot, catalogue=()):
     """The saved room or catalogue room the active room was entered from, or None for an ad-hoc room."""
     active = (snapshot or {}).get('active') or {}
-    variant = next((item for item in (snapshot or {}).get('variants') or []
-                    if isinstance(item, dict) and item.get('id') == active.get('id')), None)
+    variant = active_variant(snapshot)
     if variant is not None:
         return {'name': variant.get('name'), 'music': variant.get('music') or {}}
     room = next((item for item in catalogue or () if item.get('id') == active.get('room_id')), None)
