@@ -1429,6 +1429,10 @@ class Controller:
                 self._route_preferred()
                 self._home_action('activate_room_scene', recipe.get('room_id'), cancel_event=cancel)
         except (OSError, ValueError, hub.HubError) as error:
+            if valid() and not strict_guard and not previous and self.active is None:
+                # From idle, each layer fails on its own: a room whose ambience or scene can start is entered
+                # with its music failure on the Music layer. Only a room where nothing starts fails as a whole.
+                self._enter_without_music(recipe, generation, cancel, valid, str(error))
             if valid():
                 with self.lock:
                     self.errors['music'] = str(error)
@@ -1452,6 +1456,41 @@ class Controller:
                 except (OSError, ValueError, hub.HubError):
                     pass
             self.refresh()
+
+    def _enter_without_music(self, recipe, generation, cancel, valid, music_error):
+        """Start the ambience and scene of a room whose music failed; commit the room when one of them
+        plays. Returns whether the room was entered."""
+        started, errors = [], {}
+        atmosphere, picture = recipe.get('atmosphere') or {}, recipe.get('picture') or {}
+        if atmosphere.get('kind', 'none') != 'none':
+            try:
+                self._commit_atmosphere(atmosphere, self.backend.start_atmosphere(self._scaled(atmosphere), cancel))
+                started.append('atmosphere')
+            except (OSError, ValueError, hub.HubError) as error:
+                errors['atmosphere'] = str(error)
+        if picture.get('enabled') and valid():
+            try:
+                self._start_picture(picture, cancel)
+                started.append('picture')
+            except (OSError, ValueError, hub.HubError) as error:
+                errors['picture'] = str(error)
+        if not started:
+            return False
+        with self.lock:
+            if not valid():
+                return False
+            recipe['room_volume'] = self.room_volume
+            self.active = recipe
+            self.program = None
+            self.errors.update(errors, music=music_error)
+            self.entry = {'id': generation, 'name': recipe['name'], 'state': 'started', 'music_error': music_error}
+            self.last_session = _copy(recipe)
+            self.last_entered_at = self.clock()
+            self.recent = [recipe['id']] + [r for r in self.recent if r != recipe['id']][:19]
+            self._persist()
+        self._route_preferred()
+        self._home_action('activate_room_scene', recipe.get('room_id'), cancel_event=cancel)
+        return True
 
     def _home_action(self, method, *args, **kwargs):
         try:

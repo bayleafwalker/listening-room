@@ -183,8 +183,11 @@ MPRIS metadata names what plays (title, and artist or station) and the room
 toggle|stop` with no player listed reaches the room when one is active, since an
 ambience-only room has no player of its own there.
 
-A start (Enter, Return, Tune in) that fails keeps its card on Now, named after the room
-it tried, with Try again and Back; it never falls back to Rooms silently. If another room
+Each layer fails on its own, on Enter too: when a room's music fails from idle but its
+ambience or scene starts, the room is entered and Now shows the failure on the Music layer
+(banner and Mix row, each with Try again). A start (Enter, Return, Tune in) where nothing
+of the room can start keeps its card on Now, named after the room it tried, with Try again
+and Back; it never falls back to Rooms silently. If another room
 was playing it keeps playing ("‹room› is still there") and does not show the failure as
 its own. The controller reports the latest start in `inspect` as `entry`
 (`{id, name, state: connecting|started|failed, error, kept}`); `id` matches the `enter`

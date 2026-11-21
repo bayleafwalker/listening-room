@@ -27,7 +27,9 @@ All notable changes are recorded here. The format follows
   as a button.
 
 ### Fixed
-- A start that fails no longer returns silently to Rooms: Now keeps the card "Couldn’t
+- Entering a room from idle whose music fails but whose ambience or scene starts enters the
+  room, with the failure and Try again on the Music layer.
+- A start where nothing can start no longer returns silently to Rooms: Now keeps the card "Couldn’t
   start ‹room›" with Try again and Back, named after the room tried. A room that kept
   playing does not show that failure as its own music failing.
 - Connecting no longer shows Next track or More/Less like this, a stale Mix summary, or

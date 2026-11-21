@@ -280,14 +280,32 @@ class SessionTests(unittest.TestCase):
     def test_transport_runs_at_once_like_quiet(self):
         self.assertTrue(sessions.ACTIONS['transport'].runs_immediately({'action': 'pause'}))
 
-    def test_a_failed_start_from_idle_is_recorded_under_the_room_it_tried(self):
-        self.backend.fail_music = True
+    def test_a_failed_start_from_idle_where_nothing_starts_is_recorded_under_the_room_it_tried(self):
+        self.backend.fail_music = self.backend.fail_picture = True
         reply = self.controller.enter({'room_id': 'north'})
         self.settle()
         entry = self.controller.snapshot()['entry']
         self.assertIsNone(self.controller.snapshot()['active'])
         self.assertEqual(entry, {'id': reply['id'], 'name': 'Northern quiet', 'state': 'failed',
                                  'error': 'Station could not load', 'kept': None})
+
+    def test_from_idle_a_room_whose_music_fails_is_entered_with_the_rest_playing(self):
+        # Coordinator decision (O10 criterion 1): each layer fails on its own.
+        self.backend.fail_music = True
+        reply = self.controller.enter({'room_id': 'north', 'atmosphere': {'kind': 'local', 'source_id': 'rain'}})
+        self.settle()
+        snapshot = self.controller.snapshot()
+        self.assertEqual(snapshot['active']['id'], 'north')
+        self.assertEqual(snapshot['errors']['music'], 'Station could not load')
+        self.assertEqual(snapshot['entry']['id'], reply['id'])
+        self.assertEqual((snapshot['entry']['state'], snapshot['entry']['music_error']), ('started', 'Station could not load'))
+        self.assertEqual(self.backend.state['atmosphere']['status'], 'Playing')
+        self.assertEqual(self.backend.state['music']['status'], 'Stopped')
+        self.backend.fail_music = False
+        self.controller.layer({'layer': 'music', 'action': 'retry'})
+        self.settle()
+        self.assertEqual(self.backend.state['music']['status'], 'Playing')
+        self.assertNotIn('music', self.controller.snapshot()['errors'])
 
     def test_a_failed_start_while_another_room_plays_keeps_it_and_names_both(self):
         self.enter()

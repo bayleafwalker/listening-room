@@ -33,7 +33,8 @@ class ControlWindow(unittest.TestCase):
 
     def tearDown(self):
         env = self.env
-        env.start_error, env.start_delay = None, 0.
+        env.start_error, env.start_delay, env.atmosphere_error = None, 0., None
+        env.backend.fail_picture = False
         for window in list(env.app.get_windows()):
             window.close()
         env.pump(.3)
@@ -50,10 +51,34 @@ class ControlWindow(unittest.TestCase):
 
     # ---- N2 ---------------------------------------------------------------------------------------
 
-    def test_a_failed_enter_from_idle_stays_on_now_named_after_the_room(self):
+    def nothing_starts(self):
+        env = self.env
+        env.start_error, env.atmosphere_error = 'Connection refused', 'Sound could not load'
+        env.backend.fail_picture = True
+
+    def test_from_idle_a_room_whose_music_fails_is_entered_with_the_failure_on_music(self):
+        # Coordinator decision (criterion 1): each layer fails on its own, on enter too.
         env = self.env
         window = env.launch(page='rooms')
         env.start_error = 'Connection refused'
+        self.enter_and_wait(window, self.second)
+        env.pump(1.0)
+        self.assertEqual(window.current_page(), 'now')
+        self.assertIsNone(window.pending, 'a target-named card although the rest of the room started')
+        self.assertFalse(window.pending_card.get_visible())
+        self.assertEqual(env.controller.active['name'], self.second['name'])
+        self.assertEqual(window.room_name.get_text(), self.second['name'])
+        self.assertTrue(window.banner.get_visible())
+        self.assertEqual(window.banner_title.get_text(), 'Music couldn’t start')
+        self.assertTrue(window.banner_retry.get_visible())
+        window.open_mix()
+        env.pump(.8)
+        self.assertTrue(window.mix.rows['music'].retry.get_mapped(), 'the Music row offers Try again')
+
+    def test_a_failed_enter_from_idle_stays_on_now_named_after_the_room(self):
+        env = self.env
+        window = env.launch(page='rooms')
+        self.nothing_starts()
         self.enter_and_wait(window, self.second)
         env.pump(1.0)
         visible, title, detail = self.card(window)
@@ -101,7 +126,8 @@ class ControlWindow(unittest.TestCase):
     def test_a_slow_start_that_fails_after_the_grace_time_is_not_silent(self):
         env = self.env
         window = env.launch(page='rooms')
-        env.start_delay, env.start_error = 2., 'Connection refused'
+        self.nothing_starts()
+        env.start_delay = 2.
         from unittest import mock
         with mock.patch.object(env.next_window, 'START_GRACE_S', .8):
             window.start('enter', {'room_id': self.second['id']}, self.second['name'])
