@@ -36,10 +36,22 @@ class DecoderEOF(unittest.TestCase):
                     if process.poll() is not None or time.monotonic() >= deadline:
                         self.fail('The isolated decoder failed to open its IPC socket')
                     time.sleep(.02)
-                def property_value(name):
-                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                def connect():
+                    # The decoder creates the socket path when it binds, a moment before it listens: a connect
+                    # in between is refused. Retry until it accepts, within the same deadline.
+                    while True:
+                        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
                         connection.settimeout(1)
-                        connection.connect(str(endpoint))
+                        try:
+                            connection.connect(str(endpoint))
+                            return connection
+                        except (ConnectionRefusedError, FileNotFoundError):
+                            connection.close()
+                            if process.poll() is not None or time.monotonic() >= deadline:
+                                self.fail('The isolated decoder never accepted its IPC socket')
+                            time.sleep(.02)
+                def property_value(name):
+                    with connect() as connection:
                         connection.sendall(json.dumps({'command': ['get_property', name], 'request_id': 7}).encode() + b'\n')
                         with connection.makefile('rb') as responses:
                             for line in responses:
