@@ -1,5 +1,6 @@
 # R-src1 (acceptance author, WP4): "0a static: rename is registered immediate ..." read source text; it still prints as a
 # SUPERSEDED [ORIGINAL] line with its result and is replaced by 0a-R1, which drives the service.
+0a-R1 rename is immediate in the service: with the worker busy it returns the real result and the saved room is renamed at once
 1a hero: one primary "Return to Midnight library" on Rooms
 1b hero: a "last visited" line from last_entered_at
 1c hero: the returning room is NOT the only card (grid below hero)
@@ -160,4 +161,3 @@
 15b same name after whitespace cleaning also warns (the controller treats it as the same room)
 15c a save that replaced an existing room does not offer Undo that would delete it
 0b static: evidence directory holds the nine required screenshots
-0a-R1 rename is immediate in the service: with the worker busy it returns the real result and the saved room is renamed at once

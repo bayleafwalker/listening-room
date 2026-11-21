@@ -54,7 +54,11 @@ S5h Wind down 30 min sends wind_down with minutes 30
 S5i Leave room sends leave and the session ends
 S5j Expand starts listening-room (no autoplay args) and closes the popover
 S5k Esc closes the popover
-S5l losing focus closes the popover
+# S5l ORIGINAL superseded by S5l-R1 (2026-11-20): the Waybar popover no longer closes on focus loss; it
+# still runs and records one expected failure, like o4 5i.
+!S5l [ORIGINAL, superseded by S5l-R1] losing focus closes the popover
+S5l-R1 with the popover open, focus moving to another window leaves it open and visible
+S5m-R1 `listening-roomctl popover` opens the popover through next_mini.run_popover, returns its status and sends no command
 S5n opening the popover over a playing room changes nothing
 S6a mini slider, roomctl and MPRIS agree on 37
 S6b Waybar scroll `volume +5` gives 42 everywhere
@@ -224,16 +228,15 @@ S17g clicking it sends one online command naming the chosen speaker and the uri
 S17h Move Lounge's queue here transfers through Music Assistant
 S17i Remembered shows local bookmarks and has read nothing from ListenBrainz
 S17j the History button reads ListenBrainz once and shows it
+S17s the Recommendations button reads ListenBrainz recommendations once and lists them
 S17k Remember playing stores the note locally
 S17l none of this started playback
+S17t a Tracks row makes an AudioMuse station: one station.save stores a station with generation kind audiomuse and nothing starts
 S17m Station detail shows a Range choice and a Rename button
+S17u choosing Range: Explore in Station detail stores stay_close Explore on that station and starts nothing
 S17n the Twitch page has a Review my follows button
 S17o nothing was read from Twitch before the button was pressed
 S17p pressing Review reads the follows once and adds none to a pool
 S17q the follows appear as two tick rows
 S17r adding the ticked follow puts only that channel in the pool
-S5m-R1 `listening-roomctl popover` opens the popover through next_mini.run_popover, returns its status and sends no command
-S17s the Recommendations button reads ListenBrainz recommendations once and lists them
-S17t a Tracks row makes an AudioMuse station: one station.save stores a station with generation kind audiomuse and nothing starts
-S17u choosing Range: Explore in Station detail stores stay_close Explore on that station and starts nothing
 S17v the Connections pages promise only what the window delivered (chips and notes each map to a passing driven check)
