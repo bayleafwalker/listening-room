@@ -185,6 +185,102 @@ class LoopPoolLimit(unittest.TestCase):
             self.assertNotIn('clear', media.calls)
 
 
+class LoopsRestartAtTheEnd(unittest.TestCase):
+    """Gtk.MediaFile's set_loop(True) leaves the stream stopped at its end (timestamp == duration, playing,
+    not ended): a playing loop seeks back to the start on the same MediaFile, never a new one."""
+    class Media(FakeMedia):
+        def __init__(self, path=None):
+            super().__init__(path)
+            self.timestamp, self.duration, self.seeking, self.seeks = 0, 20_000_000, False, []
+
+        def get_timestamp(self):
+            return self.timestamp
+
+        def get_duration(self):
+            return self.duration
+
+        def is_seeking(self):
+            return self.seeking
+
+        def seek(self, position):
+            self.seeks.append(position)
+            self.timestamp = position
+
+        def tick(self, timestamp):
+            self.timestamp = timestamp
+            for name, callback, data in list(self.handlers.values()):
+                if name == 'notify::timestamp':
+                    callback(self, None, *data)
+
+    def setUp(self):
+        self.created = []
+
+        def new(path):
+            self.created.append(self.Media(path))
+            return self.created[-1]
+
+        for item in [mock.patch.object(next_widgets.Gtk.MediaFile, 'new_for_filename', side_effect=new),
+                     mock.patch.object(next_widgets, 'gst_ready', return_value=True),
+                     mock.patch.object(next_widgets, 'texture_for', side_effect=lambda path: 'still:%s' % path),
+                     mock.patch.dict(next_widgets._LOOPS, clear=True)]:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_a_playing_loop_seeks_to_the_start_at_its_end(self):
+        scene = LoopPoolLimit.scene(self)
+        scene.show_room({'still': 'drive.jpg', 'loop': 'drive.mp4'}, True)
+        media = self.created[0]
+        media.tick(19_960_000)
+        self.assertEqual(media.seeks, [], 'not before the end')
+        media.tick(20_000_000)
+        self.assertEqual(media.seeks, [0])
+        self.assertTrue(scene.playing_motion)
+        media.seeking = True
+        media.tick(20_000_000)
+        self.assertEqual(media.seeks, [0], 'one seek at a time')
+        self.assertEqual(len(self.created), 1)
+        self.assertNotIn('clear', media.calls)
+
+    def test_a_paused_loop_holds_no_watch(self):
+        scene = LoopPoolLimit.scene(self)
+        scene.show_room({'still': 'drive.jpg', 'loop': 'drive.mp4'}, True)
+        scene.close()
+        self.assertEqual(self.created[0].handlers, {})
+
+
+class GStreamerLoadsOffTheGtkThread(unittest.TestCase):
+    """A fresh registry scan takes seconds: the GTK thread never waits for it. A scene asked for motion
+    meanwhile shows its still, then its loop once GStreamer is known."""
+    def setUp(self):
+        self.created = []
+
+        def new(path):
+            self.created.append(FakeMedia(path))
+            return self.created[-1]
+
+        state = {'lock': next_widgets._GST['lock'], 'waiting': [], 'thread': object()}   # loading, not known yet
+        for item in [mock.patch.object(next_widgets.Gtk.MediaFile, 'new_for_filename', side_effect=new),
+                     mock.patch.object(next_widgets, 'texture_for', side_effect=lambda path: 'still:%s' % path),
+                     mock.patch.object(next_widgets, '_GST', state),
+                     mock.patch.dict(next_widgets._LOOPS, clear=True)]:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_motion_waits_for_gstreamer_without_blocking(self):
+        scene = LoopPoolLimit.scene(self)
+        closed = LoopPoolLimit.scene(self)
+        self.assertIsNone(next_widgets.gst_ready(wait=False))
+        scene.show_room({'still': 'lake.jpg', 'loop': 'lake.mp4'}, True)
+        closed.show_room({'still': 'drive.jpg', 'loop': 'drive.mp4'}, True)
+        closed.close()
+        self.assertEqual(scene.picture.paintable, 'still:lake.jpg')
+        self.assertEqual(self.created, [])
+        next_widgets._GST['ready'] = True
+        next_widgets._gst_known()
+        self.assertTrue(scene.playing_motion)
+        self.assertEqual([media.path for media in self.created], ['lake.mp4'], 'a closed scene stays closed')
+
+
 class DecoderThreads(unittest.TestCase):
     """libav's H.264 decoder starts one frame thread per core, each with its own frames: about 120 MB
     per loop. Every libav video decoder any bin in the process adds is capped."""

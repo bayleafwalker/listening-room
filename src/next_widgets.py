@@ -1,6 +1,7 @@
 """Small GTK/libadwaita building blocks for the next Listening Room window."""
 import collections
 import os
+import threading
 
 import gi
 gi.require_version('Gtk', '4.0')
@@ -282,22 +283,59 @@ class FocalPicture(Gtk.Widget):
         snapshot.restore()
 
 
-_GST = {}                 # 'ready': whether GStreamer playback is there, checked once
+_GST = {'lock': threading.Lock(), 'waiting': []}   # 'ready' once GStreamer is checked; scenes waiting for it
 
 
-def gst_ready():
-    """Gtk.MediaFile aborts the process when GStreamer playback is missing."""
+def gst_ready(wait=True):
+    """Whether GStreamer playback is there (Gtk.MediaFile aborts the process without it).
+
+    Loading GStreamer scans its plugin registry, which takes seconds on a fresh cache (a first start,
+    or after an upgrade), so the window starts it on a worker (warm_gst). With wait=False this never
+    blocks: None means "not known yet"."""
     if 'ready' not in _GST:
-        try:
-            gi.require_version('Gst', '1.0')
-            from gi.repository import Gst
-            Gst.init(None)
-            _GST['ready'] = Gst.ElementFactory.find('playbin3') is not None
-        except (ValueError, ImportError, GLib.Error):
-            _GST['ready'] = False
-        if _GST['ready']:
-            bound_decoders(Gst)
+        if not wait:
+            warm_gst()
+            return None
+        thread = _GST.get('thread')
+        if thread is not None:
+            thread.join()
+        else:
+            _load_gst()
     return _GST['ready']
+
+
+def warm_gst():
+    """Load GStreamer on a worker thread, once; scenes that asked meanwhile are shown again when it is."""
+    with _GST['lock']:
+        if 'thread' in _GST or 'ready' in _GST:
+            return
+        _GST['thread'] = threading.Thread(target=_load_gst, args=(True,), name='gst-warm', daemon=True)
+    _GST['thread'].start()
+
+
+def _load_gst(notify=False):
+    ready = False
+    try:
+        gi.require_version('Gst', '1.0')
+        from gi.repository import Gst
+        Gst.init(None)
+        ready = Gst.ElementFactory.find('playbin3') is not None
+        if ready:
+            bound_decoders(Gst)
+    except (ValueError, ImportError, GLib.Error):
+        ready = False
+    _GST['ready'] = ready
+    if notify:
+        GLib.idle_add(_gst_known)
+
+
+def _gst_known():
+    waiting, _GST['waiting'] = _GST['waiting'], []
+    for scene, assets, motion in waiting:
+        if scene.key == (assets.get('still'), assets.get('loop'), bool(motion)) and not scene.closed:
+            scene.key = None
+            scene.show_room(assets, motion)
+    return False
 
 
 # Scene loops and GStreamer. Clearing or finalizing a Gtk.MediaFile drops GTK's reference on its
@@ -392,13 +430,28 @@ class _Loop:
         self.media.set_loop(True)
         self.media.set_muted(True)
         self.wanted = set()   # ids of the Scenes that want it playing now
+        self.seam = 0         # the end-of-stream watch, connected while the loop plays
 
     def want(self, scene, playing):
         (self.wanted.add if playing else self.wanted.discard)(id(scene))
         if self.wanted:
+            if not self.seam:
+                self.seam = self.media.connect('notify::timestamp', _Loop._restart_at_end)
             self.media.play()
         else:
             self.media.pause()
+            if self.seam:
+                self.media.disconnect(self.seam)
+                self.seam = 0
+
+    @staticmethod
+    def _restart_at_end(media, _spec):
+        """set_loop(True) does not loop here (GTK 4.24, GStreamer 1.28): at the end of the stream the
+        timestamp stays at the duration, still "playing" and not ended. So the loop seeks back to the
+        start itself, on the same pipeline; the seek is asynchronous (GstPlay's thread)."""
+        duration = media.get_duration()
+        if duration > 0 and media.get_timestamp() >= duration and not media.is_seeking():
+            media.seek(0)
 
 
 def shared_loop(path):
@@ -428,7 +481,9 @@ class Scene(Gtk.Overlay):
         self.still = None
         self.key = None
         self.want_motion = False
+        self.closed = False
         self.mapped = self.minimized = False
+        warm_gst()          # the first room with motion should not wait for GStreamer's registry scan
         # Plain functions, not closures over self: a handler holding its own widget is a cycle that
         # keeps every closed preview (and its loop) alive.
         self.connect('map', Scene._mapped, True)
@@ -449,7 +504,11 @@ class Scene(Gtk.Overlay):
             return
         self.key = key
         self._drop_media()
-        self.want_motion = bool(motion and assets.get('loop') and gst_ready())
+        self.closed = False
+        ready = gst_ready(wait=False) if motion and assets.get('loop') else False
+        if ready is None:   # still loading: the still now, the loop once GStreamer is known (_gst_known)
+            _GST['waiting'].append((self, assets, motion))
+        self.want_motion = bool(ready)
         still = assets.get('still') or assets.get('poster')
         self.still = texture = texture_for(still)
         self.picture.set_paintable(texture)
@@ -492,6 +551,7 @@ class Scene(Gtk.Overlay):
         return self.loop is not None and id(self) in self.loop.wanted and self.media.get_playing()
 
     def close(self):
+        self.closed = True
         self._drop_media()
 
 
