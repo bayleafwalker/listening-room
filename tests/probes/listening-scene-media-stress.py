@@ -2,8 +2,9 @@
 
 Drives the real window on a private Xvfb (o6_env) through random room-card previews, preview
 switches and closes, entering a room from a preview, leaving it, and finally closing the window.
-Each preview with motion creates a Gtk.MediaFile (a GstPlay thread) and drops the previous one,
-which is the path that segfaulted on GstPlay's thread (g_object_unref <- gst_play_main).
+Each preview with motion shows a scene loop (a Gtk.MediaFile and its GstPlay pipeline) and drops the
+previous one; tearing a busy one down segfaulted on GstPlay's thread (g_object_unref <- gst_play_main)
+and every pipeline ever created left GL threads behind.
 
 GStreamer must be reachable (GST_PLUGIN_SYSTEM_PATH_1_0 and a Gst typelib), or no loop is ever
 created and the probe fails instead of passing vacuously. A crash shows as the process dying with
@@ -12,9 +13,11 @@ SIGSEGV (exit 139); run it many times.
 --mode random   the mix above (default)
 --mode preview  only preview open/close across rooms, for leak measurement
 
-Prints one "sample" line every 10 cycles and after settling: RSS, threads, open fds, and the live
-Scene and Gtk.MediaFile wrappers after gc.collect(). With --flat, fails unless the settled sample
-is within a small bound of the cycle-10 sample (no per-preview growth).
+First previews every room once (warm-up: each loop exists from then on), takes a "warm" sample,
+then runs the cycles. Prints a "sample" line every 10 cycles and after settling: RSS, threads,
+GL threads (gldisplay-event + gstglcontext), open fds, and the live Scene and Gtk.MediaFile
+wrappers after gc.collect(). With --flat, fails unless every later sample is within a small bound
+of the warm one (no per-preview growth).
 
     listening-scene-media-stress.py --output DIR [--cycles N] [--seed S] [--mode M] [--flat]
 """
@@ -45,7 +48,13 @@ def main():
         assert cards, 'Rooms shows no room cards'
         motion = 0
         counts = dict(preview=0, close=0, enter=0, leave=0)
-        samples = {}
+        for card in cards:                # warm-up: show every loop once
+            rooms.open_preview(card)
+            env.pump(.6)
+            motion += bool(rooms.preview_widgets['scene'].want_motion)
+            rooms.close_preview(animate=False)
+        env.pump(3)
+        samples = {'warm': sample(env, 'warm')}
         for cycle in range(ENV.args.cycles):
             if cycle and cycle % 10 == 0:
                 samples[cycle] = sample(env, cycle)
@@ -69,25 +78,35 @@ def main():
             env.pump(rng.choice([0, 0, .005, .02, .05, .15, .4]))
         assert motion, 'no preview ever created a scene loop: is GStreamer reachable?'
         rooms.close_preview(animate=False)
-        env.pump(8)                       # hidden loops go once quiet; their players a few seconds later
-        settled = sample(env, 'settled')
+        env.pump(3)
+        samples['settled'] = sample(env, 'settled')
         window.close()
         env.pump(.5)
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
     print('scene media stress: %d cycles %r, %d previews with a loop, survived, peak RSS %d MB'
           % (ENV.args.cycles, counts, motion, peak), flush=True)
-    if ENV.args.flat and 10 in samples:
-        base = samples[10]
-        bounds = {'rss_mb': 150, 'threads': 40, 'fds': 40, 'scenes': 2, 'media': 2}
-        grown = {key: (base[key], settled[key]) for key, limit in bounds.items() if settled[key] - base[key] > limit}
-        assert not grown, 'grew from cycle 10 to settled beyond %r: %r' % (bounds, grown)
-        print('flat: settled within %r of cycle 10' % bounds, flush=True)
+    if ENV.args.flat:
+        base = samples['warm']
+        bounds = {'rss_mb': 60, 'threads': 8, 'gl_threads': 0, 'fds': 8, 'scenes': 2, 'media': 0}
+        grown = {(label, key): (base[key], values[key]) for label, values in samples.items()
+                 for key, limit in bounds.items() if values[key] - base[key] > limit}
+        assert not grown, 'grew beyond %r of the warm sample: %r' % (bounds, grown)
+        print('flat: every sample within %r of the warm sample' % bounds, flush=True)
 
 
 def sample(env, label):
     gc.collect()
     live = gc.get_objects()
-    values = {'rss_mb': status('VmRSS') // 1024, 'threads': status('Threads'), 'fds': len(os.listdir('/proc/self/fd')),
+    names = []
+    for task in os.listdir('/proc/self/task'):
+        try:
+            with open('/proc/self/task/%s/comm' % task) as comm:
+                names.append(comm.read().strip())
+        except OSError:
+            pass
+    values = {'rss_mb': status('VmRSS') // 1024, 'threads': status('Threads'),
+              'gl_threads': sum(name in ('gldisplay-event', 'gstglcontext') for name in names),
+              'fds': len(os.listdir('/proc/self/fd')),
               'scenes': sum(isinstance(o, next_widgets.Scene) for o in live),
               'media': sum(isinstance(o, env.Gtk.MediaFile) for o in live)}
     print('sample %s %s' % (label, ' '.join('%s=%s' % item for item in values.items())), flush=True)

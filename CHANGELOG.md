@@ -81,16 +81,16 @@ All notable changes are recorded here. The format follows
 - Opening a room preview, switching rooms quickly, entering or leaving a room, or
   closing the window could crash the window (a segfault on GStreamer's `GstPlay`
   thread). Clearing a scene loop while GStreamer was still busy with it let that
-  thread free its own player and then keep using it. A scene loop is now shared
-  by the scenes that show it, only played or paused while shown, and torn down
-  once hidden, prepared and quiet, with its player held so that GStreamer always
-  finishes on the main thread; loops alive at exit are left alone.
+  thread free its own player and then keep using it. Each scene loop is now
+  created once, shared by the preview and Now, and only ever played or paused,
+  never torn down, and loops alive at exit are left alone.
 - Every room preview with a moving scene used to stay in memory with its video
   pipeline (threads, open files, a GL context, about 10 MB), so the window grew
-  heavier with each preview. Closed previews are now freed.
+  heavier with each preview. Closed previews are now freed, and the scene video
+  costs at most one pipeline per room loop, however often rooms are previewed.
   `tests/probes/listening-scene-media-stress.py` repeats previews, entering,
-  leaving and closing with real scene loops and checks that memory, threads and
-  open files settle back.
+  leaving and closing with real scene loops; with `--flat` it checks that
+  threads, open files and memory stay flat once every loop has been shown.
 
 ## [2.3.1] - 2026-11-18
 

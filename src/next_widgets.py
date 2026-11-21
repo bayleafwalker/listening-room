@@ -1,6 +1,5 @@
 """Small GTK/libadwaita building blocks for the next Listening Room window."""
 import os
-import time
 
 import gi
 gi.require_version('Gtk', '4.0')
@@ -224,33 +223,19 @@ def gst_ready():
 # GstPlay. If GstPlay's own thread is posting a message at that moment (preroll, the position tick, a
 # state change, or the stop that clear() itself requests), that thread holds the last reference: the
 # player frees itself on its own thread, gst_play_main keeps using it and the window segfaults
-# (g_object_unref <- gst_play_main). So:
-# - one Gtk.MediaFile per loop file, shared by the Scenes that show it, only played and paused;
-# - a loop no Scene shows is torn down once it is prepared and has been quiet for a while, holding an
-#   extra reference on its GstPlay across clear() and dropping it on this thread seconds later, when
-#   the player is idle, so the last reference is always ours, on the main thread;
-# - if that reference cannot be taken safely (an unverified GTK build), the loop is kept instead;
-# - loops still alive at exit are never finalized (see the source at the end of this block).
-LOOP_QUIET = 1.0          # seconds a hidden loop must be prepared and quiet before teardown
-LOOP_UNPIN = 2.0          # seconds after clear() before the GstPlay reference is dropped
+# (g_object_unref <- gst_play_main). Each pipeline also leaves a GL display and context thread behind
+# for good. So there is one Gtk.MediaFile per loop file for the life of the process, shared by the
+# Scenes that show it and only ever played or paused, never cleared: the cost is bounded by the
+# catalogue's loops and flat once each has been shown.
 _LOOPS = {}               # loop path -> _Loop
-_PINNED = []              # GstPlay pointers held across a teardown
-_ctypes = {}
 
 
 class _Loop:
     def __init__(self, path):
-        self.path = path
         self.media = Gtk.MediaFile.new_for_filename(path)
         self.media.set_loop(True)
         self.media.set_muted(True)
-        self.users, self.wanted = set(), set()   # ids of the Scenes showing it / wanting it to play
-        self.last = time.monotonic()
-        self.notify = self.media.connect('notify', _Loop._touched, self)
-
-    @staticmethod
-    def _touched(_media, _spec, loop):
-        loop.last = time.monotonic()
+        self.wanted = set()   # ids of the Scenes that want it playing now
 
     def want(self, scene, playing):
         (self.wanted.add if playing else self.wanted.discard)(id(scene))
@@ -260,92 +245,16 @@ class _Loop:
             self.media.pause()
 
 
-def shared_loop(path, scene):
+def shared_loop(path):
     loop = _LOOPS.get(path)
     if loop is None:
         loop = _LOOPS[path] = _Loop(path)
-    loop.users.add(id(scene))
     return loop
 
 
-def release_loop(loop, scene):
-    loop.want(scene, False)
-    loop.users.discard(id(scene))
-    loop.last = max(loop.last, time.monotonic())
-    if not loop.users and not _ctypes.get('sweeping'):
-        _ctypes['sweeping'] = GLib.timeout_add(250, _sweep)
-
-
-def _sweep():
-    now = time.monotonic()
-    waiting = False
-    for path, loop in list(_LOOPS.items()):
-        if loop.users or loop.path is None:
-            continue
-        media = loop.media
-        if not (media.is_prepared() or media.get_error() is not None) or now - loop.last < LOOP_QUIET:
-            waiting = True
-            continue
-        player = _player(media)
-        if player is None:
-            loop.path = None          # kept for the life of the process instead
-            continue
-        _ctypes['gobject'].g_object_ref(player)
-        _PINNED.append(player)
-        del _LOOPS[path]
-        media.disconnect(loop.notify)
-        media.clear()
-        GLib.timeout_add(int(LOOP_UNPIN * 1000), _unpin, player)
-    if not waiting:
-        _ctypes['sweeping'] = 0
-    return waiting
-
-
-def _unpin(player):
-    _PINNED.remove(player)
-    _ctypes['gobject'].g_object_unref(player)   # the last reference, here: the player stops its thread
-    # A player's threads leave their freed memory in glibc's arenas; hand it back to the system.
-    try:
-        _ctypes['ctypes'].CDLL('libc.so.6').malloc_trim(0)
-    except (KeyError, OSError, AttributeError):
-        pass
-    return False
-
-
-def _player(media):
-    """The GstPlay inside GTK's GStreamer media file, or None unless this GTK build is verified."""
-    if 'gobject' not in _ctypes:
-        _ctypes['gobject'] = None
-        if (Gtk.get_major_version(), Gtk.get_minor_version()) == (4, 24):   # struct layout read for 4.24
-            try:
-                import ctypes
-                lib = ctypes.CDLL('libgobject-2.0.so.0')
-                lib.g_type_name_from_instance.restype = ctypes.c_char_p
-                lib.g_type_name_from_instance.argtypes = [ctypes.c_void_p]
-                lib.g_object_ref.argtypes = lib.g_object_unref.argtypes = [ctypes.c_void_p]
-                get = ctypes.pythonapi.PyCapsule_GetPointer
-                get.restype, get.argtypes = ctypes.c_void_p, [ctypes.py_object, ctypes.c_char_p]
-                _ctypes.update(gobject=lib, capsule=get, ctypes=ctypes)
-            except (OSError, AttributeError):
-                pass
-    lib = _ctypes['gobject']
-    if lib is None:
-        return None
-    ctypes = _ctypes['ctypes']
-    address = _ctypes['capsule'](media.__gpointer__, None)
-    if not (lib.g_type_name_from_instance(address) or b'').startswith(b'GtkGstMediaFile'):
-        return None
-    # struct _GtkGstMediaFile { GtkMediaFile parent_instance; GstPlay *play; ... }: the GObject header
-    # (class pointer, ref count, qdata) is the whole parent instance.
-    player = ctypes.c_void_p.from_address(address + 3 * ctypes.sizeof(ctypes.c_void_p)).value
-    if not player or lib.g_type_name_from_instance(player) != b'GstPlay':
-        return None
-    return player
-
-
-# A source that never fires holds the live loops from C, so interpreter shutdown never finalizes one
-# (that would be a teardown too, unguarded); the process exits with them paused.
-GLib.timeout_add_seconds(GLib.MAXINT32, lambda *_: True, (_LOOPS, _PINNED))
+# A source that never fires holds the loops from C, so interpreter shutdown never finalizes one
+# (that would be a teardown too); the process exits with them paused.
+GLib.timeout_add_seconds(GLib.MAXINT32, lambda *_: True, _LOOPS)
 
 
 class Scene(Gtk.Overlay):
@@ -386,7 +295,7 @@ class Scene(Gtk.Overlay):
         self.still = texture = texture_for(still)
         self.picture.set_paintable(texture)
         if self.want_motion:
-            self.loop = shared_loop(assets['loop'], self)
+            self.loop = shared_loop(assets['loop'])
             self.media = media = self.loop.media
             if media.get_error() is not None:   # this loop failed before: still art, like _fall_back
                 self.want_motion = False
@@ -401,7 +310,7 @@ class Scene(Gtk.Overlay):
         self.picture.set_paintable(self.still)
 
     def _drop_media(self):
-        """Let go of the shared loop: it pauses when no Scene wants it, and goes when none shows it."""
+        """Let go of the shared loop: it pauses when no Scene wants it; it is never cleared."""
         if self.loop is not None:
             loop, self.loop, self.media = self.loop, None, None
             if self.error_handler:
@@ -409,7 +318,7 @@ class Scene(Gtk.Overlay):
             self.error_handler = 0
             if self.picture.paintable is loop.media:
                 self.picture.set_paintable(self.still)
-            release_loop(loop, self)
+            loop.want(self, False)
 
     def _visibility(self, mapped=None, minimized=None):
         """Play only while the window is on screen: mapped and not minimized or suspended."""

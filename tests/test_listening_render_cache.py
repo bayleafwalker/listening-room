@@ -1,5 +1,5 @@
 """Art textures are decoded once, the NVIDIA driver gets GTK's OpenGL renderer, and a dropped scene
-loop is torn down only when GStreamer is idle, with its player pinned across the teardown."""
+loop is never torn down: one shared, paused or playing Gtk.MediaFile per loop file."""
 import os
 from pathlib import Path
 import sys
@@ -118,37 +118,22 @@ class FakeMedia:
 
 class SceneLoops(unittest.TestCase):
     """Clearing a Gtk.MediaFile while GstPlay's thread holds a transient reference lets that thread
-    free its player and then use it (a segfault in gst_play_main). Loops are shared per file, only
-    played and paused while shown, and a hidden loop is torn down once prepared and quiet, with an
-    extra GstPlay reference held across clear() and dropped later on the main thread."""
+    free its player and then use it (a segfault in gst_play_main), and every pipeline leaves GL
+    threads behind. Loops are shared per file for the life of the process, only played and paused."""
     def setUp(self):
-        self.now, self.created, self.timers = 100., [], []
-        self.lib = mock.Mock()
+        self.created = []
 
         def new(path):
             self.created.append(FakeMedia(path))
             return self.created[-1]
 
-        def timeout_add(interval, callback, *data):
-            self.timers.append((interval, callback, data))
-            return len(self.timers)
         patches = [mock.patch.object(next_widgets.Gtk.MediaFile, 'new_for_filename', side_effect=new),
                    mock.patch.object(next_widgets, 'gst_ready', return_value=True),
                    mock.patch.object(next_widgets, 'texture_for', side_effect=lambda path: 'still:%s' % path),
-                   mock.patch.object(next_widgets.time, 'monotonic', lambda: self.now),
-                   mock.patch.object(next_widgets.GLib, 'timeout_add', side_effect=timeout_add),
-                   mock.patch.object(next_widgets, '_player', side_effect=lambda media: 0x1000 + self.created.index(media)),
-                   mock.patch.dict(next_widgets._ctypes, {'gobject': self.lib}, clear=True),
                    mock.patch.dict(next_widgets._LOOPS, clear=True)]
         for item in patches:
             item.start()
             self.addCleanup(item.stop)
-
-    def run_timers(self):
-        pending, self.timers = self.timers, []
-        for interval, callback, data in pending:
-            if callback(*data):
-                self.timers.append((interval, callback, data))
 
     def scene(self, mapped=True):
         scene = next_widgets.Scene.__new__(next_widgets.Scene)
@@ -163,33 +148,6 @@ class SceneLoops(unittest.TestCase):
     def room(name):
         return {'still': name + '.jpg', 'poster': name + '.jpg', 'loop': name + '.mp4'}
 
-    def test_a_hidden_loop_is_torn_down_only_when_prepared_and_quiet_with_the_player_pinned(self):
-        preview = self.scene()
-        preview.show_room(self.room('lake'), True)
-        media = self.created[0]
-        self.assertTrue(preview.playing_motion)
-        preview.close()
-        self.assertEqual(preview.picture.paintable, 'still:lake.jpg')
-        self.assertFalse(media.playing)
-        self.now += 5
-        self.run_timers()                      # still prerolling: GstPlay is busy, nothing torn down
-        self.assertNotIn('clear', media.calls)
-        media.prepared = True
-        media.emit('notify::prepared')
-        self.now += next_widgets.LOOP_QUIET / 2
-        self.run_timers()
-        self.assertNotIn('clear', media.calls)
-        self.now += next_widgets.LOOP_QUIET
-        self.run_timers()
-        self.assertEqual(media.calls[-1], 'clear')
-        self.lib.g_object_ref.assert_called_once_with(0x1000)
-        self.lib.g_object_unref.assert_not_called()            # held across clear()
-        self.assertEqual(next_widgets._LOOPS, {})
-        self.assertEqual(media.handlers, {}, 'nothing may stay connected to a torn-down loop')
-        self.run_timers()                                      # the unpin timer
-        self.lib.g_object_unref.assert_called_once_with(0x1000)
-        self.assertEqual(next_widgets._PINNED, [])
-
     def test_a_loop_another_scene_shows_is_shared_and_kept(self):
         now, preview = self.scene(), self.scene()
         now.show_room(self.room('lake'), True)
@@ -202,10 +160,7 @@ class SceneLoops(unittest.TestCase):
         self.assertTrue(preview.playing_motion)
         preview.close()
         self.assertFalse(media.playing)
-        media.prepared = True
-        self.now += 10
-        self.run_timers()
-        self.assertNotIn('clear', media.calls, 'Now still shows it')
+        self.assertNotIn('clear', media.calls)
         now._visibility(minimized=False)
         self.assertTrue(media.playing and now.playing_motion)
 
@@ -214,23 +169,9 @@ class SceneLoops(unittest.TestCase):
         for _ in range(3):
             for name in ('lake', 'library', 'drive'):
                 preview.show_room(self.room(name), True)
-                self.now += .1
-                self.run_timers()
         for media in self.created:
             self.assertNotIn('clear', media.calls)
-        self.assertEqual(len(self.created), 3, 'a shown or recently hidden loop is reused, not recreated')
-
-    def test_an_unverified_gtk_keeps_the_loop_instead_of_tearing_it_down(self):
-        scene = self.scene()
-        scene.show_room(self.room('lake'), True)
-        media = self.created[0]
-        scene.close()
-        media.prepared = True
-        self.now += 10
-        with mock.patch.object(next_widgets, '_player', return_value=None):
-            self.run_timers()
-        self.assertNotIn('clear', media.calls)
-        self.lib.g_object_ref.assert_not_called()
+        self.assertEqual(len(self.created), 3, 'one loop per file, reused, never recreated')
 
     def test_reduced_motion_shows_the_still_and_creates_no_loop(self):
         scene = self.scene()
@@ -251,13 +192,17 @@ class SceneLoops(unittest.TestCase):
         again.show_room(self.room('lake'), True)
         self.assertFalse(again.want_motion)
         self.assertIsNone(again.media)
+        self.assertNotIn('clear', media.calls)
 
     def test_closed_scenes_hold_no_handlers_on_shared_objects(self):
         scene = self.scene()
         scene.show_room(self.room('lake'), True)
         media = self.created[0]
         scene.close()
-        self.assertEqual([h[0] for h in media.handlers.values()], ['notify'], 'only the pool\'s own handler')
+        self.assertEqual(media.handlers, {}, 'a closed scene must not stay connected to a shared loop')
+        self.assertEqual(scene.picture.paintable, 'still:lake.jpg')
+        self.assertFalse(media.playing)
+        self.assertNotIn('clear', media.calls)
 
 
 if __name__ == '__main__':
