@@ -486,6 +486,14 @@ def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
                 census['Scene'] += 1
             elif isinstance(obj, Gtk.MediaFile):
                 census['MediaFile'] += 1
+        names = {}
+        for task in os.listdir('/proc/self/task'):
+            try:
+                name = open('/proc/self/task/%s/comm' % task).read().strip()
+            except OSError:
+                continue
+            names[name] = names.get(name, 0) + 1
+        print('INFO lifetime %s thread names: %s' % (label, json.dumps(dict(sorted(names.items())))), flush=True)
         point = {'scenes': alive['scene'], 'media': alive['media'], 'scene_wrappers': census['Scene'],
                  'media_wrappers': census['MediaFile'], 'threads': status('Threads'),
                  'fds': len(os.listdir('/proc/self/fd')), 'rss_mb': round(status('VmRSS') / 1024., 1)}
@@ -524,6 +532,8 @@ def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
             halfway = point if cycle + 1 <= args.leak_cycles // 2 or halfway is None else halfway
     pump(3.)
     end = sample('after %d cycles' % args.leak_cycles)
+    pump(12.)
+    rested = sample('after %d cycles and 12 s idle' % args.leak_cycles)   # reported; lazy release vs a leak
     click(window, rooms[1 % len(rooms)])
     pump(1.5)
     widgets = window.rooms.preview_widgets
