@@ -431,6 +431,31 @@ class ReviewFixes(Base):
         self.assertTrue(wait_until(lambda: len(outcome) >= 2))
         self.assertEqual(threads, {'room-feed'})
 
+    def test_a_first_snapshot_waits_out_a_long_lock_hold_and_reflects_the_acknowledged_command(self):
+        self.service.feed
+        held, release = threading.Event(), threading.Event()
+        def hold():
+            with self.controller.lock:
+                held.set()
+                release.wait(10)
+        threading.Thread(target=hold, daemon=True).start()
+        held.wait()
+        self.controller.state['room_volume'] = 21.   # acknowledged while the lock is held
+        connection, reader = raw_subscribe(self.path)
+        connection.settimeout(8)
+        self.addCleanup(connection.close)
+        threading.Timer(2.6, release.set).start()   # longer than the old 2 s cap
+        self.assertEqual(self.read_event(reader)['snapshot']['room_volume'], 21.)
+
+    def test_mpris_ignores_a_change_before_any_snapshot_exists(self):
+        mpris = object.__new__(session_service.Mpris)
+        mpris.connection = mock.Mock()
+        mpris.previous = {}
+        mpris.service = mock.Mock()
+        mpris.service.feed.latest.return_value = (0, None, None)
+        self.assertFalse(mpris.changed())
+        mpris.connection.emit_signal.assert_not_called()
+
     def test_a_listener_refresh_does_not_block_the_feed_thread(self):
         feed = self.service.feed
         feed.add_listener(lambda *_: feed.refresh())

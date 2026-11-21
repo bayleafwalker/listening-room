@@ -11,7 +11,7 @@ All notable changes are recorded here. The format follows
   that stops polling while the stream is up never saw them.
 - A transient snapshot failure no longer fails or silently closes a `subscribe`: it
   serves the latest good revision (a subscribe before any snapshot waits for the
-  first). Subscribers wait at most 2 s for the fresh snapshot instead of for as long
+  first; MPRIS ignores changes until then). Subscribers wait at most 10 s for the fresh snapshot instead of for as long
   as the controller lock is held.
 - The client's protocol-version probe no longer times out after 1 s: `inspect` with
   `fields: []` returns just the version without a snapshot or the controller lock,

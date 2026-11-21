@@ -137,8 +137,9 @@ def action_spec(name):
 
 
 # How long a new subscriber waits for the feed thread's fresh snapshot before it
-# serves the latest good revision instead.
-REFRESH_WAIT_SECONDS = 2
+# serves the latest good revision instead. The wait holds no lock; it stays well
+# inside the client's 45 s budget for a first line.
+REFRESH_WAIT_SECONDS = 10
 
 
 class SnapshotFeed:

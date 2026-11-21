@@ -386,7 +386,10 @@ class Mpris:
     def changed(self):
         if not self.connection:
             return False
-        plain = mpris_values(self.service.feed.latest()[1])
+        snapshot = self.service.feed.latest()[1]
+        if snapshot is None:   # no snapshot has succeeded yet; the first revision schedules us again
+            return False
+        plain = mpris_values(snapshot)
         changed = {name: value for name, value in plain.items()
                    if name not in ('Position', 'CanControl') and self.previous.get(name) != value}
         self.previous = plain
