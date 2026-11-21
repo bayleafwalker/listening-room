@@ -155,6 +155,19 @@ def menu():
         if name:
             station_actions({'id': 'custom', 'name': clean(name), 'kind': 'radio', 'url': url})
 
+def room_transport(command):
+    """Media keys with no player listed: a room may still sound through its ambience alone.
+    True when a room took the command; never starts the controller."""
+    import session_client
+    try:
+        snapshot = session_client.request('inspect', timeout=.4, start=False)
+    except (OSError, ValueError):
+        return False
+    if not (snapshot or {}).get('active'):
+        return False
+    transport('radio', command)
+    return True
+
 def select_player():
     infos = all_info()
     if not infos:
@@ -245,6 +258,8 @@ def main():
             play(item)
         else:
             current = target(all_info())
+            if not current and args.action in ('toggle', 'stop') and room_transport('play-pause' if args.action == 'toggle' else args.action):
+                return 0    # only the room's ambience (no player of its own here) was playing or paused
             if not current:
                 if args.action == 'toggle':
                     menu()
