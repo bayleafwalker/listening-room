@@ -131,10 +131,45 @@ class NowTests(unittest.TestCase):
 
     def test_play_pause_state_follows_the_resume_offer(self):
         self.assertEqual(model.room_state(snapshot()), 'playing')
-        paused = snapshot(resume_offer={'layers': ['music'], 'ready': False})
+        # Room Pause (Quiet) pauses every playing layer and offers them back.
+        paused = snapshot(resume_offer={'layers': ['music', 'atmosphere'], 'ready': False})
         paused['layers']['music']['status'] = 'Paused'
+        paused['layers']['atmosphere']['status'] = 'Paused'
         self.assertEqual(model.room_state(paused), 'paused')
         self.assertEqual(model.room_state(snapshot(layers={})), 'idle')
+
+    def test_room_shows_pause_while_anything_is_audible(self):
+        # O10 / Proposal E: one layer paused in the Mix leaves the room button on Pause, matching MPRIS.
+        partly = snapshot()
+        partly['layers']['music']['status'] = 'Paused'
+        self.assertEqual(model.room_state(partly), 'playing')
+        partly['layers']['atmosphere']['status'] = 'Paused'
+        self.assertEqual(model.room_state(partly), 'paused', 'every layer paused on its own: Play resumes them')
+
+    def test_start_outcome_reads_the_controllers_entry(self):
+        pending = {'id': 7}
+        self.assertIsNone(model.start_outcome(snapshot(transition={'kind': 'enter'}, entry={'id': 7, 'state': 'connecting'}), pending))
+        self.assertEqual(model.start_outcome(snapshot(entry={'id': 7, 'state': 'connecting'}), pending), ('started', None),
+                         'interrupted by Quiet or Stop: the card clears')
+        self.assertIsNone(model.start_outcome(snapshot(transition={'kind': 'enter'}, entry={'id': 7, 'state': 'failed'}), pending))
+        self.assertIsNone(model.start_outcome(snapshot(entry={'id': 6, 'state': 'started'}), pending), 'an older start')
+        self.assertEqual(model.start_outcome(snapshot(entry={'id': 7, 'state': 'failed', 'error': 'refused'}), pending),
+                         ('failed', 'refused'))
+        self.assertEqual(model.start_outcome(snapshot(entry={'id': 7, 'state': 'started'}), pending), ('started', None))
+        self.assertEqual(model.start_outcome(snapshot(entry={'id': 9, 'state': 'connecting'}), pending), ('started', None),
+                         'superseded by a newer start: not this card')
+        queued = {'entry_before': 3}
+        self.assertIsNone(model.start_outcome(snapshot(entry={'id': 3, 'state': 'started'}), queued))
+        self.assertEqual(model.start_outcome(snapshot(entry={'id': 4, 'state': 'failed', 'error': 'x'}), queued), ('failed', 'x'))
+        self.assertEqual(model.start_error('Connection refused'), 'The music could not connect.')
+
+    def test_another_rooms_failed_start_is_not_this_rooms_music_failure(self):
+        kept = snapshot(errors={'music': 'refused'},
+                        entry={'id': 2, 'state': 'failed', 'error': 'refused', 'name': 'Northern quiet', 'kept': 'Midnight library'})
+        self.assertIsNone(model.failure(kept))
+        own = snapshot(errors={'music': 'refused'},
+                       entry={'id': 2, 'state': 'failed', 'error': 'refused', 'name': 'Midnight library', 'kept': 'Midnight library'})
+        self.assertEqual(model.failure(own)['layer'], 'music', 'a retry of this room\'s own music shows on its layer')
 
     def test_no_room_means_no_now(self):
         self.assertIsNone(model.now_model(snapshot(active=None)))

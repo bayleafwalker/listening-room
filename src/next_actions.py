@@ -45,15 +45,16 @@ class RoomActions:
         self.send, self.toast, self.snapshot = send, toast, snapshot
 
     def toggle(self):
-        """Pause is Quiet, Play is the existing resume; with a room but no sound, enter it again.
+        """Pause is Quiet, Play is Resume; with a room but no sound, enter it again (controller `transport`).
 
         Returns what ``send`` returned (a Ticket from the windows), or None when nothing was sent."""
         snapshot = self.snapshot()
         if not snapshot.get('active'):
             return None
-        if model.room_state(snapshot) == 'playing':
+        state = model.room_state(snapshot)
+        if state == 'playing':
             return self.send('quiet', urgent=True)
-        if snapshot.get('resume_offer'):
+        if state == 'paused':     # resume plays the offer, or every paused layer when there is none
             return self.send('resume')
         return self.send('enter', {'recipe': snapshot['active']})
 

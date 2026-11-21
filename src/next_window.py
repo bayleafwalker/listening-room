@@ -470,7 +470,8 @@ class NextWindow(Adw.ApplicationWindow):
         origin = self.browse.get_visible_child_name() if self.page_name in ('browse', 'loading') else 'now'
         pending = self.pending = {'name': name, 'art': art, 'state': 'connecting', 'done': False, 'inflight': True,
                                   'since': time.monotonic(), 'action': action, 'args': args,
-                                  'origin': (self.page_name, self.browse.get_visible_child_name())}
+                                  'origin': (self.page_name, self.browse.get_visible_child_name()),
+                                  'entry_before': (self.snapshot.get('entry') or {}).get('id')}
         if origin in ('rooms', 'listen'):
             self.now_origin = origin
         self.want_now = False
@@ -483,7 +484,7 @@ class NextWindow(Adw.ApplicationWindow):
             self.listen_first = False
         if room and action in MUSIC_STARTS and not model.ad_hoc(self.snapshot, self.catalogue):
             done = self.then_mark_changed(room, name, done)
-        ticket = self.command(action, args, done=lambda result: (self.pending_done(pending), done(result) if done else None),
+        ticket = self.command(action, args, done=lambda result: (self.pending_done(pending, result), done(result) if done else None),
                               failed=lambda error: self.pending_failed(error, pending))
         GLib.timeout_add(int(START_GRACE_S * 1000) + 300, lambda: self.pending_expired(pending))
         return ticket
@@ -508,19 +509,21 @@ class NextWindow(Adw.ApplicationWindow):
             self.when_pending_ends(lambda: self.inspect_then(changed))   # once the new music is up
         return finished
 
-    def pending_done(self, pending):
+    def pending_done(self, pending, result=None):
         if pending is not self.pending:
             return
         pending.update(inflight=False, done=True)
+        if isinstance(result, dict) and isinstance(result.get('id'), int) and not isinstance(result.get('id'), bool):
+            pending['id'] = result['id']     # the controller's entry for this start says how it ended
         if pending['state'] == 'failed' and pending.get('timed_out'):
             pending['state'] = 'connecting'   # a slow start that did succeed: the next snapshot clears the card
             self.render_pending()
 
-    def pending_failed(self, error, pending=None):
+    def pending_failed(self, error, pending=None, plain=None):
         pending = self.pending if pending is None else pending
         if pending is not self.pending or not pending:
             return
-        pending.update(inflight=False, state='failed', error=model.plain_error(error), details=model.error_details(error),
+        pending.update(inflight=False, state='failed', error=plain or model.plain_error(error), details=model.error_details(error),
                        timed_out=False)
         self.render_pending()
 
@@ -529,7 +532,13 @@ class NextWindow(Adw.ApplicationWindow):
         if pending is self.pending and pending and pending['state'] == 'connecting' \
                 and time.monotonic() - pending['since'] >= START_GRACE_S:
             if pending['done']:
-                self.clear_pending()      # the controller said yes; do not call a slow start a failure
+                # The controller said yes; do not call a slow start a failure. While it still connects the card
+                # stays (render settles it), so a slow start that then fails is never silent.
+                outcome = model.start_outcome(self.snapshot, pending)
+                if outcome and outcome[0] == 'failed':
+                    self.pending_failed(outcome[1], pending, model.start_error(outcome[1]))
+                elif outcome or not self.snapshot.get('transition'):
+                    self.clear_pending()
             else:
                 pending.update(state='failed', timed_out=True, details='',
                                error='It is taking longer than usual. If it starts after all, this card clears itself.')
@@ -584,6 +593,12 @@ class NextWindow(Adw.ApplicationWindow):
             self.pending_title.set_text('Connecting to ' + pending['name'] + '…')
             self.pending_detail.set_text('Nothing plays until it is ready.')
             self.play.set_child(Gtk.Spinner(spinning=True))
+            # Until the room's snapshot arrives nothing says what it can do: no track controls, the stored
+            # volume, and no summary of the last room's layers.
+            for control in (self.skip, self.less, self.more):
+                control.set_visible(False)
+            self.show_room_volume(self.snapshot)
+            self.mix_summary.set_text('Connecting…')
             self.room_name.set_text(pending['name'])
             self.chip.set_text('Connecting')
             self.chip.set_visible(True)
@@ -601,6 +616,7 @@ class NextWindow(Adw.ApplicationWindow):
                 self.render_now(self.snapshot)  # the room that is still there, not "Connecting", under the card
             else:
                 self.chip.set_visible(False)    # nothing is connecting any more; render_now brings it back
+                self.room_name.set_text(pending['name'])
             self.pending_title.set_text('Couldn’t start ' + pending['name'])
             self.pending_detail.set_text(pending.get('error', '') + (' ' + previous + ' is still there.' if previous else ''))
             self.play.set_icon_name('media-playback-start-symbolic')
@@ -871,6 +887,13 @@ class NextWindow(Adw.ApplicationWindow):
             self.command('room_volume', {'value': round(scale.get_value(), 1)}, quiet=True)
             return False
         self.volume_timer = GLib.timeout_add(160, send)
+
+    def show_room_volume(self, snapshot):
+        stored = snapshot.get('room_volume')
+        if isinstance(stored, (int, float)) and not isinstance(stored, bool) and self.volume_timer is None:
+            self.updating = True
+            self.volume.set_value(float(stored))
+            self.updating = False
 
     def nudge_volume(self, step):
         self.volume.set_value(max(0, min(100, self.volume.get_value() + step)))
@@ -1380,6 +1403,8 @@ class NextWindow(Adw.ApplicationWindow):
         self.guard('rooms', self.rooms.render, snapshot, changed)
         self.guard('listen', self.listen.update, snapshot, changed)
         active = snapshot.get('active')
+        if not active:
+            self.show_room_volume(snapshot)     # the slider never reads 0 while the stored volume is not 0
         for item in self.menu_room_items:
             item.set_visible(bool(active))
         self.timer_button.set_sensitive(bool(active) and not self.offline)
@@ -1404,9 +1429,17 @@ class NextWindow(Adw.ApplicationWindow):
         if self.mini_window is not None and self.due('mini-window', playing_changed, self.mini_window, self.catalogue, self.presets):
             self.guard('mini-window', self.mini_window.player.update, snapshot)
         pending = self.pending
+        if pending and snapshot.get('transition'):
+            pending['seen_transition'] = True
         if pending and pending['state'] == 'connecting' and pending['done'] and not snapshot.get('transition'):
-            self.clear_pending()
-            pending = None
+            # A start that ended without a room (from idle) or with the old room kept is a failure: keep the card
+            # on Now, named after the room tried, with Try again and Back. Never fall back to Rooms silently.
+            outcome = model.start_outcome(snapshot, pending)
+            if outcome and outcome[0] == 'failed':
+                self.pending_failed(outcome[1], pending, model.start_error(outcome[1]))
+            elif outcome:
+                self.clear_pending()
+                pending = None
         now_state = (pending and pending['state'], self.offline, self.listen_first, self.catalogue, self.presets)
         if pending:
             self.guard('pending', self.render_pending) if pending['state'] == 'failed' else None
