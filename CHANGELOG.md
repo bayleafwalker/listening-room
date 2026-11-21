@@ -5,6 +5,34 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Each Mix row (Music, Ambience) has its own Pause/Play and Stop buttons; a row paused on
+  its own says "paused" in the accent colour. `listening-roomctl music|ambience
+  pause|play|toggle|stop|next` exposes the same layer actions.
+- A `transport` controller action (`toggle`, `pause`, `play`) is the one room Play/Pause:
+  MPRIS, the media keys and `listening-roomctl toggle|pause|play` use it.
+- `inspect` reports the latest start as `entry` (id, name, state, error, the room kept).
+
+### Changed
+- MPRIS Play/Pause/PlayPause and the media keys pause and resume the whole room, as the
+  window's Pause does, instead of the music layer alone; MPRIS Stop and the media Stop
+  key leave the room. `PlaybackStatus` is the room's (Playing while any layer plays) and
+  the metadata names the room and what plays (the ambience when only it plays).
+- Room Play resumes exactly what room Pause paused; a layer paused, played or stopped on
+  its own leaves the resume offer and stays as left. With no offer, Play resumes every
+  paused layer instead of saying there is nothing to resume. A repeated Quiet adds to the
+  offer instead of erasing it. While anything is audible the room shows Pause.
+- No ⋯ menu holds a single item: Mix rows always offer Change… and Stop there (with Next
+  track and Try again when they apply), and a Listen row with one extra action shows it
+  as a button.
+
+### Fixed
+- A start that fails no longer returns silently to Rooms: Now keeps the card "Couldn’t
+  start ‹room›" with Try again and Back, named after the room tried. A room that kept
+  playing does not show that failure as its own music failing.
+- Connecting no longer shows Next track or More/Less like this, a stale Mix summary, or
+  room volume 0 while the stored volume is not 0.
+
 ## [2.4.0] - 2026-11-21
 
 ### Added
