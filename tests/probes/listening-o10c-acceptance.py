@@ -19,7 +19,9 @@ Nothing reaches the desktop session, the network, systemd or real credentials; n
 Readings of the brief this probe takes (see the commit message):
   * N2 "a room that fails" = nothing in the room can start (music, ambience and scene all fail). That
     shows the target-named failure card and keeps the previous state. A failed music layer *alone*
-    (ambience fine) enters the room: the ambience plays and the failure shows on the music layer.
+    (ambience fine) enters the room from idle: the ambience plays and the failure shows on the music layer.
+    While another room plays, it shows the target card and keeps that room intact instead (coordinator
+    decision in phase 2: a failed start never disturbs what plays).
   * Criterion 3 lets the implementer pick the rule for individually paused layers; the oracle only
     requires Pause -> Resume to restore exactly what played, and that Play on a room that is silent
     because every layer was paused separately is never a no-op, and gives the same result from the
@@ -521,9 +523,13 @@ def n2_music_alone_fails():
           not went_back and music_failure_shown(window), (went_back[:4], sorted(mapped_texts(window))[:30]))
     window.close()
     reset()
-    # The same while another room plays: still never silent, still entered with its ambience.
+    # The same while another room plays.
+    # [Revised in phase 2, coordinator decision] The first version (N2k, kept below as superseded) entered the room
+    # with its ambience here too. Decision: a failed start must leave the playing room intact (o6 7n/7o), which wins
+    # over entering a half-working room, so a music-only failure while another room plays shows the target card.
     rainy_variant()
     playing = previous_room()
+    before = {k: {f: v.get(f) for f in ('status', 'source_id', 'name')} for k, v in (snap().get('layers') or {}).items()}
     window = open_window('rooms')
     env.start_error = '[Errno 111] Connection refused'
     mark = len(env.log)
@@ -532,14 +538,31 @@ def n2_music_alone_fails():
     check('N2k0 (setup) the playing room is not Rainy quiet and the window sent an enter for it',
           playing and playing != 'Rainy quiet' and any(c[0] == 'enter' for c in env.log[mark:]),
           (playing, env.commands(mark)))
-    wait(lambda: (snap().get('active') or {}).get('name') == 'Rainy quiet' and 'atmosphere' in audible(), 11)
-    env.pump(1.0)
-    check('N2k while another room plays, a room whose music alone fails is entered with its ambience playing, '
-          'on Now, with the music failure shown',
+    wait(lambda: failure_card(window, 'Rainy quiet') or ((snap().get('active') or {}).get('name') == 'Rainy quiet'
+                                                         and 'atmosphere' in audible()), 11)
+    env.pump(2.0)    # a card must stay, not flash
+    env.shot(window, 'o10c-n2-playing-music-alone-failed')
+    check('N2k [ORIGINAL, superseded by N2m-o] while another room plays, a room whose music alone fails is entered with '
+          'its ambience playing, on Now, with the music failure shown',
           (snap().get('active') or {}).get('name') == 'Rainy quiet' and 'atmosphere' in audible()
           and window.current_page() == 'now' and music_failure_shown(window),
           ((snap().get('active') or {}).get('name'), status(), window.current_page(),
            ((snap().get('layers') or {}).get('music') or {}).get('source_id'), snap().get('errors')))
+    page = now_page(window)
+    check('N2m while another room plays, a room whose music alone fails shows the failure card named after it, '
+          'with Try again and Back, and it stays',
+          failure_card(window, 'Rainy quiet'), (window.current_page(), sorted(mapped_texts(page or window))[:30]))
+    after = {k: {f: v.get(f) for f in ('status', 'source_id', 'name')} for k, v in (snap().get('layers') or {}).items()}
+    check('N2n ... and the playing room is intact: same room, same layers, still playing (the new ambience never started)',
+          (snap().get('active') or {}).get('name') == playing and after == before and 'music' in audible(),
+          ((snap().get('active') or {}).get('name'), after, before))
+    back = mapped_buttons(page or window, r'^back$')
+    if back:
+        back[0].emit('clicked')
+    env.pump(.8)
+    check('N2o ... and Back keeps the playing room playing and the card goes away',
+          back and not failure_card(window, 'Rainy quiet') and (snap().get('active') or {}).get('name') == playing
+          and 'music' in audible(), (bool(back), window.current_page(), status()))
 
 
 @section('N2')

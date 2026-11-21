@@ -16,7 +16,12 @@ N2h Back keeps the previous room playing and the card goes away
 N2i a room whose music alone fails is entered: its ambience plays
 N2j ... the window stays on Now and the failure shows on the music layer
 N2k0 (setup) the playing room is not Rainy quiet and the window sent an enter for it
-N2k while another room plays, a room whose music alone fails is entered with its ambience playing, on Now, with the music failure shown
+# Coordinator decision (phase 2): a music-only failure while another room plays keeps that room intact and shows
+# the target card (o6 7n/7o win over entering a half-working room). N2k is superseded by N2m-o; kept as known.
+!N2k [ORIGINAL, superseded by N2m-o] while another room plays, a room whose music alone fails is entered with its ambience playing, on Now, with the music failure shown
+N2m while another room plays, a room whose music alone fails shows the failure card named after it, with Try again and Back, and it stays
+N2n ... and the playing room is intact: same room, same layers, still playing (the new ambience never started)
+N2o ... and Back keeps the playing room playing and the card goes away
 N2l a music change that fails inside a playing room shows on the music layer; the ambience keeps playing and the window stays on Now without a room failure card
 E0 (reference) the window's room Pause pauses music and ambience and keeps the scene
 E1 MPRIS reports Playing for a playing room
