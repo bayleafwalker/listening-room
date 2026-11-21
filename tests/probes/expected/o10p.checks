@@ -1,0 +1,56 @@
+# O10-PERF acceptance (tests/probes/listening-o10p-acceptance.py), written by the independent acceptance author.
+# This is the TARGET: every check passes. On main e45d947 through the dev script it fails S1-S4 (no GStreamer in the dev shell)
+# and so every media oracle (nothing plays; X1/X2 need GStreamer too); with GStreamer supplied from outside (diagnostic)
+# C2, C2w, C3, C3b, C5, G7, M2, M3, M4, U2, U3, U4 fail for their own reasons. Evidence and readings: the O10p acceptance report.
+# Entries with @@ declare the measured part of the name; everything else must match exactly.
+S1 the dev shell provides GStreamer playbin3 to the window (the probe adds none)
+S2 the elements the catalogue loops need are in the dev shell (qtdemux, h264parse, avdec_h264, videoconvert, playbin3)
+S3 the dev shell decodes a catalogue loop end to end (all frames of room-night-drive.mp4)
+S4 the dev shell GStreamer is pinned to exactly the package's plugin packages (same store paths)
+S5 the 8 catalogue room loops are unchanged in format (h264 1440x810, 480 frames): cost is not cut by shrinking the media
+C0 every cold start reached the Rooms grid with its cards (3 runs)
+C1 time to Rooms after a cold start is measured and reported (median @@ ms wall, @@ ms GTK-thread CPU, load @@)
+C2 the GTK thread is never held more than 50 ms by art during cold start, by GTK-thread CPU (worst @@ ms)
+C2w ... and by wall time: <= 50 ms, scaled by the 1-minute load above 8 (worst @@ ms against @@ ms)
+C3 poster decoding leaves the GTK thread: no image decode or scale call ran on it during cold start
+C3b the GTK thread spent at most 50 ms CPU on art in total during cold start (worst @@ ms)
+C4 every card ends up showing its own poster art (placeholders, then textures)
+C5 card posters are pre-scaled: each card texture is at most 2x its on-screen size
+G0 fixture: the Rooms grid shows the catalogue rooms with scene loops (8)
+G1 a preview's scene loop plays: its pixels move on screen
+G2 the preview sent no controller command, started nothing and no process
+G3 the preview is silent: GStreamer worked (elements created) but no audio sink was created
+G4 Enter room sends exactly one enter and opens Now
+G5 the entered room's loop plays (pixels move)
+G6 the loop plays at its native resolution (1440x810): not a downscaled stand-in
+G7 scenes still loop: the entered scene keeps moving after its 20 s clip has ended
+G8 an off-screen scene stops decoding: media threads use <= 50 ms CPU in 5 s on the Rooms page (@@ ms)
+G9 back on Now, the scene moves again
+G10 a hidden window stops decoding: media threads use <= 50 ms CPU in 5 s (@@ ms)
+G11 shown again, the scene moves again
+G12 reduced motion, entered: the scene stays still
+G13 reduced motion shows the still texture at full resolution (not a card-size thumbnail)
+G14 reduced motion decodes nothing: media threads <= 50 ms CPU in 4 s (@@ ms)
+G15 reduced motion, preview: the scene stays still and the preview stays inert
+G16 motion back on: the entered room's scene moves again
+scene: the child finished without a crash or hang
+scene: the child reported all its oracles and exited 0
+M0 fixture: 8 catalogue loop rooms (8 distinct loop files) and 16 user-clip rooms
+M1 every catalogue loop visibly played in its preview before its cost was measured
+M2 steady-state media cost with all 8 catalogue loops shown is under 400 MB (process tree RSS, @@ MB)
+M3 decoder threads are bounded: at most 16 in the whole process tree, warm and at peak (@@)
+M4 the media adds at most 64 threads once every loop was shown (@@)
+M5 off-screen loops are paused: media threads use <= 50 ms CPU in 5 s on the grid (@@ ms)
+M6 steady state: loops still play in the sampled previews (every 5th of 40)
+M7 steady state: over the last 20 previews RSS grows <= 64 MB, threads <= 6, fds <= 12; since warm-up at most twice that
+M8 no-teardown guarantee: no GL display or context is left behind per preview (GL threads <= warm)
+M9 no-teardown guarantee: no new GStreamer pipeline is built once every loop has been shown (@@ built)
+U1 every user clip visibly played in its preview
+U2 user clips are bounded: total media cost with 8 catalogue loops and 16 user clips <= 464 MB (@@ MB)
+U3 user clips are bounded: each of the last 8 clips adds <= 4 MB, <= 1 thread, <= 2 fds (@@)
+U4 decoder threads stay bounded with user clips (<= 16, @@)
+media: the child finished without a crash or hang
+media: the child reported all its oracles and exited 0
+X1 stress: at least 200 scene-media stress cycles ran (@@ attempted)
+X2 stress: zero crashes over those cycles (@@ crashed children)
+X3 stress: every stress child finished all its cycles without raising
