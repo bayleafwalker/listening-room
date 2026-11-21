@@ -732,7 +732,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.listen_shown = shown
 
     def show_now(self):
-        if not self.snapshot.get('active'):
+        if not self.snapshot.get('active') and not self.snapshot.get('video'):
             self.toast('You are not in a room yet')
             return
         self.show_page('now')
@@ -1419,8 +1419,8 @@ class NextWindow(Adw.ApplicationWindow):
         elif active:
             if self.due('now', playing_changed, *now_state):
                 self.guard('now', self.render_now, snapshot)
-        elif self.current_page() == 'now':
-            self.show_rooms()
+        elif self.current_page() == 'now' and not snapshot.get('video'):
+            self.show_rooms()          # with a video playing and no room, Now shows Watching (next_watching)
         if not active and not self.pending:
             self.listen_first = False
         return False

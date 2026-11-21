@@ -19,6 +19,7 @@ class Watching:
         self.window = window
         self.shown = None          # the video the chip shows (a snapshot ``video``), or None
         self.error = None          # the last ``errors.video`` already said
+        self.alone = False         # Now shows the video with no room behind it
         self.chip = Gtk.Box(spacing=6, halign=Gtk.Align.START, valign=Gtk.Align.CENTER)
         self.chip.add_css_class('watching-chip')
         self.text = label('', ['source-chip'], ellipsize=True)
@@ -43,7 +44,8 @@ class Watching:
             self.window.show_page('now')
             self.window.toast('Watching %s. %s is paused.' % (name, room.get('name') or 'The room'))
         else:
-            self.window.toast('Watching ' + name)
+            # Nothing else changes; Now carries the chip and Stop watching when the listener goes there.
+            self.window.toast('Watching ' + name, 'Show in Now', self.window.show_now)
         return ticket
 
     def stop(self):
@@ -59,12 +61,31 @@ class Watching:
         if video:
             self.text.set_text('Watching · ' + (video.get('name') or 'YouTube video'))
             self.text.set_tooltip_text(video.get('name') or '')
+        self.render_without_room(snapshot, video)
         error = (snapshot.get('errors') or {}).get('video')
         if error and error != self.error:
             self.window.error_toast(error)
         self.error = error
         if before and not video:
             self.stopped(snapshot)
+
+    def render_without_room(self, snapshot, video):
+        """Now while a video plays with no room: the chip and Stop watching, and no room controls."""
+        window = self.window
+        alone = bool(video) and not snapshot.get('active') and not window.pending
+        window.controls.set_visible(not alone)
+        if not alone:
+            if self.alone and window.current_page() == 'now' and not snapshot.get('active'):
+                window.show_rooms()           # the video stopped and there is no room to show
+            self.alone = False
+            return
+        self.alone = True
+        window.chip.set_visible(False)
+        window.changed_chip.set_visible(False)
+        window.choose_scene.set_visible(False)
+        window.room_name.set_text(video.get('name') or 'YouTube video')
+        window.now_line.set_text('Playing with sound in its own window. No room is playing.')
+        window.now_detail.set_visible(False)
 
     def stopped(self, snapshot):
         """The video stopped (window closed, video ended or Stop watching): offer Resume, never resume."""

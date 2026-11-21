@@ -248,7 +248,26 @@ with env:
     check('N1 with no room, Watch just plays: one video command, nothing else touched',
           [c[0] for c in mutating(mark)] == ['video'] and env.backend.calls == before and video['state']
           and window.current_page() == 'browse', (mutating(mark), env.backend.calls[len(before):], window.current_page()))
+    check('N2 the no-room Watch toast offers Show in Now', said and said[-1][1] == 'Show in Now', said[-1:])
+    said[-1][2]()
+    env.pump(1.0)
+    check('N3 with no room, Now shows Watching · title and Stop watching, without room controls',
+          window.current_page() == 'now' and window.watching.chip.get_mapped()
+          and env.labels(window, 'Watching · Rain on a tin roof, 3 hours') and env.buttons(window, 'Stop watching')
+          and not window.controls.get_visible(),
+          (window.current_page(), sorted(t for t in env.texts(window) if 'atch' in t)))
+    env.shot(window, 'o10y-08-watching-no-room')
+    env.pump(1.0)
+    check('N4 ... and it stays on Now across refreshes', window.current_page() == 'now' and window.watching.chip.get_mapped())
+    mark = len(env.log)
+    env.press(window, 'Stop watching')
+    env.settle(1.0)
+    check('N5 Stop watching with no room stops the video and leaves Now for Rooms',
+          [c[1] for c in mutating(mark)] == [{'action': 'stop'}] and video['state'] is None
+          and window.current_page() != 'now' and window.controls.get_visible(), (mutating(mark), window.current_page()))
 
+    window.show_listen()
+    scope_to(page, 'youtube')
     # ---- saved YouTube -------------------------------------------------------------------
     env.service.execute('station.save', {'station': {'name': 'Rain video', 'sources': [
         {'source_id': 'youtube-video', 'id': 'youtube-video', 'name': 'Rain video', 'kind': 'radio', 'resolver': True,
