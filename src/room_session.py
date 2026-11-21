@@ -465,6 +465,19 @@ class Backend:
         if ambience.state('video'):
             ambience.control(action, 'video')
 
+    # Watch: the video-with-sound window (ambience mode 'video'), a player beside the room, never a layer.
+    def start_video(self, item, placement='here', display=None, cancel=None):
+        kwargs = {'mode': 'video', 'placement': placement, 'cancel_event': cancel}
+        if display:
+            kwargs['display'] = display
+        return ambience.start(item, **kwargs)
+
+    def stop_video(self):
+        ambience.control('stop', 'video')
+
+    def video_state(self):
+        return ambience.state('video')
+
     def media_details(self):
         if self.remote:
             return {}
@@ -530,6 +543,7 @@ class Controller:
         self.errors = {}
         self.transition = None
         self.resume_offer = None
+        self.video = None   # the Watch window while it is open: status, name, url, started_at, room_paused
         self.generation = 0
         self.cancel = threading.Event()
         self.closed = False
@@ -931,7 +945,7 @@ class Controller:
         with self.lock:
             return _copy({'active': self.active, 'last_session': self.last_session,
                           'variants': self._cached_file('room-variants.json', self.variants), 'layers': self.live, 'settings': self.settings,
-                          'recent': self.recent, 'resume_offer': self.resume_offer,
+                          'recent': self.recent, 'resume_offer': self.resume_offer, 'video': self.video,
                           'transition': self.transition, 'errors': self.errors,
                           'media': self.media, 'audio_policy': self.policy_status,
                           'room_volume': self.room_volume, 'last_entered_at': self.last_entered_at,
@@ -967,6 +981,7 @@ class Controller:
         if self.closed:
             return
         observed_generation = self.generation
+        self._refresh_video()
         try:
             layers = self.backend.layers()
             previous_status = (self.live.get('music') or {}).get('status')
@@ -1558,6 +1573,108 @@ class Controller:
         self._changed()
         return {'message': 'Room quiet. Resume is always explicit.', 'paused': paused, 'errors': errors}
 
+    # ---- Watch (video with sound) ------------------------------------------------------------
+
+    def start_video(self, args):
+        """Watch a public YouTube video in its own window, with sound.
+
+        The room's Music and Ambience pause the way Quiet pauses them, with the resume offer
+        recorded; the Scene keeps going. Resume stays explicit: nothing here or in
+        stop_video ever plays the room again. With no room, the video just plays."""
+        import online_services
+        try:
+            descriptor = online_services.preview_link(args.get('url'))
+        except (online_services.ConnectionError, OSError) as error:
+            raise SessionError(str(error)) from None
+        if descriptor.get('kind') != 'youtube':
+            raise SessionError('Watch plays a public YouTube video')
+        if not hasattr(self.backend, 'start_video'):
+            raise SessionError('Watching is unavailable here')
+        url = descriptor['url']
+        name = ' '.join(str(args.get('name') or '').split())[:160] or 'YouTube video'
+        generation = args.get('_request_generation', self.generation)
+        cancel = args.get('_cancel_event', self.cancel)
+        if generation != self.generation or cancel.is_set():
+            return {'message': 'Watch cancelled'}
+        with self.lock:
+            current = _copy(self.live)
+            identity = self.active.get('id') if self.active else None
+        paused, errors = [], {}
+        for layer, control in (('music', self.backend.music_control), ('atmosphere', self.backend.atmosphere_control)):
+            if current.get(layer, {}).get('status') == 'Playing':
+                try:
+                    control('pause')
+                    paused.append(layer)
+                except (OSError, ValueError, hub.HubError) as error:
+                    errors[layer] = str(error)
+        started = self.clock()
+        with self.lock:
+            if paused and not self.resume_offer:
+                self.resume_offer = {'layers': paused, 'session_id': identity, 'ready_at': started, 'ready': True,
+                                     'message': 'Resume when you are ready', 'reason': 'video'}
+            for layer in paused:
+                self.live[layer]['status'] = 'Paused'
+            self.errors.update(errors)
+            self.errors.pop('video', None)
+            video = self.video = {'status': 'Opening', 'name': name, 'url': url, 'started_at': started,
+                                  'room_paused': bool(self.resume_offer)}
+        self._changed()
+        try:
+            self.backend.start_video({'id': 'youtube-watch', 'name': name, 'url': url},
+                                     placement=self.settings.get('placement', 'here'),
+                                     display=self.settings.get('display'), cancel=cancel)
+        except (OSError, ValueError, hub.HubError) as error:
+            with self.lock:
+                if self.video is video:
+                    self.video = None
+                    if not cancel.is_set():     # Pause, Leave or Stop watching cancelled it: not a failure
+                        self.errors['video'] = str(error) or 'The video could not be played'
+            self._changed()
+            return {'message': 'The video could not be played', 'error': str(error), 'paused': paused}
+        with self.lock:
+            if self.video is video:
+                video['status'] = 'Playing'
+        self._changed()
+        return {'message': 'Watching ' + name, 'paused': paused}
+
+    def stop_video(self):
+        """Close the Watch window. The room stays paused: Resume is offered, never automatic."""
+        error = None
+        if hasattr(self.backend, 'stop_video'):
+            try:
+                self.backend.stop_video()
+            except (OSError, ValueError, hub.HubError) as failure:
+                error = str(failure)
+        with self.lock:
+            self.video = None
+            offer = bool(self.resume_offer)
+        self._changed()
+        return {'message': 'Stopped watching', 'resume_offer': offer, 'errors': {'video': error} if error else {}}
+
+    def _refresh_video(self):
+        """Notice the Watch window closing or its video ending; an ended video's window is closed."""
+        with self.lock:
+            video = self.video
+        if not video or video.get('status') == 'Opening' or not hasattr(self.backend, 'video_state'):
+            return
+        try:
+            state = self.backend.video_state()
+        except (OSError, ValueError, hub.HubError):
+            state = None
+        if state and state.get('ended'):
+            try:
+                self.backend.stop_video()
+            except (OSError, ValueError, hub.HubError):
+                pass
+            state = None
+        with self.lock:
+            if self.video is not video:
+                return
+            if state is None:
+                self.video = None
+            else:
+                video['status'] = state.get('status') or video['status']
+
     def resume(self):
         with self.lock:
             offer = _copy(self.resume_offer)
@@ -1602,6 +1719,7 @@ class Controller:
             self.active = None
             self.program = None
             self.resume_offer = None
+            self.video = None
             self.live = {name: {'status': 'Stopped'} for name in self.live}
             self.errors.update(errors)
         # Restoring optional remote lighting must not hold the urgent Stop RPC
@@ -2280,6 +2398,16 @@ class Controller:
     @action('resume')
     def _act_resume(self, args):
         return self.resume()
+
+    # Start opens a window (seconds): it is queued. Stop, and anything else, answers at once.
+    @action('video', immediate=lambda args: args.get('action') != 'start',
+            args={'action': 'text', 'url': 'text', 'name': 'text'})
+    def _act_video(self, args):
+        if args.get('action') == 'start':
+            return self.start_video(args)
+        if args.get('action') == 'stop':
+            return self.stop_video()
+        raise SessionError('Choose video start or stop')
 
     @action('stop')
     def _act_stop(self, args):
