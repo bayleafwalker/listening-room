@@ -1,0 +1,67 @@
+# O10-CONTROL acceptance (author-owned). Every check must pass once the outcome is implemented.
+# Written on main e45d947, where 43 of these 63 fail by design (evidence-o10c-acceptance/main-run.log).
+# The passing ones are regression guards: 2.4.0 registry/state/socket compatibility, quiet/resume, and
+# failures that already show on their layer.
+N2a from idle, a room that fails shows the failure card on Now named after the target, with Try again and Back
+N2b ... and the window never went back to Rooms while it failed
+N2c ... and nothing was left playing (the idle state is intact)
+N2d Try again sends one enter for the same room and, with the fault gone, that room plays
+N2e Back from that card returns to Rooms and the card is gone, still with nothing playing
+N2f while another room plays, a room that fails shows the failure card named after the target (not the playing room), with Try again and Back
+N2g ... and the previous room is intact: same room, same layers, still playing
+N2h Back keeps the previous room playing and the card goes away
+N2i a room whose music alone fails is entered: its ambience plays
+N2j ... the window stays on Now and the failure shows on the music layer
+N2k while another room plays, a room whose music alone fails is entered with its ambience playing, on Now, with the music failure shown
+N2l a music change that fails inside a playing room shows on the music layer; the ambience keeps playing and the window stays on Now without a room failure card
+E0 (reference) the window's room Pause pauses music and ambience and keeps the scene
+E1 MPRIS reports Playing for a playing room
+E2 MPRIS Pause pauses the room exactly as the window's Pause does (music and ambience paused, scene kept)
+E3 ... and MPRIS then reports Paused
+E4 the window's Play resumes a room MPRIS paused: everything that played plays again
+E5 MPRIS Play resumes a room the window paused, exactly as it was
+E6 MPRIS PlayPause on a playing room pauses it like the window's Pause
+E7 ... and PlayPause again restores exactly what played
+E7b MPRIS PlayPause on a room the window paused restores exactly what played
+E8 with only the ambience playing (music paused on its own), MPRIS still reports the room as Playing
+E9 ... and MPRIS Pause silences it: the ambience pauses too
+E10 with the music stopped and the ambience playing, MPRIS reports Playing and Pause pauses the ambience
+E11 MPRIS Stop stops the room: nothing is left audible
+E12 MPRIS metadata names the room
+E13 ... and what plays (the music's station or track)
+E14 with only the ambience playing, MPRIS metadata names the room and the ambience
+E15 the media key (listening-hub toggle) pauses the whole room exactly as the window's Pause does
+E16 ... and the window then offers Play/Resume for the room
+E17 the media key on a room the window paused restores exactly what played
+E18 with only the ambience still playing, the media key silences the room
+L1 the Mix has a visible control (not in a menu) for music pause that touches only that layer
+L2 the Mix has a visible control (not in a menu) for music resume that touches only that layer
+L3 the Mix has a visible control (not in a menu) for music stop that touches only that layer
+L4 the Mix has a visible control (not in a menu) for ambience pause that touches only that layer
+L5 the Mix has a visible control (not in a menu) for ambience resume that touches only that layer
+L6 the Mix has a visible control (not in a menu) for ambience stop that touches only that layer
+L7 with the music paused on its own, room Pause silences everything and room Resume restores exactly what played (ambience back, music still paused)
+L8 room Pause then Resume with everything playing restores everything
+L9 Play on a room silent because every layer was paused on its own starts sound again
+L10 ... and MPRIS Play and listening-roomctl resume do the same as the window's Play
+N9a (setup) the cold-start Connecting state was observed on Now
+N9b connecting to a radio room from a cold start shows no track controls (Next track, Less/More like this)
+N9c ... and never shows the volume at 0 while the stored room volume is 70 (a shown level is 70)
+N9d (setup) the library room shows Next track before switching
+N9f (setup) the Connecting state from the library room was observed on Now
+N9e connecting from a library room to a radio room hides the previous room's track controls
+N10 (radio-and-rain) no menu on Now or in the Mix holds a single item
+N10 (radio-only) no menu on Now or in the Mix holds a single item
+N10 (music-failed) no menu on Now or in the Mix holds a single item
+N10 (library) no menu on Now or in the Mix holds a single item
+C6a every 2.4.0 controller action still exists with the same argument types (changes are additive)
+C6b ... and what ran at once still runs at once (quiet, resume, stop, layer pause/stop)
+C6c the snapshot keeps every 2.4.0 field
+C6d a 2.4.0 client over the socket: layer pause/play act on that layer; quiet pauses the room with a resume offer and resume restores it
+C6e session state stored by 2.4.0 loads unchanged and its room can be returned to
+C6f listening-roomctl pauses the music layer alone
+C6g listening-roomctl pauses the ambience layer alone
+C6h ... and resumes and stops each layer alone (the other layer keeps playing)
+C6i listening-roomctl --help lists the layer action
+C6j the session runbook documents the roomctl layer command
+C6k the CHANGELOG records the change above 2.4.0: MPRIS/media keys act on the room, and roomctl layer actions
