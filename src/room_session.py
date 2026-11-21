@@ -136,6 +136,12 @@ def action_spec(name):
     return spec
 
 
+# How long a new subscriber waits for the feed thread's fresh snapshot before it
+# serves the latest good revision instead. The wait holds no lock; it stays well
+# inside the client's 45 s budget for a first line.
+REFRESH_WAIT_SECONDS = 10
+
+
 class SnapshotFeed:
     """Revisioned controller snapshots for subscribers and in-process listeners.
 
@@ -150,15 +156,22 @@ class SnapshotFeed:
         self.limit = limit
         self.session = os.urandom(8).hex()   # revisions restart with each controller process
         self._lock = threading.Lock()
-        self._publishing = threading.Lock()   # one snapshot-and-publish at a time, so revisions never go back
         self._dirty = threading.Event()
         self._closed = False
         self._revision, self._key, self._snapshot, self._encoded = 0, None, None, None
         self._wakers = set()
         self._listeners = []
-        self._publish()
+        # refresh() hands out tickets; the feed thread completes a ticket once a snapshot
+        # attempt that began after it was requested has finished (successfully or not).
+        self._done = threading.Condition(threading.Lock())
+        self._requested = self._completed = 0
+        try:
+            self._publish()
+        except Exception:   # no revision yet; the feed thread publishes on the next change
+            pass
         controller.callbacks.append(self.notify)
-        threading.Thread(target=self._run, name='room-feed', daemon=True).start()
+        self._thread = threading.Thread(target=self._run, name='room-feed', daemon=True)
+        self._thread.start()
 
     @property
     def closed(self):
@@ -173,21 +186,39 @@ class SnapshotFeed:
             if self._closed:
                 return
             self._dirty.clear()
+            with self._done:
+                ticket = self._requested
             try:
                 self._publish()
             except Exception:   # the next change publishes again
                 pass
+            with self._done:
+                self._completed = max(self._completed, ticket)
+                self._done.notify_all()
 
-    def refresh(self):
-        """Publish the controller's current state now, so a new subscriber's first
-        snapshot already includes every command acknowledged before it subscribed."""
-        self._publish()
+    def refresh(self, timeout=REFRESH_WAIT_SECONDS):
+        """Ask the feed thread to publish the controller's current state and wait for it,
+        so a new subscriber's first snapshot includes every command acknowledged before
+        it subscribed. Never raises: if the snapshot fails or takes longer than `timeout`
+        the latest good revision stands. Returns True when a fresh attempt finished.
+        Safe from any thread, including a listener (which cannot wait for itself)."""
+        if threading.current_thread() is self._thread:
+            self._dirty.set()
+            return False
+        with self._done:
+            self._requested += 1
+            ticket = self._requested
+        self._dirty.set()
+        deadline = time.monotonic() + timeout
+        with self._done:
+            while self._completed < ticket and not self._closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._done.wait(remaining)
+        return self._completed >= ticket
 
     def _publish(self):
-        with self._publishing:
-            self._publish_current()
-
-    def _publish_current(self):
         snapshot = self.controller.snapshot()
         key = {name: value for name, value in snapshot.items() if name != 'now'}
         with self._lock:
@@ -218,7 +249,9 @@ class SnapshotFeed:
             return self._revision, self._snapshot, self._encoded
 
     def add_listener(self, listener):
-        """Call `listener(revision, snapshot)` on the feed thread for each new revision."""
+        """Call `listener(revision, snapshot)` for each new revision, only ever on the
+        feed thread (or, for the first revision, the thread that created the feed before
+        any listener exists). A listener may call refresh(); it never blocks."""
         with self._lock:
             self._listeners.append(listener)
 
@@ -1938,14 +1971,20 @@ class Controller:
         self._changed()
         return {'message': 'Room preferences saved'}
 
+    def _set_policy_status(self, state):
+        changed = state != self.policy_status
+        self.policy_status = state
+        if changed:
+            self._changed()   # audio_policy is part of the snapshot
+
     def poll_policy(self):
         try:
             import audio_devices
             state = audio_devices.poll_policy(detect_calls=bool(self.settings.get('duck_on_call')))
         except (ImportError, OSError, ValueError) as error:
-            self.policy_status = {'error': str(error)}
+            self._set_policy_status({'error': str(error)})
             return
-        self.policy_status = state
+        self._set_policy_status(state)
         if state.get('disconnect') and (self.transition or any(
                 self.live.get(name, {}).get('status') == 'Playing' for name in ('music', 'atmosphere'))):
             self.quiet()
@@ -1990,6 +2029,11 @@ class Controller:
     @action('inspect')
     @action('get')
     def _act_inspect(self, args):
+        if args.get('fields') == []:
+            # Version probe (session_client): no snapshot and no controller lock, so it
+            # stays cheap under load and for any snapshot size. A protocol-1 controller
+            # ignores the argument and returns its whole snapshot, which has no version.
+            return {'version': PROTOCOL_VERSION}
         return dict(self.snapshot(), version=PROTOCOL_VERSION)
 
     @action('subscribe', args={'fields': 'list'}, stream=True)

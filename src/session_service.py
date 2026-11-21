@@ -228,7 +228,7 @@ class RequestHandler(socketserver.StreamRequestHandler):
         feed = self.server.service.feed
         pipe = feed.open()
         try:
-            feed.refresh()
+            feed.refresh()   # never raises: a failing snapshot leaves the latest good revision
             self.connection.settimeout(SEND_TIMEOUT)
             poller = select.poll()
             poller.register(self.connection.fileno(), select.POLLIN)
@@ -242,7 +242,9 @@ class RequestHandler(socketserver.StreamRequestHandler):
                     pass
                 revision, snapshot, encoded = feed.latest()
                 body = None
-                if revision != sent:
+                if snapshot is None:
+                    pass   # no snapshot has ever succeeded; wait for the first one
+                elif revision != sent:
                     sent = revision
                     if fields is not None:
                         projection = {name: snapshot.get(name) for name in fields}
@@ -259,6 +261,8 @@ class RequestHandler(socketserver.StreamRequestHandler):
                         return
                     heartbeat_due = time.monotonic() + room_session.HEARTBEAT_SECONDS
                 wait = max(0, heartbeat_due - time.monotonic())
+                if snapshot is None:
+                    wait = SEND_TIMEOUT
                 for descriptor, _ in poller.poll(wait * 1000):
                     if descriptor != pipe[0]:
                         return   # input or hang-up from the subscriber
@@ -382,7 +386,10 @@ class Mpris:
     def changed(self):
         if not self.connection:
             return False
-        plain = mpris_values(self.service.feed.latest()[1])
+        snapshot = self.service.feed.latest()[1]
+        if snapshot is None:   # no snapshot has succeeded yet; the first revision schedules us again
+            return False
+        plain = mpris_values(snapshot)
         changed = {name: value for name, value in plain.items()
                    if name not in ('Position', 'CanControl') and self.previous.get(name) != value}
         self.previous = plain
@@ -438,7 +445,10 @@ def refresh_loop(controller, stopping, interval=1):
         except Exception as error:
             recorded = '%s: %s' % (type(error).__name__, error)
             with controller.lock:
+                changed = controller.errors.get('refresh') != recorded
                 controller.errors['refresh'] = recorded
+            if changed:
+                controller._changed()   # errors are part of the snapshot
             if recorded not in logged:
                 if len(logged) >= 50:
                     logged.clear()
@@ -447,13 +457,19 @@ def refresh_loop(controller, stopping, interval=1):
         else:
             if recorded is not None:
                 with controller.lock:
-                    if controller.errors.get('refresh') == recorded:
+                    cleared = controller.errors.get('refresh') == recorded
+                    if cleared:
                         del controller.errors['refresh']
                 recorded = None
+                if cleared:
+                    controller._changed()
         try:
             controller.poll_policy()
         except Exception as error:
-            controller.policy_status = {'error': str(error)}
+            status = {'error': str(error)}
+            if controller.policy_status != status:
+                controller.policy_status = status
+                controller._changed()
             message = 'audio policy poll failed: %s: %s' % (type(error).__name__, error)
             if message not in logged:
                 logged.add(message)

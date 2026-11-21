@@ -12,6 +12,22 @@ All notable changes are recorded here. The format follows
   ConnectionRefused: the decoder creates its control socket a moment before it listens,
   and the test now waits for the connection to be accepted, not for the file to exist.
 
+- A refresh failure (backend down) and audio-policy changes are now pushed to
+  subscribers; before, they only showed on the next unrelated change, and a window
+  that stops polling while the stream is up never saw them.
+- A transient snapshot failure no longer fails or silently closes a `subscribe`: it
+  serves the latest good revision (a subscribe before any snapshot waits for the
+  first; MPRIS ignores changes until then). Subscribers wait at most 10 s for the fresh snapshot instead of for as long
+  as the controller lock is held.
+- The client's protocol-version probe no longer times out after 1 s: `inspect` with
+  `fields: []` returns just the version without a snapshot or the controller lock,
+  so a loaded host or an oversize snapshot cannot make the controller look
+  disconnected. Protocol-1 controllers are still detected and never sent `subscribe`.
+- `status --follow` exits as soon as Waybar's pipe is closed, even when the status
+  does not change, instead of holding a subscriber slot.
+- Snapshot feed listeners run only on the feed thread, as documented, and may call
+  `refresh()` without deadlocking.
+
 ### Changed
 - Removed 17 scene tuning `color` keys the motion engine never reads (electrical effects
   in four rooms and the second water effect in after-hours). The rendered loops are

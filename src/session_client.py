@@ -13,6 +13,7 @@ import threading
 import time
 
 MAX_MESSAGE = 1024 * 1024
+PROBE_TIMEOUT = 10   # seconds; the version probe and connect only fail when the controller is unreachable
 
 
 class SessionUnavailable(ValueError):
@@ -167,8 +168,19 @@ class Subscription:
 
     def _stream(self, path):
         # A controller older than protocol 2 would queue an unknown `subscribe`
-        # and report it as a room error, so ask for its version first.
-        if not isinstance(_exchange(path, 'inspect', {}, 1).get('version'), int):
+        # and report it as a room error, so ask for its version first. An empty
+        # `fields` list makes a protocol-2 controller answer with just its version,
+        # without a snapshot or its lock, so the probe is cheap whatever the load or
+        # snapshot size, and the timeout only has to cover a busy host. A protocol-1
+        # controller ignores the argument and returns its whole snapshot, which has no
+        # version (or is too large to read): either way it is too old.
+        try:
+            version = _exchange(path, 'inspect', {'fields': []}, PROBE_TIMEOUT).get('version')
+        except SessionUnavailable as failure:
+            if 'too large' not in str(failure):
+                raise
+            version = None
+        if not isinstance(version, int):
             raise SessionUnavailable('The listening controller is older than this client; restart listening-session.service')
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         with self._lock:
@@ -177,7 +189,7 @@ class Subscription:
                 return
             self._socket = connection
         try:
-            connection.settimeout(1)
+            connection.settimeout(PROBE_TIMEOUT)
             connection.connect(str(path))
             args = {} if self.fields is None else {'fields': self.fields}
             connection.sendall(json.dumps({'action': 'subscribe', 'args': args}).encode() + b'\n')

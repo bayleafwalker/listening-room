@@ -316,6 +316,194 @@ class Push(Base):
         self.assertTrue(wait_until(lambda: updates[-1][1].snapshot['room_volume'] == 55., .1))
 
 
+class ReviewFixes(Base):
+    """Defects found by the independent review of the push path."""
+    def read_event(self, reader):
+        return json.loads(reader.readline())['result']
+
+    def test_refresh_errors_and_policy_changes_reach_subscribers(self):
+        controller = self.controller
+        controller.errors, controller.policy_status = {}, {}
+        controller.refresh_failure = RuntimeError('backend down')
+        controller.snapshot = lambda: json.loads(json.dumps(dict(
+            controller.state, errors=dict(controller.errors), audio_policy=controller.policy_status, now=time.time())))
+        controller._changed = lambda: [callback() for callback in controller.callbacks]
+        def refresh():
+            if controller.refresh_failure:
+                raise controller.refresh_failure
+        controller.refresh = refresh
+        policy = [{'duck': False}]
+        controller.poll_policy = lambda: setattr(controller, 'policy_status', policy[0]) or controller._changed()
+        stopping = threading.Event()
+        self.addCleanup(stopping.set)
+        connection, reader = raw_subscribe(self.path, {'fields': ['errors', 'audio_policy']})
+        self.addCleanup(connection.close)
+        self.assertEqual(self.read_event(reader)['snapshot']['errors'], {})
+        threading.Thread(target=session_service.refresh_loop, args=(controller, stopping, .05), daemon=True).start()
+        seen = self.read_event(reader)['snapshot']
+        while 'refresh' not in seen['errors']:
+            seen = self.read_event(reader)['snapshot']
+        self.assertIn('backend down', seen['errors']['refresh'])
+        controller.refresh_failure = None
+        while seen['errors']:
+            seen = self.read_event(reader)['snapshot']
+        # The loop's own policy-poll failure is published too.
+        def failing_poll():
+            raise OSError('no pactl')
+        controller.poll_policy = failing_poll
+        while seen['audio_policy'] != {'error': 'no pactl'}:
+            seen = self.read_event(reader)['snapshot']
+
+    def test_poll_policy_publishes_a_changed_status(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.dict(os.environ, {'XDG_CONFIG_HOME': directory + '/config', 'XDG_STATE_HOME': directory + '/state',
+                                             'XDG_CACHE_HOME': directory + '/cache'}):
+            controller = sessions.Controller(FakeBackend(), directory)
+            self.addCleanup(controller.close)
+            calls = []
+            controller.callbacks.append(lambda: calls.append(1))
+            fake_audio = mock.Mock(poll_policy=mock.Mock(return_value={'duck': False, 'sinks': 2}))
+            with mock.patch.dict(sys.modules, {'audio_devices': fake_audio}):
+                controller.poll_policy()
+                controller.poll_policy()
+            self.assertEqual(len(calls), 1)   # once for the change, none for the repeat
+            self.assertEqual(controller.snapshot()['audio_policy'], {'duck': False, 'sinks': 2})
+
+    def test_a_failing_snapshot_never_fails_a_subscribe(self):
+        self.service.feed   # a first good revision exists
+        for failure in (sessions.SessionError('transient'), RuntimeError('boom')):
+            self.controller.snapshot_failure = failure
+            original = self.controller.snapshot
+            def failing(original=original):
+                if self.controller.snapshot_failure:
+                    raise self.controller.snapshot_failure
+                return original()
+            self.controller.snapshot = failing
+            self.addCleanup(setattr, self.controller, 'snapshot', original)
+            good = self.service.feed.latest()[0]
+            connection, reader = raw_subscribe(self.path)
+            self.addCleanup(connection.close)
+            event = self.read_event(reader)
+            self.assertEqual(event['event'], 'snapshot')
+            self.assertEqual(event['revision'], good)   # the latest good revision
+            self.controller.snapshot_failure = None
+            self.controller.snapshot = original
+
+    def test_a_subscribe_before_any_snapshot_waits_for_the_first_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = FakeController()
+            original = controller.snapshot
+            controller.snapshot = mock.Mock(side_effect=sessions.SessionError('not yet'))
+            path = Path(directory) / 'runtime' / 'session.sock'
+            service, stop = server_for(path, controller)
+            self.addCleanup(stop)
+            connection, reader = raw_subscribe(path)
+            self.addCleanup(connection.close)
+            time.sleep(.2)
+            controller.snapshot = original
+            controller.change(room_volume=50.)
+            self.assertEqual(self.read_event(reader)['snapshot']['room_volume'], 50.)
+
+    def test_a_subscribers_first_snapshot_includes_a_change_made_just_before(self):
+        connection, reader = raw_subscribe(self.path)
+        self.addCleanup(connection.close)
+        self.read_event(reader)
+        self.controller.state['room_volume'] = 12.   # acknowledged, callback not yet delivered
+        late, late_reader = raw_subscribe(self.path)
+        self.addCleanup(late.close)
+        self.assertEqual(self.read_event(late_reader)['snapshot']['room_volume'], 12.)
+
+    def test_listeners_run_only_on_the_feed_thread_and_may_refresh(self):
+        feed = self.service.feed
+        threads, outcome = set(), []
+        def listener(revision, snapshot):
+            threads.add(threading.current_thread().name)
+            outcome.append(feed.refresh())   # would deadlock if run inside a publish
+        feed.add_listener(listener)
+        subscribers = [raw_subscribe(self.path) for _ in range(3)]
+        for connection, _ in subscribers:
+            self.addCleanup(connection.close)
+        self.controller.state['room_volume'] = 7.   # visible only to a refreshing subscriber
+        late, late_reader = raw_subscribe(self.path)
+        self.addCleanup(late.close)
+        self.assertEqual(self.read_event(late_reader)['snapshot']['room_volume'], 7.)
+        self.controller.change(room_volume=8.)
+        self.assertTrue(wait_until(lambda: len(outcome) >= 2))
+        self.assertEqual(threads, {'room-feed'})
+
+    def test_a_first_snapshot_waits_out_a_long_lock_hold_and_reflects_the_acknowledged_command(self):
+        self.service.feed
+        held, release = threading.Event(), threading.Event()
+        def hold():
+            with self.controller.lock:
+                held.set()
+                release.wait(10)
+        threading.Thread(target=hold, daemon=True).start()
+        held.wait()
+        self.controller.state['room_volume'] = 21.   # acknowledged while the lock is held
+        connection, reader = raw_subscribe(self.path)
+        connection.settimeout(8)
+        self.addCleanup(connection.close)
+        threading.Timer(2.6, release.set).start()   # longer than the old 2 s cap
+        self.assertEqual(self.read_event(reader)['snapshot']['room_volume'], 21.)
+
+    def test_mpris_ignores_a_change_before_any_snapshot_exists(self):
+        mpris = object.__new__(session_service.Mpris)
+        mpris.connection = mock.Mock()
+        mpris.previous = {}
+        mpris.service = mock.Mock()
+        mpris.service.feed.latest.return_value = (0, None, None)
+        self.assertFalse(mpris.changed())
+        mpris.connection.emit_signal.assert_not_called()
+
+    def test_a_listener_refresh_does_not_block_the_feed_thread(self):
+        feed = self.service.feed
+        feed.add_listener(lambda *_: feed.refresh())
+        started = time.monotonic()
+        self.controller.change(room_volume=3.)
+        self.assertTrue(wait_until(lambda: feed.latest()[1]['room_volume'] == 3.))
+        self.assertLess(time.monotonic() - started, 1.)
+
+    def test_the_version_probe_is_cheap_under_a_held_lock_and_for_an_oversize_snapshot(self):
+        class Probed(FakeController):
+            dispatch = sessions.Controller.dispatch
+        controller = Probed()
+        controller.state['blob'] = 'x' * (session_client.MAX_MESSAGE + 10)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'runtime' / 'session.sock'
+            service, stop = server_for(path, controller)
+            self.addCleanup(stop)
+            with controller.lock:
+                held = threading.Event()
+                result = []
+                def probe():
+                    held.set()
+                    result.append(session_client._exchange(path, 'inspect', {'fields': []}, 1))
+                thread = threading.Thread(target=probe)
+                thread.start()
+                held.wait()
+                thread.join(2)   # the controller lock is this thread's: the probe must not need it
+                self.assertEqual(result, [{'version': sessions.PROTOCOL_VERSION}])
+            updates = []
+            subscription = session_client.subscribe(updates.append, path=path, fields=['room_volume'], backoff=(.02, .1))
+            self.addCleanup(subscription.close)
+            self.assertTrue(wait_until(lambda: updates and updates[0].connected, 4))
+
+    def test_the_probe_timeout_survives_a_slow_controller(self):
+        self.assertGreaterEqual(session_client.PROBE_TIMEOUT, 5)
+
+    def test_an_oversize_protocol_1_snapshot_is_reported_as_an_older_controller(self):
+        class Old(FakeController):
+            def dispatch(self, action, args):
+                return {'blob': 'x' * (session_client.MAX_MESSAGE + 10)}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'runtime' / 'session.sock'
+            service, stop = server_for(path, Old())
+            self.addCleanup(stop)
+            update = next(iter(session_client.Subscription(path=path)))
+            self.assertIn('older than this client', update.error)
+
+
 class Reconnect(unittest.TestCase):
     def test_the_client_reports_outages_once_and_resumes_after_a_restart_without_starting_anything(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -426,6 +614,29 @@ class FollowStatus(unittest.TestCase):
         subscription = mock.MagicMock()
         subscription.__iter__.return_value = iter([session_client.Update({}, 1, 's', True, None)])
         self.assertEqual(roomctl.follow_status(output, subscription), 0)
+
+    def test_status_follow_exits_when_its_reader_is_gone_even_without_a_status_change(self):
+        read, write = os.pipe()
+        output = os.fdopen(write, 'w')
+        self.addCleanup(lambda: output.closed or output.close())
+        released = threading.Event()
+        class Idle:
+            """A subscription that reports once, then idles until closed."""
+            def __iter__(self):
+                yield session_client.Update({}, 1, 's', True, None)
+                released.wait(10)
+            def close(self):
+                released.set()
+        finished = []
+        thread = threading.Thread(target=lambda: finished.append(roomctl.follow_status(output, Idle())), daemon=True)
+        thread.start()
+        self.assertEqual(os.read(read, 1000)[:1], b'{')
+        time.sleep(.1)
+        self.assertTrue(thread.is_alive())   # a live reader keeps it following
+        os.close(read)
+        thread.join(2)
+        self.assertEqual(finished, [0])
+        self.assertTrue(released.is_set())
 
     def test_follow_requires_status_and_status_never_starts_the_controller(self):
         with mock.patch.object(sys, 'argv', ['listening-roomctl', 'inspect', '--follow']), \
