@@ -437,30 +437,50 @@ def stress(env, args, step, cards, click, on_preview, to_rooms, loop_rooms, wait
 def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
     """Preview open/close with scene video must not accumulate Scenes, media, threads, fds or memory.
 
-    Bounds, measured after `--leak-cycles` (40) cycles against a baseline taken after 8 warm-up previews
-    (every loop room once, so poster textures and plugin loading are paid for), with no preview open:
-    live Scenes <= 2 (the room scene plus one preview page awaiting removal), live Gtk.MediaFiles <= 1
-    at the baseline and the end (both counted by GObject finalization, and by a
-    gc census of Python wrappers), threads <= baseline + 6, fds <= baseline + 12, RSS <= baseline + 64 MB.
-    Main leaks about 9 MB, 3 threads and 13 fds per preview, i.e. ~360 MB, ~120 threads, ~520 fds here."""
+    Criterion revision 2 (2026-11-21, coordinator design decision): scene media is bounded by loop files
+    instead of being torn down. A798dfd showed that every new GStreamer pipeline leaves a GL display and
+    a GL context thread behind (one `gldisplay-event` and one `gstglcontext` per pipeline, ~13 MB, 2 fds,
+    kept after 12 s idle), so the product keeps at most one Gtk.MediaFile per loop file for the life of
+    the process. Bounds now:
+      - warm baseline after previewing every scene-video loop at least once, with no preview open;
+      - live Gtk.MediaFiles <= distinct loop files shown, and never more than one per file (counted by
+        GObject finalization per file, checked at every sample);
+      - live Scenes <= 2 (the room scene plus one preview page awaiting removal);
+      - after `--leak-cycles` (40) more previews: threads <= warm + 6, fds <= warm + 12, RSS <= warm + 64 MB;
+      - pool bound: RSS(warm) - RSS(before any preview) <= POOL_BASE_MB + POOL_PER_LOOP_MB x loop files.
+        A live pipeline costs far more than the residue a torn-down one leaves (12.7 MB on a798dfd): on main,
+        where every previewed pipeline stays alive, RSS was 703 MB after 9 previews against 254 MB before any
+        preview (same launch path, cairo on Xvfb), i.e. ~50 MB per live pipeline including the first scene's
+        one-time GL, decoder and llvmpipe set-up. 64 MB per loop file allows ~1.3x that, plus 160 MB for the
+        one-time set-up: 672 MB for the 8 loop files shown here, 800 MB for 10.
+    Original criterion (revision 1, kept for the record; failed by a798dfd only on threads/fds/RSS): warm-up
+    of 8 previews, live Scenes <= 2, live Gtk.MediaFiles <= 1 at baseline and end, threads <= baseline + 6,
+    fds <= baseline + 12, RSS <= baseline + 64 MB. Main leaked ~9 MB, 3 threads and 13 fds per preview."""
     import gc
     import next_widgets
-    Gtk, GLib = env.Gtk, env.GLib
+    Gtk = env.Gtk
     pump = env.pump
     failures = [0]
+    POOL_BASE_MB, POOL_PER_LOOP_MB = 160, 64
 
     def check(name, ok, detail=''):
         failures[0] += 0 if ok else 1
         print(('PASS ' if ok else 'FAIL ') + name + ('' if ok else '  ' + str(detail)[:400]), flush=True)
 
     alive = {'scene': 0, 'media': 0}
+    per_file = {}       # loop path -> live MediaFiles for it
+    shown_files = set()
     handles = []
 
-    def track(kind, obj):
+    def track(kind, obj, path=None):
         alive[kind] += 1
+        if path is not None:
+            per_file[path] = per_file.get(path, 0) + 1
 
         def gone(*_):
             alive[kind] -= 1
+            if path is not None:
+                per_file[path] -= 1
         handles.append(obj.weak_ref(gone))   # called when the GObject is finalized, not when Python drops it
         return obj
 
@@ -471,10 +491,16 @@ def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
         track('scene', self)
     next_widgets.Scene.__init__ = counting_init
     new_media = Gtk.MediaFile.new_for_filename
-    Gtk.MediaFile.new_for_filename = staticmethod(lambda *a, **k: track('media', new_media(*a, **k)))
+
+    def counting_media(path, *a, **k):
+        shown_files.add(str(path))
+        return track('media', new_media(path, *a, **k), str(path))
+    Gtk.MediaFile.new_for_filename = staticmethod(counting_media)
 
     def status(key):
         return int(next(line.split()[1] for line in open('/proc/self/status') if line.startswith(key + ':')))
+
+    worst = {'per_file': 0, 'over_files': 0}
 
     def sample(label):
         for _ in range(3):
@@ -494,7 +520,10 @@ def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
                 continue
             names[name] = names.get(name, 0) + 1
         print('INFO lifetime %s thread names: %s' % (label, json.dumps(dict(sorted(names.items())))), flush=True)
-        point = {'scenes': alive['scene'], 'media': alive['media'], 'scene_wrappers': census['Scene'],
+        worst['per_file'] = max([worst['per_file']] + list(per_file.values()))
+        worst['over_files'] = max(worst['over_files'], alive['media'] - len(shown_files))
+        point = {'scenes': alive['scene'], 'media': alive['media'], 'loop_files_shown': len(shown_files),
+                 'max_media_per_file': max(per_file.values() or [0]), 'scene_wrappers': census['Scene'],
                  'media_wrappers': census['MediaFile'], 'threads': status('Threads'),
                  'fds': len(os.listdir('/proc/self/fd')), 'rss_mb': round(status('VmRSS') / 1024., 1)}
         print('INFO lifetime %s: %s' % (label, json.dumps(point)), flush=True)
@@ -511,18 +540,26 @@ def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
     to_rooms(window)
     pump(.5)
     rooms = loop_rooms(window)
+    loop_files = {next((p.get('url') for p in window.presets if p.get('id') == window.rooms.card_for[c].get('view_id')))
+                  for c in rooms}
     check('lifetime: rooms with scene loops to preview', len(rooms) >= 2, len(rooms))
+    cold = sample('before any preview')
     step('warm-up')
-    for child in rooms[:8]:
-        preview_cycle(child, .8)
     played = []
-    click(window, rooms[0])
-    pump(1.5)
-    widgets = window.rooms.preview_widgets
-    played.append(bool(widgets and widgets['scene'].playing_motion))
-    window.key_pressed(None, env.Gdk.KEY_Escape, 0, 0)
+    for child in rooms:                 # every scene-video loop at least once
+        click(window, child)
+        pump(1.2)
+        widgets = window.rooms.preview_widgets
+        played.append(bool(widgets and widgets['scene'].playing_motion))
+        window.key_pressed(None, env.Gdk.KEY_Escape, 0, 0)
+        pump(.35)
     pump(2.)
-    base = sample('baseline after %d warm-up previews' % (min(8, len(rooms)) + 1))
+    base = sample('warm baseline after previewing all %d loop rooms (%d loop files)' % (len(rooms), len(loop_files)))
+    cap = POOL_BASE_MB + POOL_PER_LOOP_MB * len(loop_files)
+    check('lifetime: every scene-video loop played in its preview during warm-up', all(played), played)
+    check('lifetime: pool memory is bounded across every loop (RSS warm - cold <= %d + %d x %d = %d MB)' % (
+          POOL_BASE_MB, POOL_PER_LOOP_MB, len(loop_files), cap), base['rss_mb'] - cold['rss_mb'] <= cap,
+          (cold['rss_mb'], base['rss_mb'], round(base['rss_mb'] - cold['rss_mb'], 1)))
     halfway = None
     for cycle in range(args.leak_cycles):
         step('leak cycle %d' % cycle)
@@ -533,30 +570,33 @@ def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
     pump(3.)
     end = sample('after %d cycles' % args.leak_cycles)
     pump(12.)
-    rested = sample('after %d cycles and 12 s idle' % args.leak_cycles)   # reported; lazy release vs a leak
+    sample('after %d cycles and 12 s idle' % args.leak_cycles)   # reported; tells lazy release from a leak
     click(window, rooms[1 % len(rooms)])
     pump(1.5)
     widgets = window.rooms.preview_widgets
-    played.append(bool(widgets and widgets['scene'].playing_motion))
+    after_played = bool(widgets and widgets['scene'].playing_motion)
     window.key_pressed(None, env.Gdk.KEY_Escape, 0, 0)
     pump(.5)
     per = lambda key: (end[key] - base[key]) / float(args.leak_cycles)
-    print('INFO lifetime growth per preview: %.2f MB RSS, %.2f threads, %.2f fds, %.2f Scenes, %.2f MediaFiles' % (
-        per('rss_mb'), per('threads'), per('fds'), per('scenes'), per('media')), flush=True)
-    check('lifetime: the scene loop really played in a preview before and after the cycles (not vacuous)',
-          all(played), played)
+    print('INFO lifetime growth per preview after warm-up: %.2f MB RSS, %.2f threads, %.2f fds, %.2f Scenes, '
+          '%.2f MediaFiles' % (per('rss_mb'), per('threads'), per('fds'), per('scenes'), per('media')), flush=True)
+    check('lifetime: the scene loop still plays in a preview after the cycles (not vacuous)', after_played)
+    check('lifetime: never more than one live Gtk.MediaFile per loop file (every sample)', worst['per_file'] <= 1,
+          (worst['per_file'], per_file))
+    check('lifetime: live Gtk.MediaFiles <= distinct loop files shown (every sample)', worst['over_files'] <= 0,
+          (end['media'], end['loop_files_shown']))
     check('lifetime: live Scene GObjects stay flat over %d previews (<= 2: the room scene and at most one '
-          'preview page awaiting removal)' % args.leak_cycles, end['scenes'] <= 2 and base['scenes'] <= 2, (base['scenes'], halfway and halfway['scenes'], end['scenes']))
-    check('lifetime: Scene wrappers stay flat (gc census <= 2)', end['scene_wrappers'] <= 2, (base['scene_wrappers'], end['scene_wrappers']))
-    check('lifetime: at most one live Gtk.MediaFile with no preview open (finalization count)',
-          end['media'] <= 1 and base['media'] <= 1, (base['media'], halfway and halfway['media'], end['media']))
-    check('lifetime: MediaFile wrappers stay flat (gc census <= 1)', end['media_wrappers'] <= 1,
-          (base['media_wrappers'], end['media_wrappers']))
-    check('lifetime: threads stay flat (<= baseline + 6)', end['threads'] <= base['threads'] + 6,
+          'preview page awaiting removal)' % args.leak_cycles, end['scenes'] <= 2 and base['scenes'] <= 2,
+          (base['scenes'], halfway and halfway['scenes'], end['scenes']))
+    check('lifetime: Scene wrappers stay flat (gc census <= 2)', end['scene_wrappers'] <= 2,
+          (base['scene_wrappers'], end['scene_wrappers']))
+    check('lifetime: MediaFile wrappers <= distinct loop files shown (gc census)',
+          end['media_wrappers'] <= end['loop_files_shown'], (end['media_wrappers'], end['loop_files_shown']))
+    check('lifetime: threads stay flat (<= warm baseline + 6)', end['threads'] <= base['threads'] + 6,
           (base['threads'], halfway and halfway['threads'], end['threads']))
-    check('lifetime: fds stay flat (<= baseline + 12)', end['fds'] <= base['fds'] + 12,
+    check('lifetime: fds stay flat (<= warm baseline + 12)', end['fds'] <= base['fds'] + 12,
           (base['fds'], halfway and halfway['fds'], end['fds']))
-    check('lifetime: RSS stays flat (<= baseline + 64 MB)', end['rss_mb'] <= base['rss_mb'] + 64,
+    check('lifetime: RSS stays flat (<= warm baseline + 64 MB)', end['rss_mb'] <= base['rss_mb'] + 64,
           (base['rss_mb'], halfway and halfway['rss_mb'], end['rss_mb']))
     print('CHECKS-DONE %d failed' % failures[0], flush=True)
 
