@@ -705,6 +705,8 @@ exec "$@"
 class DevLoopPriority(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        if not (ROOT / 'scripts' / 'listening-dev.sh').is_file():
+            raise unittest.SkipTest('the dev script is not part of this source tree (build sandbox)')
         cls.tmp = Path(tempfile.mkdtemp(prefix='o10h-dev-'))
         repo = cls.repo = cls.tmp / 'repo'
         (repo / 'scripts').mkdir(parents=True)
