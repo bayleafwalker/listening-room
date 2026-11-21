@@ -20,6 +20,8 @@ from next_actions import RoomActions, Ticket, when_finished
 from next_async import call_on_main, error_text, pool, run_async
 from next_widgets import FocalPicture, choose_renderer, show_texture, TimerPopover, accent_css, icon_button, install_css, label, name_it
 
+WINDOW_CONTROLS_ROOM = 120   # the title bar's minimise, maximise and close, which overlay the embedded mini layout
+
 MINI_CSS = '''
 .mini { background: #0e0f12; border-radius: 16px; }
 .mini .mini-scrim { background-image: linear-gradient(90deg, rgba(12,10,8,.94) 0%, rgba(12,10,8,.84) 55%, rgba(12,10,8,.6)),
@@ -73,8 +75,13 @@ class MiniPlayer(Gtk.Overlay):
         self.expand_button = icon_button('view-fullscreen-symbolic',
                                          'Open the full window' if not extras else 'Open the room window',
                                          host.expand, ['mini-glass', 'circular'])
-        self.expand_button.set_valign(Gtk.Align.START)
-        top.append(self.expand_button)
+        if closable:
+            self.expand_button.set_valign(Gtk.Align.START)
+            top.append(self.expand_button)
+        else:
+            # Inside the main window the title bar's own window controls sit over the top right corner of this
+            # page: the expand button goes in the bottom row, and the name leaves their corner free.
+            text.set_margin_end(WINDOW_CONTROLS_ROOM)
         if closable:
             controls = Gtk.WindowControls(side=Gtk.PackType.END, valign=Gtk.Align.START)
             if extras:
@@ -120,6 +127,9 @@ class MiniPlayer(Gtk.Overlay):
         self.timer_button.set_child(inner)
         name_it(self.timer_button, 'Timer')
         bottom.append(self.timer_button)
+        if not closable:
+            self.expand_button.set_valign(Gtk.Align.CENTER)
+            bottom.append(self.expand_button)
         column.append(bottom)
         self.pills = Gtk.Box(spacing=8, visible=False)
         for text, callback in (('Break 10 min', lambda: host.actions.timer('break')),

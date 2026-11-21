@@ -94,6 +94,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.browse_narrow = False     # Browse rooms was chosen in the narrow (mini) layout
         self.listen_first = False      # the active room began with Tune in, not with a room
         self.toast_margin = self.toast_key = self.pending_key = None
+        self.action_toasts = 0         # toasts with an action (Undo, Details) on screen or queued
         self.room_key = self.cards_key = self.sources_key = None
         self.volume_timer = self.idle_timer = None
         self.selected_room = self.surface = None
@@ -134,6 +135,15 @@ class NextWindow(Adw.ApplicationWindow):
         self.browse.add_titled_with_icon(self.build_listen(), 'listen', 'Listen', 'audio-headphones-symbolic')
         self.switcher = Adw.ViewSwitcher(stack=self.browse, policy=Adw.ViewSwitcherPolicy.WIDE)
         self.header.set_title_widget(self.switcher)
+        # Choosing an ambience is a destination: the header names it and Back leaves it (see sync_mode_header).
+        self.mode_back = icon_button('go-previous-symbolic', 'Back to Mix', lambda: self.listen.end_ambience(returned=True),
+                                     ['header-pill'])
+        self.mode_back.set_visible(False)
+        self.header.pack_start(self.mode_back)
+        self.mode_title = Gtk.Label(label='', ellipsize=3, max_width_chars=40)
+        self.mode_title.add_css_class('title')
+        self.mode_title.add_css_class('mix-room')
+        self.mode_title.update_property([Gtk.AccessibleProperty.LABEL], ['Choose ambience'])
         self.menu_popover = Gtk.Popover()
         self.menu_button = pop_button('open-menu-symbolic', 'Main menu', self.menu_popover)
         self.timer_popover = TimerPopover(self.choose_timer)
@@ -150,6 +160,9 @@ class NextWindow(Adw.ApplicationWindow):
         for widget in (self.menu_button, self.timer_button, self.output_button, self.timer_chip):
             self.header.pack_end(widget)
         self.toolbar.add_top_bar(self.header)
+        # Below MINI_WIDTH the Rooms | Listen switcher moves from the header (where it is cut off) to a bar at the bottom.
+        self.switcher_bar = Adw.ViewSwitcherBar(stack=self.browse)
+        self.toolbar.add_bottom_bar(self.switcher_bar)
         self.toolbar.add_top_bar(self.build_offline_banner())
         self.toolbar.add_top_bar(self.build_section_error())
         self.pages = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=250,
@@ -693,7 +706,7 @@ class NextWindow(Adw.ApplicationWindow):
         name_it(self.back, 'Back to Listen' if self.now_origin == 'listen' else 'Back to rooms')
         if name == 'now' and previous != 'now':
             GLib.idle_add(lambda: self.focus_play() and False)
-        self.switcher.set_visible(shown == 'browse')
+        self.sync_mode_header()
         (self.add_css_class if art else self.remove_css_class)('in-now')
         (self.add_css_class if mini else self.remove_css_class)('in-mini')
         for button in (self.timer_button, self.output_button, self.menu_button):
@@ -727,6 +740,28 @@ class NextWindow(Adw.ApplicationWindow):
         if self.listen_shown and not shown:
             self.listen.end_ambience()
         self.listen_shown = shown
+        self.sync_mode_header()
+
+    def set_mode_title(self, title):
+        """Listen's mode header: the words, or None when Listen is back to music."""
+        self.mode_title.set_label(title or '')
+        self.mode_title.update_property([Gtk.AccessibleProperty.LABEL], [title or 'Choose ambience'])
+        self.sync_mode_header()
+
+    def sync_mode_header(self):
+        """The header's own state while Browse shows. Choosing an ambience replaces the Rooms | Listen switcher
+        with a back arrow and "Choose ambience · room", so the way out is one obvious control. In the narrow
+        layout the switcher is a bar at the bottom instead of a header title that gets cut off."""
+        listen = getattr(self, 'listen', None)
+        browse = self.pages.get_visible_child_name() == 'browse'
+        showing = (listen is not None and listen.mode == 'ambience' and browse
+                   and self.browse.get_visible_child_name() == 'listen')
+        self.mode_back.set_visible(showing)
+        wanted = self.mode_title if showing else self.switcher
+        if self.header.get_title_widget() is not wanted:
+            self.header.set_title_widget(wanted)
+        self.switcher.set_visible(browse and not self.mini_layout and not showing)
+        self.switcher_bar.set_reveal(browse and self.mini_layout and not showing)
 
     def show_now(self):
         if not self.snapshot.get('active'):
@@ -925,7 +960,15 @@ class NextWindow(Adw.ApplicationWindow):
         if undo_label and undo:
             toast.set_button_label(undo_label)
             toast.connect('button-clicked', lambda *_: undo())
+            # A toast with an action keeps Now's controls (and so the toast's neighbours) from fading out under it.
+            self.action_toasts += 1
+            toast.connect('dismissed', lambda *_: self.action_toast_gone())
+            self.kick_idle()
         self.toasts.add_toast(toast)
+
+    def action_toast_gone(self):
+        self.action_toasts = max(0, self.action_toasts - 1)
+        self.kick_idle()
 
     def error_toast(self, error):
         """A failure in plain words, at once; the raw cause only behind Details."""
@@ -1101,7 +1144,7 @@ class NextWindow(Adw.ApplicationWindow):
         """No idle fade under reduced motion, when it is turned off, with Mix open, or while a banner shows."""
         settings = self.snapshot.get('settings') or {}
         return (self.system_animations and not settings.get('reduced_motion') and not settings.get('keep_controls')
-                and not self.sheet.get_open() and not self.banner.get_visible()
+                and not self.sheet.get_open() and not self.banner.get_visible() and not self.action_toasts
                 and not any(button.get_active() for button in (self.timer_button, self.output_button, self.menu_button)))
 
     def fade_out(self):
@@ -1182,7 +1225,9 @@ class NextWindow(Adw.ApplicationWindow):
         sheet = page == 'now' and self.sheet.get_open()
         listen_bar = (page == 'browse' and self.browse.get_visible_child_name() == 'listen'
                       and self.listen.bar.get_visible())
-        key = (page, sheet, listen_bar and self.listen.bar.get_height(), self.get_width(), self.get_height())
+        text = self.now_text.compute_bounds(self.toasts) if page == 'now' and self.now_text.get_visible() else (False, None)
+        text_top = round(text[1].get_y()) if text[0] else None
+        key = (page, sheet, listen_bar and self.listen.bar.get_height(), self.get_width(), self.get_height(), text_top)
         if key == self.toast_key:
             return
         self.toast_key = key
@@ -1190,7 +1235,10 @@ class NextWindow(Adw.ApplicationWindow):
             mix = self.mix.measure(Gtk.Orientation.VERTICAL, self.get_width())[1]
             margin = max(0, min(mix, self.get_height() - TOAST_ROOM)) + TOAST_GAP
         elif page == 'now':
+            # Above the room's name and now-playing lines (and so above the controls under them), never over them.
             margin = NOW_CONTROLS_CLEARANCE
+            if text_top is not None:
+                margin = max(margin, min(self.toasts.get_height() - text_top + TOAST_GAP, self.get_height() - TOAST_ROOM))
         elif page == 'mini':
             margin = MINI_CONTROLS_CLEARANCE
         elif listen_bar:

@@ -126,7 +126,7 @@ class RoomsPage:
         self.hero_kind = 'first-run'
         column.append(self.hero)
         column.append(self.build_filters())
-        self.cards = Gtk.FlowBox(min_children_per_line=2, max_children_per_line=4, column_spacing=16, row_spacing=16,
+        self.cards = Gtk.FlowBox(min_children_per_line=1, max_children_per_line=4, column_spacing=16, row_spacing=16,
                                  homogeneous=True, selection_mode=Gtk.SelectionMode.SINGLE, activate_on_single_click=False,
                                  valign=Gtk.Align.START)
         self.cards.add_css_class('rooms-grid')

@@ -75,6 +75,7 @@ class SourcesMixin:
         room = (self.snapshot.get('active') or {}).get('name')
         self.ambience_title.set_text('Choose an ambience' + (' for ' + room if room else ''))
         self.ambience_banner.set_visible(True)
+        self.window.set_mode_title('Choose ambience' + (' · ' + room if room else ''))
         self.set_page('index')
         self.reset_view()
         self.load_sounds()
@@ -93,6 +94,7 @@ class SourcesMixin:
         self.mode = 'music'
         self.scope_list, self.scope = SCOPES, 'all'
         self.ambience_banner.set_visible(False)
+        self.window.set_mode_title(None)
         self.reset_view()
         if returned:
             self.window.return_from_listen(self.mode_origin)
@@ -174,34 +176,47 @@ class SourcesMixin:
                 for login in twitch_channels.curated_channels(style):
                     if login.lower() not in excluded and not any(item['login'] == login for item in curated):
                         curated.append({'login': login, 'name': login, 'url': 'https://www.twitch.tv/' + login,
-                                        'live': None})
+                                        'live': None, 'style': style, 'curated': True})
         except (OSError, ValueError) as problem:
             return {'state': 'attention', 'message': 'The saved Twitch channels could not be read: ' + str(problem),
-                    'channels': []}
+                    'channels': [], 'pages': {}, 'yours': []}
         try:
             saved = twitch_credentials.load()
             connected = bool(saved.client_id and saved.access_token)
         except twitch_credentials.CredentialError as problem:
-            return {'state': 'attention', 'message': str(problem), 'channels': curated}
-        found, problem = {}, ''
+            return {'state': 'attention', 'message': str(problem), 'channels': curated, 'pages': {}, 'yours': curated}
+        pages, problem = {}, ''
+
+        def read_page(key, name, style, category=None, game_id=None):
+            nonlocal problem
+            try:
+                if category:
+                    result = twitch_channels.discover(style, curated=[], category=category, game_id=game_id)
+                else:
+                    result = twitch_channels.discover(style)
+            except (OSError, ValueError) as error:
+                problem = str(error) or 'Twitch could not be reached.'
+                return
+            if result.get('status') == 'unknown':
+                problem = result.get('message') or problem
+            live = [channel for channel in result.get('channels') or []
+                    if channel.get('live') and channel.get('login', '').lower() not in excluded]
+            pages[key] = {'name': name, 'style': style, 'category': category, 'channels': live,
+                          'cursor': result.get('cursor'), 'game_id': result.get('game_id') or game_id}
+
         if connected:
             for style in ('music', 'asmr'):
-                try:
-                    result = twitch_channels.discover(style)
-                except (OSError, ValueError) as error:
-                    problem = str(error) or 'Twitch could not be reached.'
-                    continue
-                if result.get('status') == 'unknown':
-                    problem = result.get('message') or problem
-                for channel in result.get('channels') or []:
-                    if channel.get('live') and channel.get('login', '').lower() not in excluded:
-                        found.setdefault(channel['login'], channel)
-        channels = list(found.values())
+                read_page(style, {'music': 'Music', 'asmr': 'ASMR'}[style], style)
+            for row in twitch_channels.saved_categories():
+                read_page('cat:' + row['id'], row['name'], 'music', row['name'], row['id'])
+        found = {channel['login']: channel for page in pages.values() for channel in page['channels']}
+        # Every category takes turns, so a short list (the shelf) shows each of them.
+        channels = channel_browse.interleave([page['channels'] for page in pages.values()])
         for item in curated:
             if item['login'] not in found:
                 channels.append(item)
         state = channel_browse.availability(connected, len(curated), problem)
-        return {'state': state, 'message': problem, 'channels': channels[:60]}
+        return {'state': state, 'message': problem, 'channels': channels, 'pages': pages, 'yours': curated}
 
     def twitch_read(self, found):
         self.twitch_loading = False
@@ -210,6 +225,7 @@ class SourcesMixin:
         self.twitch = {'state': found['state'], 'message': found.get('message') or '', 'at': time.monotonic()}
         self.channels = found.get('channels') or []
         self.channels_loaded = True
+        self.twitch_applied(found)
         self.refresh()
         return False
 
@@ -222,12 +238,6 @@ class SourcesMixin:
     def open_twitch_setup(self):
         """Preferences › Connections › Twitch."""
         self.window.open_preferences('twitch')
-
-    def channel_rows(self):
-        rows = [self.channel_entry(item) for item in self.channels]
-        if self.twitch['state'] in ('setup', 'attention'):
-            rows.append(self.twitch_setup_entry())
-        return rows
 
     def twitch_footnote(self):
         return channel_browse.footnote(self.twitch['state'], bool(self.channels))

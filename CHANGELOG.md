@@ -5,6 +5,31 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- Choosing an ambience now has its own header: the Rooms | Listen switcher gives way to a
+  back arrow ("Back to Mix") and "Choose ambience · room name" in the room's accent, until the
+  mode ends (Back, any navigation away, or choosing a sound).
+- Twitch Live channels can be filtered and paged. Chips for All, Music, ASMR, any category added
+  with "＋ Category" (searched on Twitch, saved in the Twitch preferences) and Your channels;
+  a sort menu (Most watched, Fewest watched, Your channels first); rows show the stream title,
+  category, viewers, language and the stream preview; "Show more" reads the next Twitch page.
+  The row menu adds "Add to your channels" and "Hide this channel". A signed-out status line says
+  that your channels still play.
+- Below 560 px the Rooms | Listen switcher is a bar at the bottom of the window.
+
+### Changed
+- Live channels no longer stop at 60 and no longer lose ASMR: each category keeps its own list
+  and cursor instead of being merged and cut. The Listen shelf shows the categories taking turns.
+- World radio search puts whole-word and tag matches ahead of matches inside longer words
+  ("rain" no longer lists "Ukrainian" first), then orders by clicks and votes.
+- Library rows say "Play" (on demand); "Tune in" stays for live radio and Twitch.
+- The mini layout's expand button moved to the bottom row inside the main window, clear of the
+  window controls. Now's toasts sit above the room name and now-playing line, and controls do
+  not fade while a toast with an action is showing.
+- Browse rooms and Listen fit a 360 px window: room cards go one per line, the station page is
+  built stacked, station cards are wider, the Listen scope chips scroll sideways instead of
+  ellipsizing, and Recently played lists each station once.
+
 ## [2.4.0] - 2026-11-21
 
 ### Added

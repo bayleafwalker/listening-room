@@ -126,6 +126,8 @@ class ServicesMixin:
         self.kind_group.set_visible(scope == 'library')
         self.speaker_box.set_visible(scope == 'speakers')
         self.memory_box.set_visible(scope == 'remembered')
+        if getattr(self, 'channel_box', None) is not None:
+            self.channel_box.set_visible(scope == 'channels')
 
     def scope_entered(self):
         """A scope became the one on screen: read what it shows (reads only)."""
