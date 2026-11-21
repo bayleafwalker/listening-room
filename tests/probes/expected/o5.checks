@@ -1,3 +1,5 @@
+# R-src1 (acceptance author, WP4): S5m and nine S13 PARITY checks read source text. They still print as SUPERSEDED
+# [ORIGINAL] lines with their result; S5m-R1 and S17 (with S17s-S17v) drive the same guarantees. The orphan check stays.
 S1 --ui=classic exits with status 2 and a message, and opens nothing
 S1 --ui classic exits with status 2 and a message, and opens nothing
 S1 --desk --ui=classic exits with status 2 and a message, and opens nothing
@@ -53,7 +55,6 @@ S5i Leave room sends leave and the session ends
 S5j Expand starts listening-room (no autoplay args) and closes the popover
 S5k Esc closes the popover
 S5l losing focus closes the popover
-S5m listening-roomctl popover runs next_mini.run_popover
 S5n opening the popover over a playing room changes nothing
 S6a mini slider, roomctl and MPRIS agree on 37
 S6b Waybar scroll `volume +5` gives 42 everywhere
@@ -197,15 +198,6 @@ S11d the mini player has no video and no spinner, only still art
 S11e the popover has no video and no spinner
 S11f the narrow mini layout shows no moving picture or spinning spinner either
 S12 mini player, popover, narrow layout, Ctrl+M and a recorded last room send no start command
-PARITY Music Assistant: the window can load players, browse or search, play on a speaker and transfer a queue
-PARITY ListenBrainz and local history: Remember playing, Show remembered, history and recommendations are reachable
-PARITY Twitch: Review my follows (explicit import for review) is reachable
-PARITY AudioMuse: a station can be made from an AudioMuse mix (generation kind audiomuse)
-PARITY Station range (stay_close, in the runbook list "energy, familiarity, speech and range") is settable
-PARITY Jellyfin library browses albums, playlists, recently added albums and tracks (runbook); next_listen browses ['albums', 'playlists', 'recent', 'tracks']
-PARITY Track details / Play next are reachable: Listen can produce an Audio (track) row from the real Jellyfin browse
-PARITY Connections copy only promises what the window can do (no dead promises)
-PARITY the capability chips "Plays on speakers" and "History" correspond to a GUI route
 PARITY nothing in online_services was orphaned by the removal (every function the classic window called still has a caller)
 S14a the menu offers the plan's entries
 S14b Other players… opens a dialog and sends no start command
@@ -240,3 +232,8 @@ S17o nothing was read from Twitch before the button was pressed
 S17p pressing Review reads the follows once and adds none to a pool
 S17q the follows appear as two tick rows
 S17r adding the ticked follow puts only that channel in the pool
+S5m-R1 `listening-roomctl popover` opens the popover through next_mini.run_popover, returns its status and sends no command
+S17s the Recommendations button reads ListenBrainz recommendations once and lists them
+S17t a Tracks row makes an AudioMuse station: one station.save stores a station with generation kind audiomuse and nothing starts
+S17u choosing Range: Explore in Station detail stores stay_close Explore on that station and starts nothing
+S17v the Connections pages promise only what the window delivered (chips and notes each map to a passing driven check)

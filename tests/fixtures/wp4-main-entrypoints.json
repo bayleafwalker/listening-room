@@ -1,0 +1,136 @@
+{
+ "_classic_probe_bins": [
+  "/nix/store/6fsfwac3rlb870xwwihbp8j3xfsi2h26-chromaprint-1.6.1/bin",
+  "/nix/store/9pbf5z2wgy4bwqgx93f6mc4qqgw42l6h-feishin-1.17.0/bin",
+  "/nix/store/dlksx1080qkdaxwg2k6bzdva8gk7vn8v-xdg-utils-1.2.1/bin",
+  "/nix/store/g02x8w554zwgflvm6fdnafqzzkrhh3rp-ffmpeg-9.0.2-bin/bin",
+  "/nix/store/jrbrr93d8zj7np9ss67p1kh9yjf3ppbc-libnotify-0.8.9/bin",
+  "/nix/store/jwpshic3rpaav3g37wvrkfm1p1cl32zw-pulseaudio-17.0/bin",
+  "/nix/store/krqlblr7mr3nplz27wmndaim30v6jlm9-hyprland-0.57.2/bin",
+  "/nix/store/l09x7v86p8693b9cbik9zdpbmw8xl187-wireplumber-0.5.19/bin",
+  "/nix/store/nmjc8s8dbis76frhqh3q7j4sl0m9xyaw-yt-dlp-2026.10.26/bin",
+  "/nix/store/vvmz3r2bjhdk8h8wpsvm04sjnhmgj3qb-flatpak-1.18.4/bin",
+  "/nix/store/ww0a6i47hj0gw2ax0bkf4n8n1si036qa-mpv-with-scripts-0.42.0/bin",
+  "/nix/store/ykjhm328wpq5iivbl6yz2npsrr58jckc-rofi-2.1.0/bin",
+  "/nix/store/ym74pz54wwbw4247giavbkfz85p987zw-playerctl-2.4.1/bin",
+  "/nix/store/z4qwjp0jpbw315pd7cb7kgc18i94zxs7-python3-3.14.10-env/bin",
+  "/nix/store/zggzlya34znb4dmz2hg9lwyb41fqrwdj-systemd-262/bin"
+ ],
+ "listening-hub": {
+  "argv": [
+   "$out/share/listening-hub/listening_hub.py",
+   "--wp4-env-dump-invalid"
+  ],
+  "env": {
+   "GDK_PIXBUF_MODULE_FILE": "/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache",
+   "GIO_EXTRA_MODULES": "/nix/store/v1jy8ggciqlyv5j297jhr9ybsv5fj5k9-dconf-51.0-lib/lib/gio/modules",
+   "GI_TYPELIB_PATH": "/nix/store/rj0sh9bqfc62j2jvh6zahd0a9rpnwgw9-glib-2.90.0/lib/girepository-1.0:/nix/store/f17821na9r8k6wi9hzjlzzjbzqq7s66h-gobject-introspection-wrapped-1.86.0/lib/girepository-1.0:/nix/store/bgrrk1crwbmc7phgzkipmrzc9x257i88-gdk-pixbuf-2.44.8/lib/girepository-1.0:/nix/store/dhagc9qa1h9yr6v370z0ypvz0qsqk23b-graphene-1.10.8/lib/girepository-1.0:/nix/store/l4cxxsx2zpmwm275wck1pmcl4g98dsy2-harfbuzz-14.5.1/lib/girepository-1.0:/nix/store/qz6h0r7f1jwa8dv10jz6n7wjwk9s4v9k-pango-1.58.2/lib/girepository-1.0:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/lib/girepository-1.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/lib/girepository-1.0:/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/girepository-1.0:/nix/store/2lm82b2dsna4vjfvg5vg1hfx4fiy69x9-gobject-introspection-1.86.0/lib/girepository-1.0:/nix/store/ij6n2q31ljiasp4p6jvf1xb33iql2qyw-libadwaita-1.10.0/lib/girepository-1.0:/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/girepository-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/girepository-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/girepository-1.0",
+   "GST_PLUGIN_SYSTEM_PATH_1_0": "/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/gstreamer-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/gstreamer-1.0:/nix/store/hml6pncqhrrkba777kbji154ndkv2z8j-gst-plugins-good-1.28.8/lib/gstreamer-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/gstreamer-1.0:/nix/store/qhz4ngi2cnmnfrr2x8fykkl7q3absw28-gst-libav-1.28.8/lib/gstreamer-1.0",
+   "LC_CTYPE": "C.UTF-8",
+   "LISTENING_EMBED_MODEL": "$out/share/listening-hub/models/msd-musicnn.onnx",
+   "LISTENING_HUB_ASSETS": "$out/share/listening-hub/assets",
+   "LISTENING_HUB_CATALOG": "$out/share/listening-hub/catalogue.json",
+   "LISTENING_VOICE_MODEL": "$out/share/listening-hub/models/voice-instrumental.onnx",
+   "PATH": "$out/bin:/nix/store/ww0a6i47hj0gw2ax0bkf4n8n1si036qa-mpv-with-scripts-0.42.0/bin:/nix/store/ym74pz54wwbw4247giavbkfz85p987zw-playerctl-2.4.1/bin:/nix/store/jwpshic3rpaav3g37wvrkfm1p1cl32zw-pulseaudio-17.0/bin:/nix/store/ykjhm328wpq5iivbl6yz2npsrr58jckc-rofi-2.1.0/bin:/nix/store/jrbrr93d8zj7np9ss67p1kh9yjf3ppbc-libnotify-0.8.9/bin:/nix/store/dlksx1080qkdaxwg2k6bzdva8gk7vn8v-xdg-utils-1.2.1/bin:/nix/store/zggzlya34znb4dmz2hg9lwyb41fqrwdj-systemd-262/bin:/nix/store/vvmz3r2bjhdk8h8wpsvm04sjnhmgj3qb-flatpak-1.18.4/bin:/nix/store/9pbf5z2wgy4bwqgx93f6mc4qqgw42l6h-feishin-1.17.0/bin:/nix/store/l09x7v86p8693b9cbik9zdpbmw8xl187-wireplumber-0.5.19/bin:/nix/store/krqlblr7mr3nplz27wmndaim30v6jlm9-hyprland-0.57.2/bin:/nix/store/nmjc8s8dbis76frhqh3q7j4sl0m9xyaw-yt-dlp-2026.10.26/bin:/nix/store/g02x8w554zwgflvm6fdnafqzzkrhh3rp-ffmpeg-9.0.2-bin/bin:/nix/store/6fsfwac3rlb870xwwihbp8j3xfsi2h26-chromaprint-1.6.1/bin:/wp4-base",
+   "PYTHONNOUSERSITE": "true",
+   "XDG_DATA_DIRS": "$out/share:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/share/gsettings-schemas/gsettings-desktop-schemas-51.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/share/gsettings-schemas/gtk4-4.24.0:/usr/local/share/:/usr/share/"
+  },
+  "executable": "/nix/store/z4qwjp0jpbw315pd7cb7kgc18i94zxs7-python3-3.14.10-env/bin/python3",
+  "kind": "python"
+ },
+ "listening-hub-jellyfin": {
+  "commands": [
+   "makeCWrapper '$out/bin/.listening-hub-jellyfin-wrapped' \\\n    --inherit-argv0 \\\n    --prefix 'GIO_EXTRA_MODULES' ':' '/nix/store/v1jy8ggciqlyv5j297jhr9ybsv5fj5k9-dconf-51.0-lib/lib/gio/modules' \\\n    --prefix 'GIO_EXTRA_MODULES' ':' '/nix/store/v1jy8ggciqlyv5j297jhr9ybsv5fj5k9-dconf-51.0-lib/lib/gio/modules' \\\n    --set 'GDK_PIXBUF_MODULE_FILE' '/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache' \\\n    --set-default 'XDG_DATA_DIRS' '/usr/local/share/:/usr/share/' \\\n    --prefix 'XDG_DATA_DIRS' ':' '/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/share/gsettings-schemas/gsettings-desktop-schemas-51.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/share/gsettings-schemas/gtk4-4.24.0' \\\n    --prefix 'XDG_DATA_DIRS' ':' '$out/share' \\\n    --prefix 'GST_PLUGIN_SYSTEM_PATH_1_0' ':' '/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/gstreamer-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/gstreamer-1.0:/nix/store/hml6pncqhrrkba777kbji154ndkv2z8j-gst-plugins-good-1.28.8/lib/gstreamer-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/gstreamer-1.0:/nix/store/qhz4ngi2cnmnfrr2x8fykkl7q3absw28-gst-libav-1.28.8/lib/gstreamer-1.0' \\\n    --prefix 'GI_TYPELIB_PATH' ':' '/nix/store/rj0sh9bqfc62j2jvh6zahd0a9rpnwgw9-glib-2.90.0/lib/girepository-1.0:/nix/store/f17821na9r8k6wi9hzjlzzjbzqq7s66h-gobject-introspection-wrapped-1.86.0/lib/girepository-1.0:/nix/store/bgrrk1crwbmc7phgzkipmrzc9x257i88-gdk-pixbuf-2.44.8/lib/girepository-1.0:/nix/store/dhagc9qa1h9yr6v370z0ypvz0qsqk23b-graphene-1.10.8/lib/girepository-1.0:/nix/store/l4cxxsx2zpmwm275wck1pmcl4g98dsy2-harfbuzz-14.5.1/lib/girepository-1.0:/nix/store/qz6h0r7f1jwa8dv10jz6n7wjwk9s4v9k-pango-1.58.2/lib/girepository-1.0:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/lib/girepository-1.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/lib/girepository-1.0:/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/girepository-1.0:/nix/store/2lm82b2dsna4vjfvg5vg1hfx4fiy69x9-gobject-introspection-1.86.0/lib/girepository-1.0:/nix/store/ij6n2q31ljiasp4p6jvf1xb33iql2qyw-libadwaita-1.10.0/lib/girepository-1.0:/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/girepository-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/girepository-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/girepository-1.0'",
+   "makeCWrapper '/nix/store/9pbf5z2wgy4bwqgx93f6mc4qqgw42l6h-feishin-1.17.0/bin/feishin' \\\n    --set 'SERVER_TYPE' 'jellyfin' \\\n    --unset 'SERVER_LOCK'"
+  ],
+  "kind": "wrapper-text"
+ },
+ "listening-room": {
+  "argv": [
+   "$out/share/listening-hub/listening_room.py",
+   "--wp4-env-dump-invalid"
+  ],
+  "env": {
+   "GDK_PIXBUF_MODULE_FILE": "/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache",
+   "GIO_EXTRA_MODULES": "/nix/store/v1jy8ggciqlyv5j297jhr9ybsv5fj5k9-dconf-51.0-lib/lib/gio/modules",
+   "GI_TYPELIB_PATH": "/nix/store/rj0sh9bqfc62j2jvh6zahd0a9rpnwgw9-glib-2.90.0/lib/girepository-1.0:/nix/store/f17821na9r8k6wi9hzjlzzjbzqq7s66h-gobject-introspection-wrapped-1.86.0/lib/girepository-1.0:/nix/store/bgrrk1crwbmc7phgzkipmrzc9x257i88-gdk-pixbuf-2.44.8/lib/girepository-1.0:/nix/store/dhagc9qa1h9yr6v370z0ypvz0qsqk23b-graphene-1.10.8/lib/girepository-1.0:/nix/store/l4cxxsx2zpmwm275wck1pmcl4g98dsy2-harfbuzz-14.5.1/lib/girepository-1.0:/nix/store/qz6h0r7f1jwa8dv10jz6n7wjwk9s4v9k-pango-1.58.2/lib/girepository-1.0:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/lib/girepository-1.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/lib/girepository-1.0:/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/girepository-1.0:/nix/store/2lm82b2dsna4vjfvg5vg1hfx4fiy69x9-gobject-introspection-1.86.0/lib/girepository-1.0:/nix/store/ij6n2q31ljiasp4p6jvf1xb33iql2qyw-libadwaita-1.10.0/lib/girepository-1.0:/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/girepository-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/girepository-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/girepository-1.0",
+   "GST_PLUGIN_SYSTEM_PATH_1_0": "/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/gstreamer-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/gstreamer-1.0:/nix/store/hml6pncqhrrkba777kbji154ndkv2z8j-gst-plugins-good-1.28.8/lib/gstreamer-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/gstreamer-1.0:/nix/store/qhz4ngi2cnmnfrr2x8fykkl7q3absw28-gst-libav-1.28.8/lib/gstreamer-1.0",
+   "LC_CTYPE": "C.UTF-8",
+   "LISTENING_EMBED_MODEL": "$out/share/listening-hub/models/msd-musicnn.onnx",
+   "LISTENING_HUB_ASSETS": "$out/share/listening-hub/assets",
+   "LISTENING_HUB_CATALOG": "$out/share/listening-hub/catalogue.json",
+   "LISTENING_VOICE_MODEL": "$out/share/listening-hub/models/voice-instrumental.onnx",
+   "PATH": "$out/bin:/nix/store/ww0a6i47hj0gw2ax0bkf4n8n1si036qa-mpv-with-scripts-0.42.0/bin:/nix/store/ym74pz54wwbw4247giavbkfz85p987zw-playerctl-2.4.1/bin:/nix/store/jwpshic3rpaav3g37wvrkfm1p1cl32zw-pulseaudio-17.0/bin:/nix/store/ykjhm328wpq5iivbl6yz2npsrr58jckc-rofi-2.1.0/bin:/nix/store/jrbrr93d8zj7np9ss67p1kh9yjf3ppbc-libnotify-0.8.9/bin:/nix/store/dlksx1080qkdaxwg2k6bzdva8gk7vn8v-xdg-utils-1.2.1/bin:/nix/store/zggzlya34znb4dmz2hg9lwyb41fqrwdj-systemd-262/bin:/nix/store/vvmz3r2bjhdk8h8wpsvm04sjnhmgj3qb-flatpak-1.18.4/bin:/nix/store/9pbf5z2wgy4bwqgx93f6mc4qqgw42l6h-feishin-1.17.0/bin:/nix/store/l09x7v86p8693b9cbik9zdpbmw8xl187-wireplumber-0.5.19/bin:/nix/store/krqlblr7mr3nplz27wmndaim30v6jlm9-hyprland-0.57.2/bin:/nix/store/nmjc8s8dbis76frhqh3q7j4sl0m9xyaw-yt-dlp-2026.10.26/bin:/nix/store/g02x8w554zwgflvm6fdnafqzzkrhh3rp-ffmpeg-9.0.2-bin/bin:/nix/store/6fsfwac3rlb870xwwihbp8j3xfsi2h26-chromaprint-1.6.1/bin:/wp4-base",
+   "PYTHONNOUSERSITE": "true",
+   "XDG_DATA_DIRS": "$out/share:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/share/gsettings-schemas/gsettings-desktop-schemas-51.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/share/gsettings-schemas/gtk4-4.24.0:/usr/local/share/:/usr/share/"
+  },
+  "executable": "/nix/store/z4qwjp0jpbw315pd7cb7kgc18i94zxs7-python3-3.14.10-env/bin/python3",
+  "kind": "python"
+ },
+ "listening-roomctl": {
+  "argv": [
+   "$out/share/listening-hub/roomctl.py",
+   "--wp4-env-dump-invalid"
+  ],
+  "env": {
+   "GDK_PIXBUF_MODULE_FILE": "/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache",
+   "GIO_EXTRA_MODULES": "/nix/store/v1jy8ggciqlyv5j297jhr9ybsv5fj5k9-dconf-51.0-lib/lib/gio/modules",
+   "GI_TYPELIB_PATH": "/nix/store/rj0sh9bqfc62j2jvh6zahd0a9rpnwgw9-glib-2.90.0/lib/girepository-1.0:/nix/store/f17821na9r8k6wi9hzjlzzjbzqq7s66h-gobject-introspection-wrapped-1.86.0/lib/girepository-1.0:/nix/store/bgrrk1crwbmc7phgzkipmrzc9x257i88-gdk-pixbuf-2.44.8/lib/girepository-1.0:/nix/store/dhagc9qa1h9yr6v370z0ypvz0qsqk23b-graphene-1.10.8/lib/girepository-1.0:/nix/store/l4cxxsx2zpmwm275wck1pmcl4g98dsy2-harfbuzz-14.5.1/lib/girepository-1.0:/nix/store/qz6h0r7f1jwa8dv10jz6n7wjwk9s4v9k-pango-1.58.2/lib/girepository-1.0:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/lib/girepository-1.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/lib/girepository-1.0:/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/girepository-1.0:/nix/store/2lm82b2dsna4vjfvg5vg1hfx4fiy69x9-gobject-introspection-1.86.0/lib/girepository-1.0:/nix/store/ij6n2q31ljiasp4p6jvf1xb33iql2qyw-libadwaita-1.10.0/lib/girepository-1.0:/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/girepository-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/girepository-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/girepository-1.0",
+   "GST_PLUGIN_SYSTEM_PATH_1_0": "/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/gstreamer-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/gstreamer-1.0:/nix/store/hml6pncqhrrkba777kbji154ndkv2z8j-gst-plugins-good-1.28.8/lib/gstreamer-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/gstreamer-1.0:/nix/store/qhz4ngi2cnmnfrr2x8fykkl7q3absw28-gst-libav-1.28.8/lib/gstreamer-1.0",
+   "LC_CTYPE": "C.UTF-8",
+   "LISTENING_EMBED_MODEL": "$out/share/listening-hub/models/msd-musicnn.onnx",
+   "LISTENING_HUB_ASSETS": "$out/share/listening-hub/assets",
+   "LISTENING_HUB_CATALOG": "$out/share/listening-hub/catalogue.json",
+   "LISTENING_VOICE_MODEL": "$out/share/listening-hub/models/voice-instrumental.onnx",
+   "PATH": "$out/bin:/nix/store/ww0a6i47hj0gw2ax0bkf4n8n1si036qa-mpv-with-scripts-0.42.0/bin:/nix/store/ym74pz54wwbw4247giavbkfz85p987zw-playerctl-2.4.1/bin:/nix/store/jwpshic3rpaav3g37wvrkfm1p1cl32zw-pulseaudio-17.0/bin:/nix/store/ykjhm328wpq5iivbl6yz2npsrr58jckc-rofi-2.1.0/bin:/nix/store/jrbrr93d8zj7np9ss67p1kh9yjf3ppbc-libnotify-0.8.9/bin:/nix/store/dlksx1080qkdaxwg2k6bzdva8gk7vn8v-xdg-utils-1.2.1/bin:/nix/store/zggzlya34znb4dmz2hg9lwyb41fqrwdj-systemd-262/bin:/nix/store/vvmz3r2bjhdk8h8wpsvm04sjnhmgj3qb-flatpak-1.18.4/bin:/nix/store/9pbf5z2wgy4bwqgx93f6mc4qqgw42l6h-feishin-1.17.0/bin:/nix/store/l09x7v86p8693b9cbik9zdpbmw8xl187-wireplumber-0.5.19/bin:/nix/store/krqlblr7mr3nplz27wmndaim30v6jlm9-hyprland-0.57.2/bin:/nix/store/nmjc8s8dbis76frhqh3q7j4sl0m9xyaw-yt-dlp-2026.10.26/bin:/nix/store/g02x8w554zwgflvm6fdnafqzzkrhh3rp-ffmpeg-9.0.2-bin/bin:/nix/store/6fsfwac3rlb870xwwihbp8j3xfsi2h26-chromaprint-1.6.1/bin:/wp4-base",
+   "PYTHONNOUSERSITE": "true",
+   "XDG_DATA_DIRS": "$out/share:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/share/gsettings-schemas/gsettings-desktop-schemas-51.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/share/gsettings-schemas/gtk4-4.24.0:/usr/local/share/:/usr/share/"
+  },
+  "executable": "/nix/store/z4qwjp0jpbw315pd7cb7kgc18i94zxs7-python3-3.14.10-env/bin/python3",
+  "kind": "python"
+ },
+ "listening-session": {
+  "argv": [
+   "$out/share/listening-hub/session_service.py",
+   "--wp4-env-dump-invalid"
+  ],
+  "env": {
+   "GDK_PIXBUF_MODULE_FILE": "/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache",
+   "GIO_EXTRA_MODULES": "/nix/store/v1jy8ggciqlyv5j297jhr9ybsv5fj5k9-dconf-51.0-lib/lib/gio/modules",
+   "GI_TYPELIB_PATH": "/nix/store/rj0sh9bqfc62j2jvh6zahd0a9rpnwgw9-glib-2.90.0/lib/girepository-1.0:/nix/store/f17821na9r8k6wi9hzjlzzjbzqq7s66h-gobject-introspection-wrapped-1.86.0/lib/girepository-1.0:/nix/store/bgrrk1crwbmc7phgzkipmrzc9x257i88-gdk-pixbuf-2.44.8/lib/girepository-1.0:/nix/store/dhagc9qa1h9yr6v370z0ypvz0qsqk23b-graphene-1.10.8/lib/girepository-1.0:/nix/store/l4cxxsx2zpmwm275wck1pmcl4g98dsy2-harfbuzz-14.5.1/lib/girepository-1.0:/nix/store/qz6h0r7f1jwa8dv10jz6n7wjwk9s4v9k-pango-1.58.2/lib/girepository-1.0:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/lib/girepository-1.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/lib/girepository-1.0:/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/girepository-1.0:/nix/store/2lm82b2dsna4vjfvg5vg1hfx4fiy69x9-gobject-introspection-1.86.0/lib/girepository-1.0:/nix/store/ij6n2q31ljiasp4p6jvf1xb33iql2qyw-libadwaita-1.10.0/lib/girepository-1.0:/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/girepository-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/girepository-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/girepository-1.0",
+   "GST_PLUGIN_SYSTEM_PATH_1_0": "/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/gstreamer-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/gstreamer-1.0:/nix/store/hml6pncqhrrkba777kbji154ndkv2z8j-gst-plugins-good-1.28.8/lib/gstreamer-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/gstreamer-1.0:/nix/store/qhz4ngi2cnmnfrr2x8fykkl7q3absw28-gst-libav-1.28.8/lib/gstreamer-1.0",
+   "LC_CTYPE": "C.UTF-8",
+   "LISTENING_EMBED_MODEL": "$out/share/listening-hub/models/msd-musicnn.onnx",
+   "LISTENING_HUB_ASSETS": "$out/share/listening-hub/assets",
+   "LISTENING_HUB_CATALOG": "$out/share/listening-hub/catalogue.json",
+   "LISTENING_VOICE_MODEL": "$out/share/listening-hub/models/voice-instrumental.onnx",
+   "PATH": "$out/bin:/nix/store/ww0a6i47hj0gw2ax0bkf4n8n1si036qa-mpv-with-scripts-0.42.0/bin:/nix/store/ym74pz54wwbw4247giavbkfz85p987zw-playerctl-2.4.1/bin:/nix/store/jwpshic3rpaav3g37wvrkfm1p1cl32zw-pulseaudio-17.0/bin:/nix/store/ykjhm328wpq5iivbl6yz2npsrr58jckc-rofi-2.1.0/bin:/nix/store/jrbrr93d8zj7np9ss67p1kh9yjf3ppbc-libnotify-0.8.9/bin:/nix/store/dlksx1080qkdaxwg2k6bzdva8gk7vn8v-xdg-utils-1.2.1/bin:/nix/store/zggzlya34znb4dmz2hg9lwyb41fqrwdj-systemd-262/bin:/nix/store/vvmz3r2bjhdk8h8wpsvm04sjnhmgj3qb-flatpak-1.18.4/bin:/nix/store/9pbf5z2wgy4bwqgx93f6mc4qqgw42l6h-feishin-1.17.0/bin:/nix/store/l09x7v86p8693b9cbik9zdpbmw8xl187-wireplumber-0.5.19/bin:/nix/store/krqlblr7mr3nplz27wmndaim30v6jlm9-hyprland-0.57.2/bin:/nix/store/nmjc8s8dbis76frhqh3q7j4sl0m9xyaw-yt-dlp-2026.10.26/bin:/nix/store/g02x8w554zwgflvm6fdnafqzzkrhh3rp-ffmpeg-9.0.2-bin/bin:/nix/store/6fsfwac3rlb870xwwihbp8j3xfsi2h26-chromaprint-1.6.1/bin:/wp4-base",
+   "PYTHONNOUSERSITE": "true",
+   "XDG_DATA_DIRS": "$out/share:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/share/gsettings-schemas/gsettings-desktop-schemas-51.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/share/gsettings-schemas/gtk4-4.24.0:/usr/local/share/:/usr/share/"
+  },
+  "executable": "/nix/store/z4qwjp0jpbw315pd7cb7kgc18i94zxs7-python3-3.14.10-env/bin/python3",
+  "kind": "python"
+ },
+ "listening-session-client": {
+  "argv": [
+   "$out/share/listening-hub/session_client.py",
+   "--wp4-env-dump-invalid"
+  ],
+  "env": {
+   "GDK_PIXBUF_MODULE_FILE": "/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache",
+   "GIO_EXTRA_MODULES": "/nix/store/v1jy8ggciqlyv5j297jhr9ybsv5fj5k9-dconf-51.0-lib/lib/gio/modules",
+   "GI_TYPELIB_PATH": "/nix/store/rj0sh9bqfc62j2jvh6zahd0a9rpnwgw9-glib-2.90.0/lib/girepository-1.0:/nix/store/f17821na9r8k6wi9hzjlzzjbzqq7s66h-gobject-introspection-wrapped-1.86.0/lib/girepository-1.0:/nix/store/bgrrk1crwbmc7phgzkipmrzc9x257i88-gdk-pixbuf-2.44.8/lib/girepository-1.0:/nix/store/dhagc9qa1h9yr6v370z0ypvz0qsqk23b-graphene-1.10.8/lib/girepository-1.0:/nix/store/l4cxxsx2zpmwm275wck1pmcl4g98dsy2-harfbuzz-14.5.1/lib/girepository-1.0:/nix/store/qz6h0r7f1jwa8dv10jz6n7wjwk9s4v9k-pango-1.58.2/lib/girepository-1.0:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/lib/girepository-1.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/lib/girepository-1.0:/nix/store/hbr878lpbvawd9f1gy5jbz6la1rnlhr1-librsvg-2.63.0/lib/girepository-1.0:/nix/store/2lm82b2dsna4vjfvg5vg1hfx4fiy69x9-gobject-introspection-1.86.0/lib/girepository-1.0:/nix/store/ij6n2q31ljiasp4p6jvf1xb33iql2qyw-libadwaita-1.10.0/lib/girepository-1.0:/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/girepository-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/girepository-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/girepository-1.0",
+   "GST_PLUGIN_SYSTEM_PATH_1_0": "/nix/store/c0p36bscf8c22s8g122kkhdffn6z6ryf-gstreamer-1.28.8/lib/gstreamer-1.0:/nix/store/08a9clp2nbr02icjj50v81d7f5v5aam3-gst-plugins-base-1.28.8/lib/gstreamer-1.0:/nix/store/hml6pncqhrrkba777kbji154ndkv2z8j-gst-plugins-good-1.28.8/lib/gstreamer-1.0:/nix/store/g7b4y9398szaq41llpyz0yq4vr4j881h-gst-plugins-bad-1.28.8/lib/gstreamer-1.0:/nix/store/qhz4ngi2cnmnfrr2x8fykkl7q3absw28-gst-libav-1.28.8/lib/gstreamer-1.0",
+   "LC_CTYPE": "C.UTF-8",
+   "LISTENING_EMBED_MODEL": "$out/share/listening-hub/models/msd-musicnn.onnx",
+   "LISTENING_HUB_ASSETS": "$out/share/listening-hub/assets",
+   "LISTENING_HUB_CATALOG": "$out/share/listening-hub/catalogue.json",
+   "LISTENING_VOICE_MODEL": "$out/share/listening-hub/models/voice-instrumental.onnx",
+   "PATH": "$out/bin:/nix/store/ww0a6i47hj0gw2ax0bkf4n8n1si036qa-mpv-with-scripts-0.42.0/bin:/nix/store/ym74pz54wwbw4247giavbkfz85p987zw-playerctl-2.4.1/bin:/nix/store/jwpshic3rpaav3g37wvrkfm1p1cl32zw-pulseaudio-17.0/bin:/nix/store/ykjhm328wpq5iivbl6yz2npsrr58jckc-rofi-2.1.0/bin:/nix/store/jrbrr93d8zj7np9ss67p1kh9yjf3ppbc-libnotify-0.8.9/bin:/nix/store/dlksx1080qkdaxwg2k6bzdva8gk7vn8v-xdg-utils-1.2.1/bin:/nix/store/zggzlya34znb4dmz2hg9lwyb41fqrwdj-systemd-262/bin:/nix/store/vvmz3r2bjhdk8h8wpsvm04sjnhmgj3qb-flatpak-1.18.4/bin:/nix/store/9pbf5z2wgy4bwqgx93f6mc4qqgw42l6h-feishin-1.17.0/bin:/nix/store/l09x7v86p8693b9cbik9zdpbmw8xl187-wireplumber-0.5.19/bin:/nix/store/krqlblr7mr3nplz27wmndaim30v6jlm9-hyprland-0.57.2/bin:/nix/store/nmjc8s8dbis76frhqh3q7j4sl0m9xyaw-yt-dlp-2026.10.26/bin:/nix/store/g02x8w554zwgflvm6fdnafqzzkrhh3rp-ffmpeg-9.0.2-bin/bin:/nix/store/6fsfwac3rlb870xwwihbp8j3xfsi2h26-chromaprint-1.6.1/bin:/wp4-base",
+   "PYTHONNOUSERSITE": "true",
+   "XDG_DATA_DIRS": "$out/share:/nix/store/k93nhk2b8g7ivwm66zma4d86fafabg3f-gsettings-desktop-schemas-51.0/share/gsettings-schemas/gsettings-desktop-schemas-51.0:/nix/store/6pjjrqlhqii4j4cpnz67zpgf74dkd1jn-gtk4-4.24.0/share/gsettings-schemas/gtk4-4.24.0:/usr/local/share/:/usr/share/"
+  },
+  "executable": "/nix/store/z4qwjp0jpbw315pd7cb7kgc18i94zxs7-python3-3.14.10-env/bin/python3",
+  "kind": "python"
+ }
+}

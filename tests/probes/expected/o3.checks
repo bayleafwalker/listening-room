@@ -1,7 +1,7 @@
-# KNOWN FAILURE (WP4): the "integration: the hub test list registers the O2 and O3 suites" check greps nix/package.nix
-# for two suite file names. package.nix no longer lists suites (tests/run_suites.py discovers them), so the text is gone
-# although both suites still run. The acceptance author must replace it with a behaviour check, for example that
-# `python3 tests/run_suites.py --list` contains both names. Until then it stays a visible known failure.
+# R-src1 (acceptance author, WP4): the two "integration:" checks read source text (next_window.py, nix/package.nix). They
+# still print as SUPERSEDED [ORIGINAL] lines with their result; integration-R1a/R1b drive one room change into both pages,
+# integration-R2 runs the O2 and O3 suites through tests/run_suites.py, and tests/probes/wp4-oracles.py suites traces
+# that the checkPhase and the dev loop run them. This replaces the known failure the WP4 implementer recorded.
 1a Listen is the page shown after Ctrl+2
 1b typing without focus lands in the search entry
 1c a pasted public URL shows up as a link result
@@ -193,5 +193,6 @@ A typing with a room playing sends nothing (not even a volume write)
 1-launch ://www.twitch.tv/lofigirl: sheet shown, no start/change command, nothing playing
 4aa the Instrumental only hint counts ALL 130 reviewed recordings (metadata.list is paged at 100)
 F evidence-o3 holds at least ten screenshots
-integration: render() calls both rooms and listen updates
-!integration: the hub test list registers the O2 and O3 suites
+integration-R1a a room change reaches Listen: the now-playing bar names each room as it is entered
+integration-R1b a room change reaches Rooms: the Playing tag follows the entered room
+integration-R2 the shared suite runner lists the O2 and O3 suites by default and they pass when run through it

@@ -380,12 +380,21 @@ class TuningValidation(unittest.TestCase):
         self.expect_failure('kind', 'midnight-library', change, 'flame')
 
     def test_lick_is_gone(self):
+        # R-src1 (acceptance author, WP4): the source-text half moved to test_lick_is_gone_from_the_source_text (skipped,
+        # ORIGINAL) and EngineReads.test_the_engine_reads_no_lick_parameter; the shipped data and the loader stay here.
         for path in (SOURCE / 'scene_tuning').glob('*.json'):
             self.assertNotIn('"lick"', path.read_text(), path.name)
-        for path in SOURCE.glob('*.py'):
-            self.assertNotIn("'lick'", path.read_text(), path.name)
         self.expect_failure('lick', 'midnight-library', lambda d: self.fire(d).update(lick=.9), 'fire', 'lick')
 
+    @unittest.skip('ORIGINAL, superseded by EngineReads.test_the_engine_reads_no_lick_parameter (R-src1, acceptance author, WP4): '
+                   "a text search for 'lick' in every module, which comments or unrelated names could satisfy or break")
+    def test_lick_is_gone_from_the_source_text(self):
+        for path in SOURCE.glob('*.py'):
+            self.assertNotIn("'lick'", path.read_text(), path.name)
+
+    @unittest.skip('ORIGINAL, superseded by EngineReads.test_every_tuning_key_is_read_by_the_engine_at_run_time (R-src1, acceptance '
+                   'author, WP4): it passed when the quoted key appeared anywhere in motion_engine.py, so a key the effect never reads '
+                   "(the electrical and water 'color' keys) still passed")
     def test_every_tuning_key_is_read_by_the_engine(self):
         engine = (SOURCE / 'motion_engine.py').read_text()
         for path in sorted((SOURCE / 'scene_tuning').glob('*.json')):
@@ -406,6 +415,111 @@ class TuningValidation(unittest.TestCase):
             self.skipTest('baseline revision not available')
         tree, result = self.mutate('oldtypo', 'midnight-library', lambda d: self.fire(d).update(reech=.3), source=old)
         self.assertEqual(result.returncode, 0, 'baseline unexpectedly rejects typos: ' + result.stderr[-300:])
+
+
+class EngineReads(unittest.TestCase):
+    """R-src1 (acceptance author, WP4): which tuning keys the engine actually reads while it renders each room.
+
+    The engine copies each effect with dict(); a recording dict in its place sees every key it looks up while preparing the
+    scene and rendering frames across the loop. Replaces the source-text searches of motion_engine.py.
+    """
+    # Shipped keys that the engine never reads for their own effect: the electrical and water branches finish before the
+    # shared colour step. Recorded at main 25cda4a as a finding, held exactly so a new dead key or a fix both show up.
+    KNOWN_UNREAD = {('after-hours', 2, 'water', 'color')} | {
+        (room, index, 'electrical', 'color') for room, indices in (('after-hours', (5, 6, 7, 8, 9)), ('atomic-lounge', (0, 1, 2, 3, 4, 5)),
+                                                                   ('midnight-library', (5, 6)), ('velvet-circuit', (0, 1, 2)))
+        for index in indices}
+
+    @classmethod
+    def render(cls, scene):
+        import motion_engine
+        records = []
+
+        class Recording(dict):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.read = set()
+                records.append(self)
+
+            def __getitem__(self, key):
+                self.read.add(key)
+                return super().__getitem__(key)
+
+            def get(self, key, *default):
+                self.read.add(key)
+                return super().get(key, *default)
+
+            def __contains__(self, key):
+                self.read.add(key)
+                return super().__contains__(key)
+
+            def setdefault(self, key, *default):
+                self.read.add(key)
+                return super().setdefault(key, *default)
+
+            def pop(self, key, *default):
+                self.read.add(key)
+                return super().pop(key, *default)
+
+            def _everything(self):
+                self.read |= set(super().keys())
+
+            def keys(self):
+                self._everything()
+                return super().keys()
+
+            def items(self):
+                self._everything()
+                return super().items()
+
+            def values(self):
+                self._everything()
+                return super().values()
+
+            def __iter__(self):
+                self._everything()
+                return super().__iter__()
+        motion_engine.dict = Recording
+        try:
+            with Image.open(SOURCE / 'artwork' / scene['plate']) as plate:
+                prepared = motion_engine.prepare_scene(plate, scene)
+            for frame in (0, 97, 240, 401):
+                motion_engine.room_frame(prepared, frame, 480)
+        finally:
+            del motion_engine.dict
+        effects = [r for r in records if 'kind' in r]
+        assert [e['kind'] for e in effects] == [e['kind'] for e in scene['effects']], 'every effect is copied once, in order'
+        return effects
+
+    @classmethod
+    def setUpClass(cls):
+        if np is None:
+            raise unittest.SkipTest('needs Pillow and numpy')
+        cls.unread, cls.read_anywhere, cls.keys = set(), set(), set()
+        for path in sorted((SOURCE / 'scene_tuning').glob('*.json')):
+            data = json.loads(path.read_text())
+            effects = cls.render(SCENES['room-' + path.stem])
+            for index, (effect, seen) in enumerate(zip(data.get('effects', []), effects)):
+                cls.keys |= set(effect)
+                cls.read_anywhere |= seen.read
+                cls.unread |= {(path.stem, index, effect['kind'], key) for key in set(effect) - seen.read}
+
+    def test_every_tuning_key_is_read_by_the_engine_at_run_time(self):
+        # The original guarantee at its original strength: no shipped key is one the engine never looks up.
+        self.assertEqual(sorted(self.keys - self.read_anywhere), [])
+
+    def test_unread_keys_on_their_own_effect_are_exactly_the_known_ones(self):
+        self.assertEqual(sorted(self.unread - self.KNOWN_UNREAD), [], 'shipped keys the engine never reads for their effect')
+        self.assertEqual(sorted(self.KNOWN_UNREAD - self.unread), [], 'a known unread key is now read or gone: shrink KNOWN_UNREAD')
+
+    def test_the_engine_reads_no_lick_parameter(self):
+        scene = json.loads(json.dumps(SCENES['room-midnight-library']))
+        fire = [e for e in scene['effects'] if e['kind'] == 'fire'][0]
+        fire['lick'] = .9
+        effects = self.render(scene)
+        fired = [e for e in effects if e['kind'] == 'fire'][0]
+        self.assertIn('reach', fired.read)          # control: the recording does see the fire's real parameters
+        self.assertNotIn('lick', fired.read)
 
 
 if __name__ == '__main__':

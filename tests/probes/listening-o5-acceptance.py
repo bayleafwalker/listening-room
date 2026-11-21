@@ -475,7 +475,16 @@ def s5_popover():
     if not host5.closed:
         host5.window.close()
     pump(.4)
-    check('S5m listening-roomctl popover runs next_mini.run_popover', 'run_popover' in Path(roomctl.__file__).read_text())
+    # ORIGINAL oracle, kept visible but no longer counted (revision R-src1, acceptance author, WP4): it passed on the
+    # word "run_popover" anywhere in roomctl.py. Superseded by S5m-R1, which runs the verb.
+    print('SUPERSEDED [ORIGINAL, superseded by S5m-R1] %s S5m listening-roomctl popover runs next_mini.run_popover: source text, not behaviour'
+          % ('PASS' if 'run_popover' in Path(roomctl.__file__).read_text() else 'FAIL'), flush=True)
+    popovers, sent = [], len(COMMANDS)
+    with patch.object(next_mini, 'run_popover', side_effect=lambda argv, *a, **k: popovers.append(list(argv)) or 0), \
+            patch.object(sys, 'argv', ['listening-roomctl', 'popover']):
+        status = roomctl.main()
+    check('S5m-R1 `listening-roomctl popover` opens the popover through next_mini.run_popover, returns its status and sends no command',
+          len(popovers) == 1 and status == 0 and len(COMMANDS) == sent, repr((popovers, status, COMMANDS[sent:])))
     # enter then verify the popover while playing issues no start on open
     enter_room('night-drive')
     mark, calls = len(COMMANDS), len(backend.calls)
@@ -852,6 +861,10 @@ def s12_no_autoplay():
 
 
 # ====================================================================== S13 parity oracles (criterion 13)
+# ORIGINAL (revision R-src1, acceptance author, WP4): the S13 PARITY checks read source text, so code placement
+# alone satisfied or broke them. They still run and print as SUPERSEDED lines with their result but are no longer
+# counted; S17 (R3) and its R-src1 additions S17s-S17v drive the same guarantees in the running window. The orphan
+# check below stays counted: dead code has no behaviour to observe, so source analysis is its only faithful form.
 GUI_MODULES = sorted(p for p in SOURCE.glob('next_*.py'))
 GUI_SOURCE = {p.name: p.read_text() for p in GUI_MODULES}
 
@@ -860,28 +873,34 @@ def gui_has(pattern, exclude=()):
     return [n for n, t in GUI_SOURCE.items() if n not in exclude and re.search(pattern, t)]
 
 
+def original(by, name, ok, detail=''):
+    """A superseded source-text oracle: printed with its result, never counted (revision R-src1, acceptance author, WP4)."""
+    print('SUPERSEDED [ORIGINAL, superseded by %s] %s %s: source text, not behaviour%s'
+          % (by, 'PASS' if ok else 'FAIL', name, (' (' + detail + ')') if detail and not ok else ''), flush=True)
+
+
 def s13_parity():
     # Music Assistant (modern-radio contract: library/player routes, selected remote player; runbook: browse, players, play, radio mode, transfer)
     found = gui_has(r'browse_music_assistant|ma_players|ma_play|ma_transfer|["\']transfer["\']')
-    check('PARITY Music Assistant: the window can load players, browse or search, play on a speaker and transfer a queue', bool(found), repr(found))
+    original('S17e-S17h', 'PARITY Music Assistant: the window can load players, browse or search, play on a speaker and transfer a queue', bool(found), repr(found))
     # ListenBrainz and local history
     found = gui_has(r'listenbrainz_history|listenbrainz_recommendations|\bbookmark\b|\bremembered\b|discovery_links')
-    check('PARITY ListenBrainz and local history: Remember playing, Show remembered, history and recommendations are reachable', bool(found), repr(found))
+    original('S17i-S17k, S17s', 'PARITY ListenBrainz and local history: Remember playing, Show remembered, history and recommendations are reachable', bool(found), repr(found))
     # Twitch follows review
     found = gui_has(r'import_following')
-    check('PARITY Twitch: Review my follows (explicit import for review) is reachable', bool(found), repr(found))
+    original('S17n-S17r', 'PARITY Twitch: Review my follows (explicit import for review) is reachable', bool(found), repr(found))
     # AudioMuse generation
     found = gui_has(r'audiomuse', exclude=('next_prefs.py',))
-    check('PARITY AudioMuse: a station can be made from an AudioMuse mix (generation kind audiomuse)', bool(found), repr(found))
+    original('S17t', 'PARITY AudioMuse: a station can be made from an AudioMuse mix (generation kind audiomuse)', bool(found), repr(found))
     # Range preference
     found = gui_has(r'stay_close')
-    check('PARITY Station range (stay_close, in the runbook list "energy, familiarity, speech and range") is settable', bool(found), repr(found))
+    original('S17m, S17u', 'PARITY Station range (stay_close, in the runbook list "energy, familiarity, speech and range") is settable', bool(found), repr(found))
     # Jellyfin library kinds: albums, playlists, recent, tracks
     kinds = set(re.findall(r"browse_jellyfin\([^)]*kind=['\"](\w+)['\"]", GUI_SOURCE['next_listen.py']))
-    check('PARITY Jellyfin library browses albums, playlists, recently added albums and tracks (runbook); next_listen browses %r' % sorted(kinds),
+    original('S17a', 'PARITY Jellyfin library browses albums, playlists, recently added albums and tracks (runbook); next_listen browses %r' % sorted(kinds),
           {'albums', 'playlists', 'recent', 'tracks'} <= kinds or {'playlists', 'tracks'} <= kinds, repr(kinds))
     # Track details and Play next are reachable only from an Audio row, which a library that lists albums never yields
-    check('PARITY Track details / Play next are reachable: Listen can produce an Audio (track) row from the real Jellyfin browse',
+    original('S17b-S17d', 'PARITY Track details / Play next are reachable: Listen can produce an Audio (track) row from the real Jellyfin browse',
           'tracks' in kinds or bool(gui_has(r'parent_id')), 'browse kinds=%r; no parent_id (album children) use in next_*: %r' % (sorted(kinds), gui_has(r'parent_id')))
     # UI copy must not promise what the window cannot do
     notes = GUI_SOURCE['next_prefs.py']
@@ -892,9 +911,9 @@ def s13_parity():
                  'Read your listening history and recommendations on request': 'listenbrainz_history',
                  'adds discovery from the channels you follow': 'import_following'}
     broken = [p for p in promises if not gui_has(gui_paths[p], exclude=('next_prefs.py',))]
-    check('PARITY Connections copy only promises what the window can do (no dead promises)', not broken, repr(broken))
+    original('S17v', 'PARITY Connections copy only promises what the window can do (no dead promises)', not broken, repr(broken))
     chips = re.findall(r"'(Plays on speakers|History)'", notes)
-    check('PARITY the capability chips "Plays on speakers" and "History" correspond to a GUI route', not chips or bool(gui_has(r'ma_play|listenbrainz_history')), repr(chips))
+    original('S17v', 'PARITY the capability chips "Plays on speakers" and "History" correspond to a GUI route', not chips or bool(gui_has(r'ma_play|listenbrainz_history')), repr(chips))
     # Orphaned controller/service code after the removal: functions with no caller outside online_services and tests
     import ast
     online = (SOURCE / 'online_services.py').read_text()
@@ -960,7 +979,12 @@ def s17_parity_paths():
     import online_services as online
     import twitch_channels
     cfg = {name: {'endpoint': 'http://fixture.invalid', 'username': 'me', 'user_id': 'uid', 'token_file': ''} for name in online.SERVICES}
-    requested, played, moved, marks, history_calls = [], [], [], [], []
+    requested, played, moved, marks, history_calls, rec_calls = [], [], [], [], [], []
+    driven = {}   # R-src1: which promised capabilities the window really delivered, for S17v
+
+    def record(key, name, ok, detail=''):
+        driven[key] = bool(ok)
+        check(name, ok, detail)
     jf = lambda kind, **kw: dict({'provider': 'jellyfin', 'id': kind + '-1', 'type': kind, 'artist': 'Band', 'uri': 'jellyfin://x/' + kind}, **kw)
     album, playlist = jf('album', type='MusicAlbum', name='Album Alpha'), jf('playlist', type='Playlist', name='Playlist Beta')
     track = jf('track', type='Audio', name='Track Gamma')
@@ -979,7 +1003,8 @@ def s17_parity_paths():
          patch.object(online, 'ma_transfer', side_effect=lambda a, b: moved.append((a, b))), \
          patch.object(online, 'remembered', return_value=[{'title': 'Zeta', 'artist': 'Band'}]), \
          patch.object(online, 'bookmark', side_effect=lambda snapshot, note='': marks.append(note) or {}), \
-         patch.object(online, 'listenbrainz_history', side_effect=lambda: history_calls.append(1) or [{'track_metadata': {'artist_name': 'Eta', 'track_name': 'Theta'}}]):
+         patch.object(online, 'listenbrainz_history', side_effect=lambda: history_calls.append(1) or [{'track_metadata': {'artist_name': 'Eta', 'track_name': 'Theta'}}]), \
+         patch.object(online, 'listenbrainz_recommendations', side_effect=lambda *a, **k: rec_calls.append(1) or [{'url': 'https://musicbrainz.org/recording/00000000-0000-0000-0000-000000000000'}]):
         leave_all()
         window = launch(1200, 800)
         window.show_listen()
@@ -999,7 +1024,8 @@ def s17_parity_paths():
         audio = next((w for w in walk(page.index_body) if isinstance(w, Gtk.Label) and w.get_text() == 'Track Gamma'), None)
         menu = [t for t, _ in page.kind_entries()[0]['menu']]
         check('S17b the Tracks list offers Track details… and the AudioMuse station entry on a real Audio row', audio is not None and 'Track details…' in menu, repr(menu))
-        dict(page.kind_entries()[0]['menu'])['Track details…']()
+        menu = dict(page.kind_entries()[0]['menu'])   # the Tracks row's entries, kept for S17t
+        menu['Track details…']()
         pump(1.2)
         check('S17c Track details… opens the dialog from that row and starts nothing', any(isinstance(w, Adw.Dialog) and w.get_mapped() for w in walk(window))
               and not mutating(mark), repr(mutating(mark)))
@@ -1015,7 +1041,7 @@ def s17_parity_paths():
         # Speakers
         page.more_scopes.set_active(0)
         pump(1.4)
-        check('S17e Speakers lists the players and Music Assistant music, and browsing sends nothing',
+        record('ma_browse', 'S17e Speakers lists the players and Music Assistant music, and browsing sends nothing',
               'Kitchen' in body() and 'Lounge' in body() and 'Evening Epsilon' in body() and not mutating(mark) and not backend.calls[calls:], repr(body()[:200]))
         play = button_with_text(page.index_body, 'Play on Kitchen')
         check('S17f a "Play on Kitchen" button is on screen', play is not None, repr(texts(page.index_body)))
@@ -1023,7 +1049,7 @@ def s17_parity_paths():
             click(play)
             settle(1.0)
             sent = [c for c in COMMANDS[mark:] if c[0] == 'online']
-            check('S17g clicking it sends one online command naming the chosen speaker and the uri', len(sent) == 1 and sent[0][1]['item'].get('player_id') == 'k'
+            record('ma_play', 'S17g clicking it sends one online command naming the chosen speaker and the uri', len(sent) == 1 and sent[0][1]['item'].get('player_id') == 'k'
                   and sent[0][1]['item'].get('uri') == 'library://playlist/1', repr(sent))
         use = button_with_text(page.index_body, 'Use')
         if use is not None:
@@ -1039,12 +1065,30 @@ def s17_parity_paths():
         check('S17i Remembered shows local bookmarks and has read nothing from ListenBrainz', 'Band — Zeta' in body() and not history_calls, repr((body()[:160], history_calls)))
         click(button_with_text(page.memory_box, 'ListenBrainz history'))
         pump(1.2)
-        check('S17j the History button reads ListenBrainz once and shows it', history_calls == [1] and 'Eta — Theta' in body(), repr((history_calls, body()[:160])))
+        record('lb_history', 'S17j the History button reads ListenBrainz once and shows it', history_calls == [1] and 'Eta — Theta' in body(), repr((history_calls, body()[:160])))
+        # S17s (R-src1, supersedes the recommendations half of S13 "PARITY ListenBrainz"): Recommendations is a real route
+        recommend = button_with_text(page.memory_box, 'Recommendations')
+        if recommend is not None:
+            click(recommend)
+            pump(1.2)
+        record('lb_recs', 'S17s the Recommendations button reads ListenBrainz recommendations once and lists them',
+               recommend is not None and rec_calls == [1] and 'Recommended recording' in body(), repr((rec_calls, body()[:160])))
         page.memory_note.set_text('a note')
         click(button_with_text(page.memory_box, 'Remember playing'))
         pump(1.2)
         check('S17k Remember playing stores the note locally', marks == ['a note'], repr(marks))
         check('S17l none of this started playback', not [c for c in mutating(mark) if c[0] not in ('online',)], repr(mutating(mark)))
+        # S17t (R-src1, supersedes S13 "PARITY AudioMuse"): the Audio row's AudioMuse entry, taken from the Tracks list
+        # above, really stores an AudioMuse station (run after S17l so its station.save does not count against it)
+        make, mark2 = menu.get('Make an AudioMuse station'), len(COMMANDS)
+        before = {s.get('id') for s in controller.stations()}
+        if make is not None:
+            make()
+            settle(1.0)
+        saved = [s for s in controller.stations() if s.get('id') not in before]
+        record('audiomuse', 'S17t a Tracks row makes an AudioMuse station: one station.save stores a station with generation kind audiomuse and nothing starts',
+               make is not None and [c[0] for c in mutating(mark2)] == ['station.save'] and len(saved) == 1
+               and (saved[0].get('generation') or {}).get('kind') == 'audiomuse', repr((sorted(menu), mutating(mark2), saved)))
         page.scopes.set_active(0)
         pump(.4)
         # station detail: Range and Rename as widgets
@@ -1057,6 +1101,16 @@ def s17_parity_paths():
             pump(.9)
             check('S17m Station detail shows a Range choice and a Rename button', any('Range' in t for t in texts(page.station_main)) and button_with_text(page.station_main, 'Rename') is not None,
                   repr(texts(page.station_main)[:20]))
+            # S17u (R-src1, supersedes S13 "PARITY Station range"): the Range control sets stay_close on the stored station
+            ranges = [w for w in named(page.station_main, 'Range') if hasattr(w, 'set_active')]
+            target, mark3 = stations[0].get('id'), len(COMMANDS)
+            if ranges:
+                ranges[0].set_active(2)   # Any, Stay close, Explore
+                settle(1.0)
+            stored = next((s for s in controller.stations() if s.get('id') == target), {})
+            check('S17u choosing Range: Explore in Station detail stores stay_close Explore on that station and starts nothing',
+                  len(ranges) == 1 and (stored.get('preferences') or {}).get('stay_close') == 'Explore'
+                  and not [c for c in mutating(mark3) if not c[0].startswith('station.')], repr((len(ranges), stored.get('preferences'), mutating(mark3))))
         else:
             note('S17m no station could be created in the harness; Range and Rename not driven')
         window.close()
@@ -1066,6 +1120,7 @@ def s17_parity_paths():
         window.open_preferences()
         pump(.9)
         dialog = window.preferences
+        seen = list(texts(dialog))   # the Connections overview with its capability chips
         dialog.open_connection('twitch')
         pump(.9)
         review = one(dialog, 'Review my Twitch follows')
@@ -1080,7 +1135,7 @@ def s17_parity_paths():
             if review is not None:
                 click(review)
             pump(1.5)
-            check('S17p pressing Review reads the follows once and adds none to a pool', reads == ['me'] and twitch_channels.curated_channels('music') == before, repr((reads, before)))
+            record('twitch_follows', 'S17p pressing Review reads the follows once and adds none to a pool', reads == ['me'] and twitch_channels.curated_channels('music') == before, repr((reads, before)))
             ticks = [w for w in walk(dialog) if isinstance(w, Gtk.CheckButton) and shown(w)]
             check('S17q the follows appear as two tick rows', len(ticks) == 2, repr(len(ticks)))
             if len(ticks) == 2:
@@ -1091,6 +1146,23 @@ def s17_parity_paths():
                     pump(.9)
                 check('S17r adding the ticked follow puts only that channel in the pool', twitch_channels.curated_channels('music')[-1:] == ['beta']
                       and 'alpha' not in twitch_channels.curated_channels('music')[len(before):], repr(twitch_channels.curated_channels('music')))
+        # S17v (R-src1, supersedes S13 "no dead promises" and "capability chips"): every capability the Connections pages
+        # promise on screen was delivered by the window above. Promise wording -> the driven check that proves it.
+        seen += texts(dialog)
+        for service in ('music_assistant', 'listenbrainz', 'audiomuse'):
+            if hasattr(dialog, 'pop_subpage'):
+                dialog.pop_subpage()
+                pump(.4)
+            dialog.open_connection(service)
+            pump(.8)
+            seen += texts(dialog)
+        promises = {'Plays on speakers': 'ma_play', 'play on a speaker': 'ma_play', 'Browse its library': 'ma_browse',
+                    'History': 'lb_history', 'listening history': 'lb_history', 'recommendations': 'lb_recs',
+                    'channels you follow': 'twitch_follows', 'Station mixes': 'audiomuse', 'from a library track': 'audiomuse'}
+        shown_promises = sorted(p for p in promises if any(p.lower() in s.lower() for s in seen))
+        dead = [p for p in shown_promises if not driven.get(promises[p])]
+        check('S17v the Connections pages promise only what the window delivered (chips and notes each map to a passing driven check)',
+              shown_promises and not dead, repr((shown_promises, dead, driven)))
         window.close()
         pump(.3)
     leave_all()
