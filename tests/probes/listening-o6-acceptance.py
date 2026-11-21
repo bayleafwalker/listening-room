@@ -68,10 +68,12 @@ if 'broken' in query:
 if 'slow' in query:
     for _ in range(300):
         time.sleep(.02)
+live = 'live stream' in query   # added by revision 6d-R1 (O10-YOUTUBE): live results keep Tune in
 for index in range(3):
     identity = hashlib.md5((query + str(index)).encode()).hexdigest()[:11]
     print(json.dumps({'id': identity, 'title': '%%s result %%d' %% (query, index), 'channel': 'Fixture Channel',
-                      'duration': 185 + index, 'live_status': 'not_live'}), flush=True)
+                      'duration': None if live else 185 + index, 'live_status': 'is_live' if live else 'not_live'}),
+          flush=True)
 ''' % sys.executable)
 (BIN / 'yt-dlp').chmod((BIN / 'yt-dlp').stat().st_mode | stat.S_IXUSR)
 os.environ['FAKE_YT_LOG'] = str(YT_LOG)
@@ -1141,6 +1143,36 @@ def s5_twitch():
 
 
 # =======================================================================================================
+def result_rows(page):
+    """YouTube result rows as (title, row): the Listen rows whose detail ends in "YouTube" (revision 6d-R1)."""
+    found = []
+    for w in walk(page.index_body):
+        if isinstance(w, Gtk.Box) and w.has_css_class('listen-row') and w.get_mapped():
+            words = label_texts(w)
+            if any(t.endswith('YouTube') for t in words):
+                title = next((x.get_text() for x in walk(w) if isinstance(x, Gtk.Label) and x.has_css_class('row-name')), '')
+                found.append((title, w))
+    return found
+
+
+def primary_button(row):
+    """The row's primary action: its first text button outside the menu, not the Watch icon (revision 6d-R1)."""
+    for w in walk(row):
+        if isinstance(w, Gtk.Button) and w.get_mapped() and w.get_label():
+            parent, in_menu = w.get_parent(), False
+            while parent is not None and parent is not row:
+                in_menu = in_menu or isinstance(parent, Gtk.MenuButton)
+                parent = parent.get_parent()
+            if not in_menu and w.get_label() not in ('Watch', 'Watch with sound'):
+                return w
+    return None
+
+
+def row_primary(row):
+    button = primary_button(row)
+    return button_text(button) if button is not None else None
+
+
 def alive(pid):
     try:
         os.kill(pid, 0)
@@ -1171,9 +1203,21 @@ def s6_youtube():
     check('6c a query cannot inject a command or an option', not Path('/tmp/o6-injection').exists())
     type_query(page, 'rain', wait=1.8)
     texts = label_texts(page.index_body)
-    check('6d results show title, channel and duration, with Tune in',
+    # ORIGINAL oracle, kept verbatim with its result (revision 6d-R1 below). O10-YOUTUBE criterion 3 (UX
+    # Proposal B, N11): on-demand videos never say "Tune in"; Play is their primary and only live results keep
+    # Tune in. 6d-R1 guards the same intent (results list with title, channel, duration and one primary each).
+    check('6d [ORIGINAL, superseded by 6d-R1] results show title, channel and duration, with Tune in',
           any('rain result 0' in t for t in texts) and any('Fixture Channel' in t and '3:05' in t for t in texts)
           and len(buttons(page.index_body, 'Tune in')) == 3, sorted(texts)[:12])
+    primaries = [(title, row_primary(row)) for title, row in result_rows(page)]
+    check('6d-R1 results show title, channel and duration; each on-demand result has Play as its primary, none Tune in',
+          any('rain result 0' in t for t in texts) and any('Fixture Channel' in t and '3:05' in t for t in texts)
+          and len(primaries) == 3 and all(p == 'Play' for _t, p in primaries)
+          and not buttons(page.index_body, 'Tune in'), primaries)
+    type_query(page, 'live stream radio', wait=1.8)
+    live = [(title, row_primary(row)) for title, row in result_rows(page)]
+    check('6d-R1 live results keep Tune in as their primary', len(live) == 3 and all(p == 'Tune in' for _t, p in live), live)
+    type_query(page, 'rain', wait=1.8)
     menus = [w for w in walk(page.index_body) if isinstance(w, Gtk.MenuButton) and w.get_mapped()]
     menu_words = set()
     if menus:
@@ -1239,9 +1283,26 @@ def s6_youtube():
     if tune:
         tune[0].emit('clicked')
         pump(1.5)
-    check('6o Tune in on a result sends one link command to play it as music',
+    # ORIGINAL oracle, kept verbatim with its result (revision 6o-R1 below): on-demand results now start
+    # through Play (O10-YOUTUBE criterion 3). 6o-R1 asserts the same outcome in the same 1.5 s.
+    check('6o [ORIGINAL, superseded by 6o-R1] Tune in on a result sends one link command to play it as music',
           len(sent(mark)) == 1 and sent(mark)[0][0] == 'link' and sent(mark)[0][1].get('destination') == 'music'
           and 'youtube.com/watch?v=' in sent(mark)[0][1].get('url', ''), mutating_actions(mark))
+    leave()
+    window.show_listen()   # the original's Tune in may have moved the window to Now
+    pump(.6)
+    type_query(page, 'tune me again')
+    mark = len(COMMANDS)
+    shown = [(title, row_primary(row)) for title, row in result_rows(page)]
+    play = next((primary_button(row) for title, row in result_rows(page) if title == 'tune me again result 0'), None)
+    if play is not None and button_text(play) == 'Play':
+        play.emit('clicked')
+        pump(1.5)
+    check('6o-R1 Play (the primary) on an on-demand result sends one link command to play it as music',
+          play is not None and button_text(play) == 'Play'
+          and len(sent(mark)) == 1 and sent(mark)[0][0] == 'link' and sent(mark)[0][1].get('destination') == 'music'
+          and 'youtube.com/watch?v=' in sent(mark)[0][1].get('url', ''),
+          (shown, mutating_actions(mark)))
     leave()
     yt_present(False)
     window = launch('listen')

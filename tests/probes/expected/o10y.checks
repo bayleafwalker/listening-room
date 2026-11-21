@@ -1,0 +1,52 @@
+# O10-YOUTUBE acceptance (tests/probes/listening-o10y-acceptance.py), owned by the acceptance author.
+# The target: every check passes. On main e45d947 all fail except 3a 3f 3g 3i 3j 4i (they guard what must stay).
+# 3i accepts 'Use as ambience' or 'Play as ambience' as the ambience-mode primary (the word belongs to the Listen lane).
+3a a YouTube search lists results
+3b on-demand results have Play as the primary action, never Tune in
+3c every result row reads Play, Watch (Watch with sound), then the menu
+3d the row Watch button says "Watch with sound"
+3e the row menu is Show as scene, Play as ambience, Save as station, Open elsewhere, in that order
+3f searching and opening row menus is inert (no command, no effect, no player)
+3g a live result keeps Tune in as its primary action
+3h the YouTube link sheet offers Play, Watch, Show as scene, Play as ambience, Open elsewhere, in that order
+3i in ambience mode a YouTube result keeps the ambience action primary
+3j in ambience mode no Watch button shows on the row
+3k in ambience mode the row menu holds Watch and Play as music
+3l choosing Watch in ambience mode ends the mode and starts the video
+1a Watch sends one video start for that result and nothing else
+1b no controller request was made on the GTK thread
+1c one player window with sound opens (the video window), and no music, ambience or scene starts
+1d the room pauses the way Quiet does, with the resume offer recorded
+1e the video itself keeps playing
+1f Now shows "Watching · title" with Stop watching
+1g Stop watching sends video stop and closes the window
+1h stopping offers Resume in a toast
+1i it never auto-resumes
+1j the Watching chip is gone after Stop watching
+1k Resume resumes the room explicitly
+1l when the video window closes, Now drops the Watching chip and offers Resume
+1m ... and still does not resume by itself
+1n with no room, Watch only starts the video (no room, no pause, no resume offer)
+1o with no room, Now still shows Watching with Stop watching
+1p with no room, stopping offers no Resume
+2a Show as scene sends one picture link for that result
+2b only the picture layer changes
+2c no sound starts or stops: music and ambience untouched, no video window
+2d the room is marked Changed
+2e and Save as my room is offered
+4a the YouTube scope shows your saved YouTube at once, before any search finishes
+4b a "For Midnight library" shelf appears before typing
+4c its queries are built from the room (its tags), not tracked
+4d a Live now shelf appears with live streams that Tune in
+4e shelf videos offer Play and Watch, never Tune in
+4f shelves load off the GTK thread (worst gap @@ ms)
+4g browsing shelves is inert: no command, no effect, no player, no window
+4h no yt-dlp call uses an account (cookies or personal feeds)
+4i the YouTube scope never asks to sign in
+4j the shelves are cached on disk
+4k reopening shows the cached shelves at once
+4l a cached shelf says when it was updated
+4m a fresh cache is not refetched (refresh at most hourly)
+4n a cache older than an hour is refreshed in the background
+4o a failed refresh never empties the shelf
+4p saved YouTube shows without yt-dlp (zero network)
