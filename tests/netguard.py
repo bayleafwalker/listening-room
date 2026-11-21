@@ -5,9 +5,18 @@ the network fails with a clear error instead of reaching a live service. Loopbac
 ``localhost`` and Unix sockets stay allowed (tests use local fixture servers and fake mpv sockets).
 Probes run through ``scripts/listening-dev.sh`` are not guarded: they re-execute themselves
 under Xvfb, so the guard would not follow.
+
+Child processes: ``install()`` also puts ``tests/netguard_child`` (a ``sitecustomize``) first on ``PYTHONPATH``
+and sets ``LISTENING_NETGUARD=1``, in this process's environment and in any explicit ``env=`` a suite hands to
+``subprocess``, so a child *Python* guards itself the same way. Limits: a child that is not Python (mpv, curl)
+or that runs ``python -I``/``-S`` or replaces ``PYTHONPATH`` after start is not covered.
 """
 import ipaddress
+import os
 import socket
+import subprocess
+
+CHILD = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'netguard_child')
 
 
 class NetworkBlocked(OSError):
@@ -33,7 +42,19 @@ def _check(address):
         raise NetworkBlocked('test network access blocked (fake it): %r' % (address[0],))
 
 
+def child_environment(environment):
+    """`environment` (a mapping) with the child guard first on PYTHONPATH and the switch set."""
+    result = dict(environment)
+    parts = [part for part in result.get('PYTHONPATH', '').split(os.pathsep) if part and part != CHILD]
+    result['PYTHONPATH'] = os.pathsep.join([CHILD] + parts)
+    result['LISTENING_NETGUARD'] = '1'
+    return result
+
+
 def install():
+    if getattr(socket, '_listening_netguard', False):
+        return
+    socket._listening_netguard = True
     real_getaddrinfo = socket.getaddrinfo
     real_connect, real_connect_ex, real_sendto = socket.socket.connect, socket.socket.connect_ex, socket.socket.sendto
 
@@ -54,6 +75,15 @@ def install():
         _check(args[-1] if args else None)
         return real_sendto(self, data, *args)
 
+    real_popen_init = subprocess.Popen.__init__
+
+    def popen_init(self, *args, **kwargs):
+        if kwargs.get('env') is not None:
+            kwargs['env'] = child_environment(kwargs['env'])
+        return real_popen_init(self, *args, **kwargs)
+
+    os.environ.update(child_environment(os.environ))
+    subprocess.Popen.__init__ = popen_init
     socket.getaddrinfo = getaddrinfo
     socket.socket.connect = connect
     socket.socket.connect_ex = connect_ex
