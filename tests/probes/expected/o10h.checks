@@ -1,0 +1,15 @@
+# O10-HYGIENE acceptance (Familiarity, criterion 2): the state after the change. Every check must pass; none is a known failure.
+F0 the Familiarity row offers Familiar, A mix and Discover (the labels are unchanged)
+F1 an unset Familiarity shows "A mix", not "Familiar"
+F1b the other unset moods still show their neutral choice (Energy Any, Voices Any, Range Any)
+F1c the precondition holds: the fixture station really has no Familiarity stored
+F2 merely showing an unset station writes nothing
+F3 the unset Familiarity stays "A mix" across poll re-renders
+F4 choosing Familiar on an unset station stores Familiar
+F4b ... and the row then shows Familiar
+F4c choosing Discover stores New and shows Discover
+F4d choosing A mix shows A mix again
+F5 a stored Familiarity of 'Familiar' shows 'Familiar'
+F5 a stored Familiarity of 'Any' shows 'A mix'
+F5 a stored Familiarity of 'New' shows 'Discover'
+F6 a station with only Energy set shows Calm and an unset Familiarity of "A mix"
