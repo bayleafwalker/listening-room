@@ -622,11 +622,20 @@ def play_scene(scene_id):
     return session_client.request('enter', {'recipe': recipe})
 
 
+ROOM_TRANSPORT = {'play-pause': ('transport', {'action': 'toggle'}), 'toggle': ('transport', {'action': 'toggle'}),
+                  'pause': ('transport', {'action': 'pause'}), 'play': ('transport', {'action': 'play'}),
+                  'stop': ('leave', {})}
+
+
 def transport(player_id, command):
-    """User transport entry point; backend primitives remain explicitly owned."""
+    """User transport entry point; backend primitives remain explicitly owned.
+
+    The radio player is the room's music, so media keys act on the room as the window's
+    Play/Pause and Leave do (every layer, one resume offer); only track steps stay with Music."""
     if player_id == 'radio':
         import session_client
-        return session_client.request('layer', {'layer': 'music', 'action': command})
+        action, args = ROOM_TRANSPORT.get(command, ('layer', {'layer': 'music', 'action': command}))
+        return session_client.request(action, args)
     return player_command(player_id, command)
 
 def notify(message):

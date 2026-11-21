@@ -131,18 +131,20 @@ stdenvNoCC.mkDerivation {
     export LISTENING_AMBIENCE_SOURCE="$PWD/src/ambience.py"
     export PYTHONPATH="$PWD/src:$PWD/tests"
     export PYTHONDONTWRITEBYTECODE=1
-    # Every tests/test_*.py runs unless tests/suites-manual.txt names it; the two below
-    # need their own environment and run after.
-    python3 tests/run_suites.py --except test_listening_window_smoke.py test_listening_station_eof.py
+    # Every tests/test_*.py runs unless tests/suites-manual.txt names it; the window suites and
+    # station EOF below need their own environment and run after.
+    python3 tests/run_suites.py --except test_listening_window_smoke.py test_listening_o10_control.py test_listening_station_eof.py
     # The sandbox has no /etc/dbus-1, so the private bus gets its config explicitly; the test sees
     # it is already isolated (LISTENING_PROBE_ISOLATED) and does not re-execute itself.
-    smoke_runtime=$(mktemp -d)
-    chmod 700 "$smoke_runtime"
-    XDG_RUNTIME_DIR="$smoke_runtime" GDK_BACKEND=x11 GDK_DEBUG=no-portals GSK_RENDERER=cairo \
-      LISTENING_PROBE_ISOLATED=1 LISTENING_HUB_ASSETS="$PWD/assets" \
-      xvfb-run -a -s '-screen 0 1440x1000x24' \
-      dbus-run-session --config-file=${dbus}/share/dbus-1/session.conf \
-      python3 tests/test_listening_window_smoke.py
+    for window_suite in test_listening_window_smoke.py test_listening_o10_control.py; do
+      smoke_runtime=$(mktemp -d)
+      chmod 700 "$smoke_runtime"
+      XDG_RUNTIME_DIR="$smoke_runtime" GDK_BACKEND=x11 GDK_DEBUG=no-portals GSK_RENDERER=cairo \
+        LISTENING_PROBE_ISOLATED=1 LISTENING_HUB_ASSETS="$PWD/assets" \
+        xvfb-run -a -s '-screen 0 1440x1000x24' \
+        dbus-run-session --config-file=${dbus}/share/dbus-1/session.conf \
+        python3 tests/$window_suite
+    done
     LISTENING_TEST_MPV=${mpv}/bin/mpv python3 tests/test_listening_station_eof.py
     python3 src/validate_vistas.py assets
     python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Gtk, Adw"

@@ -12,7 +12,12 @@ ICONS = {'music': 'audio-x-generic-symbolic', 'atmosphere': 'weather-showers-sym
 
 
 class LayerRow(Gtk.Box):
-    """One layer: tile, source and state, then its contextual controls."""
+    """One layer: tile, source and state, then its contextual controls.
+
+    Music and Ambience each pause, resume and stop on their own, from buttons on the row. A layer paused
+    here stays paused when the room resumes; room Pause then Play restores exactly what played. The ⋯
+    menu repeats the row's actions with Next track, and shows only while it holds more than one item:
+    a lone action is already a visible button."""
     def __init__(self, layer, send, choose_other, options):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.layer, self.send, self.options = layer, send, options
@@ -43,11 +48,25 @@ class LayerRow(Gtk.Box):
             popover.connect('show', lambda *_: self.fill_choices(popover))
             self.change = Gtk.MenuButton(label='Change…', popover=popover)
         top.append(self.change)
+        self.retry = Gtk.Button(label='Try again', valign=Gtk.Align.CENTER, visible=False)
+        self.retry.connect('clicked', lambda *_: self.send(*self.args('retry')))
+        top.append(self.retry)
+        self.playing = self.halt = None
+        if layer in ('music', 'atmosphere'):
+            # Explicit pause/play (never toggle): a click always means what the button showed.
+            self.playing = icon_button('media-playback-pause-symbolic', 'Pause ' + word.lower(),
+                                       lambda: self.send(*self.args(self.playing.action)), ['flat'])
+            self.playing.action = 'pause'
+            top.append(self.playing)
         self.mute = Gtk.ToggleButton(icon_name='audio-volume-high-symbolic')
         self.mute.connect('toggled', self.mute_toggled)
         if layer == 'picture':
             self.close = icon_button('window-close-symbolic', 'Close scene', lambda: self.send(*self.args('stop')))
         top.append(self.mute if layer != 'picture' else self.close)
+        if layer in ('music', 'atmosphere'):
+            self.halt = icon_button('media-playback-stop-symbolic', 'Stop ' + word.lower(),
+                                    lambda: self.send(*self.args('stop')), ['flat'])
+            top.append(self.halt)
         self.menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6, margin_bottom=6,
                                 margin_start=6, margin_end=6)
         self.popover = Gtk.Popover(child=self.menu_box)
@@ -56,7 +75,9 @@ class LayerRow(Gtk.Box):
         self.next_item = menu_item('Next track', lambda: self.send(*self.args('next')), self.popover)
         self.retry_item = menu_item('Try again', lambda: self.send(*self.args('retry')), self.popover)
         self.stop_item = menu_item('Stop', lambda: self.send(*self.args('stop')), self.popover)
-        for item in (self.next_item, self.retry_item, self.stop_item):
+        self.change_item = menu_item('Change…', lambda: choose_other(layer) if layer != 'picture' else self.change.popup(),
+                                     self.popover)
+        for item in (self.next_item, self.retry_item, self.change_item, self.stop_item):
             self.menu_box.append(item)
         top.append(self.menu)
         self.append(top)
@@ -156,11 +177,25 @@ class LayerRow(Gtk.Box):
             (self.change.add_css_class if empty else self.change.remove_css_class)('suggested-action')
             for widget in (self.controls, self.mute, self.menu):
                 widget.set_visible(not empty)
+        self.subtitle.remove_css_class('accent')
         if row['failed']:
             self.subtitle.add_css_class('error')
+        elif state == 'paused':
+            self.subtitle.add_css_class('accent')   # "Paused" in the accent colour
+        self.retry.set_visible(bool(row['failed']))
+        if self.playing is not None:
+            paused = state == 'paused'
+            self.playing.action = 'play' if paused else 'pause'
+            self.playing.set_icon_name('media-playback-start-symbolic' if paused else 'media-playback-pause-symbolic')
+            name_it(self.playing, ('Play ' if paused else 'Pause ') + row['title'].lower())
+            self.playing.set_visible(state in ('playing', 'paused') and not row['closed'] and not empty)
+            self.halt.set_visible(not row['closed'] and not empty)
         self.next_item.set_visible(bool(row.get('can_next')))
         self.retry_item.set_visible(bool(row['failed']))
         self.stop_item.set_visible(not row['closed'])
+        self.change_item.set_visible(not empty)
+        items = [w for w in (self.next_item, self.retry_item, self.change_item, self.stop_item) if w.get_visible()]
+        self.menu.set_visible(len(items) > 1 and not empty)
         if self.scale is not None:
             if 'volume' not in self.timers:
                 self.scale.set_value(float(row['level']))

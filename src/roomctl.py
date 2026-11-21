@@ -131,12 +131,14 @@ def popover():
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, epilog='''Metadata: metadata-list shows a bounded preview; metadata-jobs reports progress.
+    parser = argparse.ArgumentParser(description=__doc__, epilog='''Transport: toggle, pause and play act on the whole room, as the window's Play/Pause, MPRIS and the media keys do (pause is quiet; play resumes exactly what room pause paused, or every paused layer, or enters the room again).
+music and ambience take pause, play, toggle, stop or next and act on that layer alone; a layer paused on its own stays paused when the room resumes.
+Metadata: metadata-list shows a bounded preview; metadata-jobs reports progress.
 metadata-enrich accepts {"reference": {"provider": "jellyfin", "type": "Audio", "id": "TRACK_ID"}}.
 metadata-cancel accepts {"job_id": "JOB_ID"}; metadata-revoke accepts {"origin": "ORIGIN", "item_id": "TRACK_ID"}.
 metadata-review accepts those IDs plus classification (instrumental, vocal, spoken, unknown), reviewer, and acknowledged=true after listening to the whole exact recording. Enrich and review run as jobs. metadata-match and metadata-analyze take the same reference; match accepts method=musicbrainz or acoustid; metadata-confirm-identity takes job_id and provider_id.
 metadata-export writes all provenance pages as one JSON document to stdout. metadata-import takes a JSON file path; imported reviews and audio hashes are never trusted. Both allow up to 10,000 records and 32 MiB.''', formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('action', choices=['inspect','status','enter','return','quiet','resume','leave','stop','save','menu','popover','remote-commands','link','volume','stations','tune','replay','station-save','station-update','play-next','metadata-list','metadata-jobs','metadata-enrich','metadata-match','metadata-analyze','metadata-confirm-identity','metadata-cancel','metadata-review','metadata-revoke','metadata-export','metadata-import'])
+    parser.add_argument('action', choices=['inspect','status','enter','return','quiet','resume','toggle','pause','play','music','ambience','leave','stop','save','menu','popover','remote-commands','link','volume','stations','tune','replay','station-save','station-update','play-next','metadata-list','metadata-jobs','metadata-enrich','metadata-match','metadata-analyze','metadata-confirm-identity','metadata-cancel','metadata-review','metadata-revoke','metadata-export','metadata-import'])
     parser.add_argument('value', nargs='?', help='ID or JSON object for the chosen action; metadata-review requires origin, item_id, classification, reviewer, and acknowledged=true')
     parser.add_argument('--follow', action='store_true', help='with status: print a new line whenever the status changes')
     args = parser.parse_args()
@@ -171,6 +173,10 @@ metadata-export writes all provenance pages as one JSON document to stdout. meta
             result = metadata_export() if args.action == 'metadata-export' else metadata_import(params) if args.action == 'metadata-import' else session_client.request(action, params)
             print(json.dumps(result, ensure_ascii=False))
             return 0
+        if args.action in ('toggle', 'pause', 'play', 'music', 'ambience'):
+            action, params = transport_arguments(args.action, args.value)
+            print(json.dumps(session_client.request(action, params), ensure_ascii=False))
+            return 0
         if args.action in ('stations', 'tune', 'replay', 'station-save', 'station-update', 'play-next'):
             action, params = station_arguments(args.action, args.value)
             print(json.dumps(session_client.request(action, params), ensure_ascii=False))
@@ -180,6 +186,20 @@ metadata-export writes all provenance pages as one JSON document to stdout. meta
     except (ValueError, OSError) as error:
         print('listening-roomctl: ' + str(error), file=sys.stderr); return 1
     return 0
+
+
+LAYER_ACTIONS = ('pause', 'play', 'toggle', 'stop', 'next')
+
+
+def transport_arguments(action, value=None):
+    """Room transport (toggle, pause, play) and one layer's own controls (music|ambience ACTION)."""
+    if action in ('toggle', 'pause', 'play'):
+        if value:
+            raise ValueError('This action takes no value')
+        return 'transport', {'action': action}
+    if value not in LAYER_ACTIONS:
+        raise ValueError('Choose ' + ', '.join(LAYER_ACTIONS[:-1]) + ' or ' + LAYER_ACTIONS[-1] + ' for ' + action)
+    return 'layer', {'layer': 'atmosphere' if action == 'ambience' else 'music', 'action': value}
 
 
 def station_arguments(action, value=None):

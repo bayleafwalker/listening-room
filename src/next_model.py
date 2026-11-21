@@ -167,16 +167,52 @@ def layer_summary(snapshot, room=''):
 
 
 def room_state(snapshot):
-    """'playing' | 'paused' | 'idle' for the single play/pause control."""
+    """'playing' | 'paused' | 'idle' for the single play/pause control: the same rule as MPRIS PlaybackStatus.
+
+    While anything is audible the room shows Pause (Pause quiets everything audible), even with one layer
+    paused on its own; with nothing audible, a paused layer or a resume offer shows Play."""
     layers = [_layer(snapshot, name) for name in ('music', 'atmosphere')]
+    if any(_playing(layer) for layer in layers):
+        return 'playing'
     if snapshot.get('resume_offer') or any(layer.get('status') == 'Paused' for layer in layers):
         return 'paused'
-    return 'playing' if any(_playing(layer) for layer in layers) else 'idle'
+    return 'idle'
+
+
+def failed_elsewhere(snapshot):
+    """Whether the music error belongs to a start of another room that failed while this one kept playing.
+    That failure is told on the start card, named after the room tried; it is not this room's music failing."""
+    entry = snapshot.get('entry') or {}
+    active = snapshot.get('active') or {}
+    error = (snapshot.get('errors') or {}).get('music')
+    return bool(entry.get('state') == 'failed' and error and entry.get('error') == error and active
+                and entry.get('kept') == active.get('name') and entry.get('name') != active.get('name')
+                and _playing(_layer(snapshot, 'music')))
+
+
+def start_outcome(snapshot, pending):
+    """How a start the window sent ended, from the controller's ``entry``: ('started', None), ('failed', error)
+    or None while it cannot tell yet. ``pending`` holds the start's ``id`` (from the reply), or the entry id and
+    music error seen before it was sent when the reply carried no id."""
+    entry = snapshot.get('entry') or {}
+    if snapshot.get('transition'):
+        return None
+    if pending.get('id') is not None:
+        if entry.get('id') != pending['id']:
+            return ('started', None) if isinstance(entry.get('id'), int) and entry['id'] > pending['id'] else None
+    elif entry.get('id') == pending.get('entry_before') or not entry:
+        return ('started', None) if pending.get('seen_transition') else None
+    if entry.get('state') == 'failed':
+        return 'failed', entry.get('error') or 'The music could not start'
+    # 'started', or still 'connecting' with no transition: Quiet, Stop or another start interrupted it.
+    return 'started', None
 
 
 def failure(snapshot):
     """One banner for the highest-priority failing layer, or None."""
-    errors = snapshot.get('errors') or {}
+    errors = dict(snapshot.get('errors') or {})
+    if failed_elsewhere(snapshot):
+        errors.pop('music', None)
     for name in LAYER_ORDER:
         if errors.get(name):
             break
@@ -355,6 +391,12 @@ def plain_error(error):
     if _TECHNICAL.search(text) or len(text) > 160:
         return 'Something went wrong. Try again, or open Details to see why.'
     return text
+
+
+def start_error(error):
+    """Why a room's music did not start. The controller answered, so a refused connection is the stream's."""
+    plain = plain_error(error)
+    return 'Its music couldn’t start: it could not connect.' if plain.startswith('The room service') else plain
 
 
 def error_details(error):

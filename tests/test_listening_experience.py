@@ -29,6 +29,38 @@ class DesktopTests(unittest.TestCase):
         dispatch.assert_called_once_with('music', {'item':source})
         start.assert_not_called()
 
+    def test_media_keys_act_on_the_room_like_the_windows_play_pause(self):
+        # O10: the room's radio player is its music; keys pause and resume the room (every layer).
+        expected = {'play-pause': ('transport', {'action': 'toggle'}), 'pause': ('transport', {'action': 'pause'}),
+                    'play': ('transport', {'action': 'play'}), 'stop': ('leave', {}),
+                    'next': ('layer', {'layer': 'music', 'action': 'next'})}
+        for command, call in expected.items():
+            with patch('session_client.request') as dispatch:
+                core.transport('radio', command)
+            dispatch.assert_called_once_with(*call)
+
+    def test_media_key_with_only_the_rooms_ambience_sounding_reaches_the_room(self):
+        sent = []
+        def request(action, args=None, **_):
+            sent.append(action)
+            return {'active': {'name': 'Room'}} if action == 'inspect' else {}
+        with patch('session_client.request', side_effect=request):
+            self.assertTrue(hub.room_transport('play-pause'))
+        self.assertEqual(sent, ['inspect', 'transport'])
+        with patch('session_client.request', return_value={'active': None}) as dispatch:
+            self.assertFalse(hub.room_transport('play-pause'))
+        dispatch.assert_called_once()
+
+    def test_roomctl_transport_and_layer_verbs(self):
+        self.assertEqual(roomctl.transport_arguments('toggle'), ('transport', {'action': 'toggle'}))
+        self.assertEqual(roomctl.transport_arguments('pause'), ('transport', {'action': 'pause'}))
+        self.assertEqual(roomctl.transport_arguments('play'), ('transport', {'action': 'play'}))
+        self.assertEqual(roomctl.transport_arguments('music', 'pause'), ('layer', {'layer': 'music', 'action': 'pause'}))
+        self.assertEqual(roomctl.transport_arguments('ambience', 'stop'), ('layer', {'layer': 'atmosphere', 'action': 'stop'}))
+        for action, value in (('music', None), ('ambience', 'select'), ('toggle', 'x')):
+            with self.assertRaises(ValueError):
+                roomctl.transport_arguments(action, value)
+
     def test_media_discovery_excludes_own_mpris_identity(self):
         with patch.object(core, 'run') as run:
             run.return_value.returncode=0

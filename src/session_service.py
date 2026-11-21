@@ -63,44 +63,78 @@ MPRIS_XML = '''<node>
 </node>'''
 
 
+def room_status(snapshot):
+    """The room's PlaybackStatus: Playing while any layer sounds, Paused while a paused layer or a resume
+    offer waits, else Stopped. The window's Play/Pause button reads the same rule (next_model.room_state)."""
+    layers = snapshot.get('layers') or {}
+    statuses = [(layers.get(name) or {}).get('status') for name in ('music', 'atmosphere')]
+    if 'Playing' in statuses:
+        return 'Playing'
+    if snapshot.get('active') and ('Paused' in statuses or snapshot.get('resume_offer')):
+        return 'Paused'
+    return 'Paused' if 'Paused' in statuses else 'Stopped'
+
+
 def mpris_values(snapshot):
-    """Plain values make truthful capability/metadata rules independently testable."""
+    """Plain values make truthful capability/metadata rules independently testable.
+
+    Play/Pause act on the room (Quiet and Resume), so PlaybackStatus is the room's. Track capabilities
+    (Next, Previous, Seek) stay the music layer's own."""
     music = (snapshot.get('layers') or {}).get('music') or {}
+    ambience = (snapshot.get('layers') or {}).get('atmosphere') or {}
     active = snapshot.get('active') or {}
     selected = active.get('music') or {}
     station = snapshot.get('station') or {}
     current = station.get('current') or {}
-    status = music.get('status', 'Stopped')
-    if status not in ('Playing', 'Paused', 'Stopped'):
-        status = 'Stopped'
-    has_track = status != 'Stopped'
+    music_status = music.get('status', 'Stopped')
+    if music_status not in ('Playing', 'Paused', 'Stopped'):
+        music_status = 'Stopped'
+    status = room_status(snapshot)
+    has_track = music_status != 'Stopped'
+    ambience_on = ambience.get('status') in ('Playing', 'Paused') and ambience.get('kind', 'local') != 'none'
     media = snapshot.get('media') or {}
     # Stream seekability is not proof that live radio offers track seeking.
     source_id = music.get('source_id') or selected.get('source_id') or ''
     seekable = has_track and bool(media.get('seekable')) and (
         source_id == 'youtube-video' or bool(selected.get('reference')))
     metadata = {}
+    room = active.get('name')
     if has_track:
         identity = str(source_id) + '\0' + str(current.get('id') or music.get('title', ''))
+        title = current.get('name') or music.get('title') or music.get('name') or room or 'Radio'
         metadata = {'mpris:trackid': '/app/kotona/ListeningRoom/track/' + hashlib.sha256(identity.encode()).hexdigest()[:24],
-                    'xesam:title': current.get('name') or music.get('title') or music.get('name') or active.get('name') or 'Radio'}
-        artist = current.get('artist') or music.get('artist')
+                    'xesam:title': title}
+        # The artist, or for live radio the station the title plays on.
+        source = music.get('station') or music.get('name') or selected.get('name')
+        artist = current.get('artist') or music.get('artist') or (source if source and source != title else None)
         album = current.get('album') or music.get('album')
         if artist:
             metadata['xesam:artist'] = [artist]
-        if album:
-            metadata['xesam:album'] = album
+        if album or room:
+            metadata['xesam:album'] = album or room
         if seekable and isinstance(media.get('duration'), (int, float)) and math.isfinite(media['duration']):
             metadata['mpris:length'] = max(0, round(media['duration'] * 1_000_000))
+    elif ambience_on and active:
+        # Only the ambience sounds: the room is still playing, and says what.
+        identity = 'atmosphere\0' + str(ambience.get('source_id') or ambience.get('name') or '')
+        metadata = {'mpris:trackid': '/app/kotona/ListeningRoom/track/' + hashlib.sha256(identity.encode()).hexdigest()[:24],
+                    'xesam:title': ambience.get('name') or ambience.get('title') or 'Ambience',
+                    'xesam:artist': ['Ambience']}
+        if room:
+            metadata['xesam:album'] = room
+    if metadata:
+        if room:
+            # Album may be a library album; the room is always named here too.
+            metadata['xesam:comment'] = ['In ' + room]
         artwork = selected.get('artwork_path') or active.get('poster_path')
         if artwork and Path(artwork).is_absolute():
             metadata['mpris:artUrl'] = Path(artwork).as_uri()
     # MPRIS Volume is the room volume. Snapshots without one fall back to the
     # music layer's own level.
-    room = snapshot.get('room_volume')
-    volume = room if isinstance(room, (int, float)) and not isinstance(room, bool) else music.get('volume')
+    room_volume = snapshot.get('room_volume')
+    volume = room_volume if isinstance(room_volume, (int, float)) and not isinstance(room_volume, bool) else music.get('volume')
     volume = max(0., min(1., float(volume) / 100)) if isinstance(volume, (int, float)) and math.isfinite(volume) else 0.
-    if room is None and music.get('muted'):
+    if room_volume is None and music.get('muted'):
         volume = 0.
     position = media.get('position')
     position = max(0, round(position * 1_000_000)) if seekable and isinstance(position, (int, float)) and math.isfinite(position) else 0
@@ -111,13 +145,13 @@ def mpris_values(snapshot):
             'Position': position, 'MinimumRate': 1., 'MaximumRate': 1.,
             'CanGoNext': has_track and (bool(station.get('can_next')) or bool(selected.get('reference')) and index + 1 < len(queue)),
             'CanGoPrevious': has_track and bool(selected.get('reference')) and 0 < index < len(queue),
-            'CanPlay': has_track or bool(active),
-            'CanPause': has_track, 'CanSeek': seekable, 'CanControl': True}
+            'CanPlay': status != 'Stopped' or bool(active),
+            'CanPause': status != 'Stopped', 'CanSeek': seekable, 'CanControl': True}
 
 
 # Guarantees the action registry must keep: these interrupt or answer at once and never
 # wait behind a queued load (Quiet/Stop bypass the queue; rename is a bounded edit).
-MUST_RUN_IMMEDIATELY = ('inspect', 'quiet', 'stop', 'resume', 'leave', 'rename', 'room_volume')
+MUST_RUN_IMMEDIATELY = ('inspect', 'quiet', 'stop', 'resume', 'leave', 'rename', 'room_volume', 'transport')
 if not (all(room_session.ACTIONS[name].runs_immediately({}) for name in MUST_RUN_IMMEDIATELY)
         and all(room_session.ACTIONS[name].runs_immediately({'action': stop})
                 for name in ('layer', 'picture') for stop in ('pause', 'stop'))):
@@ -352,17 +386,16 @@ class Mpris:
                 if method == 'Raise':
                     subprocess.Popen(['listening-room'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             elif method == 'Stop':
-                self.service.execute('layer', {'layer': 'music', 'action': 'stop'})
+                # Stop leaves the room, as the window's Leave does (Return brings it back).
+                if snapshot.get('active'):
+                    self.service.execute('leave', {})
             elif method == 'Pause' and values['CanPause']:
-                self.service.execute('layer', {'layer': 'music', 'action': 'pause'})
+                self.service.execute('transport', {'action': 'pause'})
             elif method in ('Next', 'Previous') and values['CanGoNext' if method == 'Next' else 'CanGoPrevious']:
                 self.service.execute('layer', {'layer': 'music', 'action': method.lower()})
             elif method in ('Play', 'PlayPause') and values['CanPlay']:
-                if values['PlaybackStatus'] == 'Stopped' and snapshot.get('active'):
-                    self.service.execute('enter', {'recipe': snapshot['active']})
-                else:
-                    action = 'play' if method == 'Play' else 'toggle'
-                    self.service.execute('layer', {'layer': 'music', 'action': action})
+                # The room transport: Pause is Quiet (every layer), Play is Resume, a silent room is entered again.
+                self.service.execute('transport', {'action': 'play' if method == 'Play' else 'toggle'})
             elif method in ('Seek', 'SetPosition') and values['CanSeek']:
                 arguments = parameters.unpack()
                 if method == 'Seek':

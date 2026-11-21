@@ -198,6 +198,132 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.backend.state['music']['status'], 'Playing')
         self.assertIsNone(self.controller.resume_offer)
 
+    # ---- O10 control: one room transport, per-layer pause, visible start failures ----------------------
+
+    def playing_room(self):
+        self.enter(atmosphere={'kind': 'local', 'source_id': 'rain'})
+        self.assertEqual(self.backend.state['atmosphere']['status'], 'Playing')
+
+    def statuses(self):
+        return {name: self.backend.state[name]['status'] for name in ('music', 'atmosphere')}
+
+    def test_room_pause_then_resume_restores_exactly_what_played(self):
+        self.playing_room()
+        self.controller.dispatch('transport', {'action': 'toggle'})
+        self.assertEqual(self.statuses(), {'music': 'Paused', 'atmosphere': 'Paused'})
+        self.assertEqual(set(self.controller.resume_offer['layers']), {'music', 'atmosphere', 'picture'})
+        self.controller.dispatch('transport', {'action': 'toggle'})
+        self.assertEqual(self.statuses(), {'music': 'Playing', 'atmosphere': 'Playing'})
+        self.assertIsNone(self.controller.resume_offer)
+
+    def test_a_layer_paused_on_its_own_stays_paused_when_the_room_resumes(self):
+        self.playing_room()
+        self.controller.layer({'layer': 'music', 'action': 'pause'})
+        self.settle()
+        self.assertTrue(self.controller.audible(), 'ambience still sounds, so the room still pauses')
+        self.controller.dispatch('transport', {'action': 'pause'})
+        self.assertEqual(self.controller.resume_offer['layers'], ['atmosphere', 'picture'])
+        self.controller.dispatch('transport', {'action': 'play'})
+        self.assertEqual(self.statuses(), {'music': 'Paused', 'atmosphere': 'Playing'})
+
+    def test_a_layer_resumed_during_room_pause_leaves_the_offer_and_a_second_pause_keeps_the_rest(self):
+        self.playing_room()
+        self.controller.quiet()
+        self.controller.layer({'layer': 'atmosphere', 'action': 'play'})
+        self.settle()
+        self.assertEqual(self.controller.resume_offer['layers'], ['music', 'picture'])
+        self.controller.quiet()     # the room is audible again: Pause adds to the offer, never erases it
+        self.assertEqual(self.controller.resume_offer['layers'], ['music', 'atmosphere', 'picture'])
+        self.controller.resume()
+        self.assertEqual(self.statuses(), {'music': 'Playing', 'atmosphere': 'Playing'})
+
+    def test_repeated_quiet_keeps_the_offer(self):
+        self.playing_room()
+        self.controller.quiet()
+        first = list(self.controller.resume_offer['layers'])
+        self.controller.quiet()
+        self.assertEqual(self.controller.resume_offer['layers'], first)
+
+    def test_room_play_resumes_layers_paused_one_by_one_when_there_is_no_offer(self):
+        self.playing_room()
+        for layer in ('music', 'atmosphere'):
+            self.controller.layer({'layer': layer, 'action': 'pause'})
+        self.settle()
+        self.assertIsNone(self.controller.resume_offer)
+        self.controller.dispatch('transport', {'action': 'toggle'})
+        self.assertEqual(self.statuses(), {'music': 'Playing', 'atmosphere': 'Playing'})
+
+    def test_a_layer_stopped_during_room_pause_is_not_resumed(self):
+        self.playing_room()
+        self.controller.quiet()
+        self.controller.layer({'layer': 'atmosphere', 'action': 'stop'})
+        self.settle()
+        self.controller.resume()
+        self.assertEqual(self.statuses(), {'music': 'Playing', 'atmosphere': 'Stopped'})
+
+    def test_room_play_with_nothing_to_resume_enters_the_room_again(self):
+        self.enter()
+        self.controller.layer({'layer': 'music', 'action': 'stop'})
+        self.settle()
+        before = len([c for c in self.backend.calls if c[0] == 'start_music'])
+        self.controller.dispatch('transport', {'action': 'play'})
+        self.settle()
+        self.assertEqual(len([c for c in self.backend.calls if c[0] == 'start_music']), before + 1)
+        self.assertEqual(self.backend.state['music']['status'], 'Playing')
+
+    def test_transport_without_a_room_says_so(self):
+        with self.assertRaisesRegex(sessions.SessionError, 'Choose a room'):
+            self.controller.dispatch('transport', {'action': 'toggle'})
+        with self.assertRaisesRegex(sessions.SessionError, 'toggle, pause or play'):
+            self.controller.dispatch('transport', {'action': 'stop'})
+
+    def test_transport_runs_at_once_like_quiet(self):
+        self.assertTrue(sessions.ACTIONS['transport'].runs_immediately({'action': 'pause'}))
+
+    def test_a_failed_start_from_idle_where_nothing_starts_is_recorded_under_the_room_it_tried(self):
+        self.backend.fail_music = self.backend.fail_picture = True
+        reply = self.controller.enter({'room_id': 'north'})
+        self.settle()
+        entry = self.controller.snapshot()['entry']
+        self.assertIsNone(self.controller.snapshot()['active'])
+        self.assertEqual(entry, {'id': reply['id'], 'name': 'Northern quiet', 'state': 'failed',
+                                 'error': 'Station could not load', 'kept': None})
+
+    def test_from_idle_a_room_whose_music_fails_is_entered_with_the_rest_playing(self):
+        # Coordinator decision (O10 criterion 1): each layer fails on its own.
+        self.backend.fail_music = True
+        reply = self.controller.enter({'room_id': 'north', 'atmosphere': {'kind': 'local', 'source_id': 'rain'}})
+        self.settle()
+        snapshot = self.controller.snapshot()
+        self.assertEqual(snapshot['active']['id'], 'north')
+        self.assertEqual(snapshot['errors']['music'], 'Station could not load')
+        self.assertEqual(snapshot['entry']['id'], reply['id'])
+        self.assertEqual((snapshot['entry']['state'], snapshot['entry']['music_error']), ('started', 'Station could not load'))
+        self.assertEqual(self.backend.state['atmosphere']['status'], 'Playing')
+        self.assertEqual(self.backend.state['music']['status'], 'Stopped')
+        self.backend.fail_music = False
+        self.controller.layer({'layer': 'music', 'action': 'retry'})
+        self.settle()
+        self.assertEqual(self.backend.state['music']['status'], 'Playing')
+        self.assertNotIn('music', self.controller.snapshot()['errors'])
+
+    def test_a_failed_start_while_another_room_plays_keeps_it_and_names_both(self):
+        self.enter()
+        self.backend.fail_music = True
+        reply = self.controller.enter({'room_id': 'north'})
+        self.settle()
+        snapshot = self.controller.snapshot()
+        self.assertEqual(snapshot['active']['id'], 'library')
+        self.assertEqual(snapshot['entry']['id'], reply['id'])
+        self.assertEqual((snapshot['entry']['state'], snapshot['entry']['name'], snapshot['entry']['kept']),
+                         ('failed', 'Northern quiet', 'Midnight library'))
+
+    def test_a_successful_start_is_recorded_as_started(self):
+        reply = self.controller.enter({'room_id': 'library'})
+        self.settle()
+        self.assertEqual(self.controller.snapshot()['entry'], {'id': reply['id'], 'name': 'Midnight library',
+                                                               'state': 'started'})
+
     def test_new_room_invalidates_old_resume_offer(self):
         self.enter()
         self.controller.quiet()
@@ -467,6 +593,51 @@ class MprisTests(unittest.TestCase):
         self.assertEqual(values['Metadata'], {})
         self.assertFalse(values['CanPlay'])
         self.assertFalse(values['CanPause'])
+
+
+class MprisRoomTransportTests(unittest.TestCase):
+    """MPRIS reports and drives the room, as the window's Play/Pause does."""
+    def snapshot(self, music='Playing', ambience='Playing', **extra):
+        value = {'active': {'id': 'library', 'name': 'Midnight library', 'music': {'source_id': 'piano', 'name': 'Piano'}},
+                 'layers': {'music': {'status': music, 'source_id': 'piano', 'name': 'Piano', 'title': 'Nocturne'},
+                            'atmosphere': {'status': ambience, 'kind': 'local', 'name': 'Rain on glass'}}}
+        value.update(extra)
+        return value
+
+    def test_status_is_the_rooms(self):
+        status = lambda snap: session_service.mpris_values(snap)['PlaybackStatus']
+        self.assertEqual(status(self.snapshot(music='Paused')), 'Playing', 'ambience still sounds')
+        self.assertEqual(status(self.snapshot(music='Stopped')), 'Playing')
+        self.assertEqual(status(self.snapshot(music='Paused', ambience='Paused')), 'Paused')
+        self.assertEqual(status(self.snapshot(music='Stopped', ambience='Stopped', resume_offer={'layers': ['music']})), 'Paused')
+        self.assertEqual(status(self.snapshot(music='Stopped', ambience='Stopped')), 'Stopped')
+
+    def test_metadata_names_the_room_and_what_plays(self):
+        metadata = session_service.mpris_values(self.snapshot())['Metadata']
+        self.assertEqual(metadata['xesam:title'], 'Nocturne')
+        self.assertEqual(metadata['xesam:artist'], ['Piano'])
+        self.assertEqual(metadata['xesam:album'], 'Midnight library')
+        self.assertIn('Midnight library', metadata['xesam:comment'][0])
+        only_ambience = session_service.mpris_values(self.snapshot(music='Stopped'))['Metadata']
+        self.assertEqual(only_ambience['xesam:title'], 'Rain on glass')
+        self.assertEqual(only_ambience['xesam:album'], 'Midnight library')
+
+    def test_methods_send_the_room_transport(self):
+        sent = []
+        service = mock.Mock()
+        service.execute.side_effect = lambda action, args: sent.append((action, args))
+        snapshot = self.snapshot()
+        service.controller.snapshot.return_value = snapshot
+        mpris = session_service.Mpris.__new__(session_service.Mpris)
+        mpris.service = mpris_service = service
+        mpris.GLib = mock.Mock()
+        invocation = mock.Mock()
+        for method in ('Pause', 'PlayPause', 'Play', 'Stop'):
+            mpris.method(None, None, None, session_service.PLAYER_INTERFACE, method, None, invocation)
+        self.assertEqual(sent, [('transport', {'action': 'pause'}), ('transport', {'action': 'toggle'}),
+                                ('transport', {'action': 'play'}), ('leave', {})])
+        self.assertFalse(invocation.return_dbus_error.called, invocation.return_dbus_error.call_args)
+        self.assertIs(mpris.service, mpris_service)
 
 
 class ProtocolTests(unittest.TestCase):

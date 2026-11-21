@@ -563,6 +563,9 @@ class Controller:
         self.errors = {}
         self.transition = None
         self.resume_offer = None
+        # The outcome of the latest start (enter, Tune in, return): the window keeps a failed start's
+        # card on Now, named after the room it tried, instead of reading "no room" as nothing happened.
+        self.entry = None
         self.generation = 0
         self.cancel = threading.Event()
         self.closed = False
@@ -964,7 +967,7 @@ class Controller:
         with self.lock:
             return _copy({'active': self.active, 'last_session': self.last_session,
                           'variants': self._cached_file('room-variants.json', self.variants), 'layers': self.live, 'settings': self.settings,
-                          'recent': self.recent, 'resume_offer': self.resume_offer,
+                          'recent': self.recent, 'resume_offer': self.resume_offer, 'entry': self.entry,
                           'transition': self.transition, 'errors': self.errors,
                           'media': self.media, 'audio_policy': self.policy_status,
                           'room_volume': self.room_volume, 'last_entered_at': self.last_entered_at,
@@ -1203,6 +1206,7 @@ class Controller:
             self.resume_offer = None
             self.errors = {}
             self.transition = {'kind': 'enter', 'name': recipe['name'], 'id': generation}
+            self.entry = {'id': generation, 'name': recipe['name'], 'state': 'connecting'}
         self.worker.submit(self._enter, recipe, source, generation, cancel, args.get('_program_next'))
         self._changed()
         return {'accepted': True, 'message': 'Entering ' + recipe['name'], 'id': generation}
@@ -1402,6 +1406,7 @@ class Controller:
                 if old_verified:
                     old_verified.close()
                 self.active = recipe
+                self.entry = {'id': generation, 'name': recipe['name'], 'state': 'started'}
                 if station and new_program:
                     self.program = new_program
                 elif station and continuation and program_next is not None and not used_fallback:
@@ -1457,9 +1462,17 @@ class Controller:
                 self._route_preferred()
                 self._home_action('activate_room_scene', recipe.get('room_id'), cancel_event=cancel)
         except (OSError, ValueError, hub.HubError) as error:
+            if valid() and not strict_guard and not previous and self.active is None:
+                # From idle, each layer fails on its own: a room whose ambience or scene can start is entered
+                # with its music failure on the Music layer. Only a room where nothing starts fails as a whole.
+                self._enter_without_music(recipe, generation, cancel, valid, str(error))
             if valid():
                 with self.lock:
                     self.errors['music'] = str(error)
+                    if (self.entry or {}).get('id') == generation and self.entry.get('state') == 'connecting':
+                        # The previous room (if any) is still the active one; say which start failed.
+                        self.entry = {'id': generation, 'name': recipe['name'], 'state': 'failed',
+                                      'error': str(error), 'kept': (self.active or {}).get('name')}
         finally:
             if verified_file:
                 verified_file.close()
@@ -1476,6 +1489,41 @@ class Controller:
                 except (OSError, ValueError, hub.HubError):
                     pass
             self.refresh()
+
+    def _enter_without_music(self, recipe, generation, cancel, valid, music_error):
+        """Start the ambience and scene of a room whose music failed; commit the room when one of them
+        plays. Returns whether the room was entered."""
+        started, errors = [], {}
+        atmosphere, picture = recipe.get('atmosphere') or {}, recipe.get('picture') or {}
+        if atmosphere.get('kind', 'none') != 'none':
+            try:
+                self._commit_atmosphere(atmosphere, self.backend.start_atmosphere(self._scaled(atmosphere), cancel))
+                started.append('atmosphere')
+            except (OSError, ValueError, hub.HubError) as error:
+                errors['atmosphere'] = str(error)
+        if picture.get('enabled') and valid():
+            try:
+                self._start_picture(picture, cancel)
+                started.append('picture')
+            except (OSError, ValueError, hub.HubError) as error:
+                errors['picture'] = str(error)
+        if not started:
+            return False
+        with self.lock:
+            if not valid():
+                return False
+            recipe['room_volume'] = self.room_volume
+            self.active = recipe
+            self.program = None
+            self.errors.update(errors, music=music_error)
+            self.entry = {'id': generation, 'name': recipe['name'], 'state': 'started', 'music_error': music_error}
+            self.last_session = _copy(recipe)
+            self.last_entered_at = self.clock()
+            self.recent = [recipe['id']] + [r for r in self.recent if r != recipe['id']][:19]
+            self._persist()
+        self._route_preferred()
+        self._home_action('activate_room_scene', recipe.get('room_id'), cancel_event=cancel)
+        return True
 
     def _home_action(self, method, *args, **kwargs):
         try:
@@ -1560,7 +1608,22 @@ class Controller:
         self._changed()
         return {'message': 'Renamed to ' + name, 'variant': _copy(renamed)}
 
+    PAUSABLE = ('music', 'atmosphere', 'picture')
+
+    def _control(self, layer):
+        return {'music': self.backend.music_control, 'atmosphere': self.backend.atmosphere_control,
+                'picture': self.backend.picture_control}[layer]
+
+    def audible(self):
+        """Whether the room makes any sound: the room transport pauses when it does and plays when not."""
+        with self.lock:
+            return any((self.live.get(layer) or {}).get('status') == 'Playing' for layer in ('music', 'atmosphere'))
+
     def quiet(self, minutes=None):
+        """Room Pause: pause every playing layer and remember exactly those in the resume offer.
+
+        A layer the user had already paused on its own is not in the offer, so Resume leaves it paused.
+        A second Quiet (a timer, a call, Watch) adds to an offer for the same room instead of erasing it."""
         duration = float(minutes or 0)
         if not math.isfinite(duration) or not 0 <= duration <= 1440:
             raise SessionError('Choose an interruption from 0 to 1440 minutes')
@@ -1568,23 +1631,27 @@ class Controller:
         with self.lock:
             current = _copy(self.live)
             identity = self.active.get('id') if self.active else None
+            previous = _copy(self.resume_offer) if self.resume_offer and self.resume_offer.get('session_id') == identity else None
         paused, errors = [], {}
-        for layer, control in (('music', self.backend.music_control),
-                               ('atmosphere', self.backend.atmosphere_control),
-                               ('picture', self.backend.picture_control)):
+        for layer in self.PAUSABLE:
             if current.get(layer, {}).get('status') == 'Playing':
                 try:
-                    control('pause')
+                    self._control(layer)('pause')
                     paused.append(layer)
                 except (OSError, ValueError, hub.HubError) as error:
                     errors[layer] = str(error)
+        extra_video = getattr(self.backend, 'extra_video_control', None)
         try:
-            self.backend.extra_video_control('pause')
+            if extra_video:
+                extra_video('pause')
         except (OSError, ValueError, hub.HubError) as error:
             errors['video'] = str(error)
+        kept = [layer for layer in (previous or {}).get('layers', [])
+                if layer not in paused and current.get(layer, {}).get('status') == 'Paused']
+        layers = [layer for layer in self.PAUSABLE if layer in paused or layer in kept]
         with self.lock:
-            self.resume_offer = {'layers': paused, 'session_id': identity, 'ready_at': self.clock() + duration * 60,
-                                 'ready': not duration, 'message': 'Resume when you are ready'} if paused else None
+            self.resume_offer = {'layers': layers, 'session_id': identity, 'ready_at': self.clock() + duration * 60,
+                                 'ready': not duration, 'message': 'Resume when you are ready'} if layers else None
             self.errors.update(errors)
             for layer in paused:
                 self.live[layer]['status'] = 'Paused'
@@ -1592,22 +1659,53 @@ class Controller:
         return {'message': 'Room quiet. Resume is always explicit.', 'paused': paused, 'errors': errors}
 
     def resume(self):
+        """Room Play. With an offer it plays exactly the layers room Pause paused; without one (every
+        layer was paused on its own) it plays every paused layer, so Play never does nothing."""
         with self.lock:
             offer = _copy(self.resume_offer)
             identity = self.active.get('id') if self.active else None
-        if not offer:
+            paused = [layer for layer in self.PAUSABLE if (self.live.get(layer) or {}).get('status') == 'Paused']
+        if not offer and not (self.active and paused):
             raise SessionError('There is no paused room to resume')
-        if identity != offer['session_id']:
+        if offer and identity != offer['session_id']:
             raise SessionError('The paused room has changed; choose it again to resume')
-        for layer in offer['layers']:
-            control = {'music': self.backend.music_control, 'atmosphere': self.backend.atmosphere_control,
-                       'picture': self.backend.picture_control}[layer]
-            control('play')
+        for layer in offer['layers'] if offer else paused:
+            self._control(layer)('play')
             self.live[layer]['status'] = 'Playing'
         with self.lock:
             self.resume_offer = None
         self._changed()
         return {'message': 'Room resumed'}
+
+    def transport(self, action='toggle'):
+        """The one room Play/Pause that MPRIS, media keys and roomctl share with the window's button:
+        Pause is Quiet, Play is Resume, and a room with nothing left to resume is entered again."""
+        if action not in ('toggle', 'pause', 'play'):
+            raise SessionError('Choose toggle, pause or play')
+        audible = self.audible()
+        if action == 'pause' or (action == 'toggle' and audible):
+            if not audible:
+                return {'message': 'The room is already quiet'}
+            return self.quiet()
+        if audible:
+            return {'message': 'The room is already playing'}
+        with self.lock:
+            offer, active = self.resume_offer, _copy(self.active)
+            paused = any((self.live.get(layer) or {}).get('status') == 'Paused' for layer in self.PAUSABLE)
+        if offer or (active and paused):
+            return self.resume()
+        if active:
+            return self.enter({'recipe': active})
+        raise SessionError('Choose a room first')
+
+    def _layer_leaves_offer(self, name):
+        """A layer paused, played or stopped on its own is the user's choice: room Resume leaves it alone."""
+        with self.lock:
+            offer = self.resume_offer
+            if offer and name in offer.get('layers', []):
+                offer['layers'] = [layer for layer in offer['layers'] if layer != name]
+                if not offer['layers']:
+                    self.resume_offer = None
 
     def stop(self):
         self._invalidate()
@@ -1621,7 +1719,9 @@ class Controller:
                 if self.live.get(layer, {}).get('status') != 'Stopped':
                     errors[layer] = str(error)
         try:
-            self.backend.extra_video_control('stop')
+            extra_video = getattr(self.backend, 'extra_video_control', None)
+            if extra_video:
+                extra_video('stop')
         except (OSError, ValueError, hub.HubError) as error:
             errors['video'] = str(error)
         with self.lock:
@@ -1762,6 +1862,8 @@ class Controller:
             operation = {'music': self.backend.music_control, 'atmosphere': self.backend.atmosphere_control,
                          'picture': self.backend.picture_control}[name]
             operation(action, self._effective(level(value)) if action == 'volume' and self.room_volume < 100 else value)
+            if action in ('pause', 'play', 'toggle', 'play-pause', 'stop'):
+                self._layer_leaves_offer(name)
             if self.active:
                 field = {'window': 'window_open', 'placement': 'placement', 'volume': 'volume'}.get(action)
                 if field:
@@ -2324,6 +2426,11 @@ class Controller:
     @action('resume')
     def _act_resume(self, args):
         return self.resume()
+
+    # Room Play/Pause for MPRIS, media keys and roomctl; Pause interrupts like Quiet.
+    @action('transport', args={'action': 'text'})
+    def _act_transport(self, args):
+        return self.transport(args.get('action', 'toggle'))
 
     @action('stop')
     def _act_stop(self, args):

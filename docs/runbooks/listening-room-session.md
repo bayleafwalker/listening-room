@@ -127,7 +127,10 @@ Mix (from Now) has Music, Ambience and Scene rows, with separate state and
 controls (the controller still names the layers music, atmosphere and picture).
 Choose an offline sound with Change… on Ambience, adjust its volume, and use
 Window for outdoor sounds. Indoor sounds and Twitch do not expose that window control. Music and
-Ambience have independent volume and mute. Scene supports Moving picture (off for
+Ambience have independent volume and mute, and each has its own Pause/Play and Stop
+buttons on its row (the row says "paused" in the accent colour). A row's ⋯ menu repeats
+Change… and Stop with Next track and Try again when they apply; it appears only while it
+holds more than one item, and Try again is also a button on a failed row. Scene supports Moving picture (off for
 still artwork), Workspace 9, Here, On top and Small placement, an optional preferred
 display (Preferences) and Try again. If the preferred display is missing, the
 current workspace is used.
@@ -155,6 +158,43 @@ are not live speech/music detection or a guarantee about radio programming.
 Picture and Background audio failures are reported independently beside those
 layers.
 
+## Room transport: Pause, Play and Stop everywhere
+
+The window's Play/Pause, the mini player and popover, Space, MPRIS, the media keys and
+`listening-roomctl toggle|pause|play` share one rule (the controller's `transport`
+action; the window sends the same `quiet`/`resume`/`enter` it decides):
+
+- **Pause** is Quiet: every playing layer pauses, and exactly those layers are recorded
+  in the resume offer. A second Quiet (a timer, a call, Watch) adds to an offer for the
+  same room instead of erasing it.
+- **Play** resumes exactly what room Pause paused. A layer you paused, played or stopped
+  on its own in the Mix leaves the offer, so it stays as you left it. When there is no
+  offer (every layer was paused on its own), Play resumes every paused layer. With
+  nothing paused, Play enters the room again. Resume is never automatic.
+- While anything is audible the room shows **Pause**, even with one layer paused on its
+  own; MPRIS `PlaybackStatus` follows the same rule (Playing if any layer plays).
+- **Stop** (MPRIS `Stop`, the media Stop key) leaves the room as the window's Leave does.
+- Per-layer controls: `listening-roomctl music|ambience pause|play|toggle|stop|next`
+  (the `layer` action). Next, Previous and Seek stay the music layer's own.
+
+MPRIS metadata names what plays (title, and artist or station) and the room
+(`xesam:album` when the track has no album of its own, and `xesam:comment`
+"In ‹room›"); with only ambience playing it names the ambience. `listening-hub
+toggle|stop` with no player listed reaches the room when one is active, since an
+ambience-only room has no player of its own there.
+
+Each layer fails on its own, on Enter too: when a room's music fails from idle but its
+ambience or scene starts, the room is entered and Now shows the failure on the Music layer
+(banner and Mix row, each with Try again). A start (Enter, Return, Tune in) where nothing
+of the room can start keeps its card on Now, named after the room it tried, with Try again
+and Back; it never falls back to Rooms silently. If another room
+was playing it keeps playing ("‹room› is still there") and does not show the failure as
+its own. The controller reports the latest start in `inspect` as `entry`
+(`{id, name, state: connecting|started|failed, error, kept}`); `id` matches the `enter`
+reply. A layer that fails in a playing room (Try again in the Mix, a reconnect) shows on
+its layer and the rest of the room keeps playing. While connecting, Now shows only the
+spinner, the name and the stored room volume: no track controls.
+
 ## Desktop, MPRIS and phone controls
 
 Home Manager declares an idle `listening-session.service` under the graphical
@@ -163,7 +203,8 @@ session. It owns a private Unix socket at
 use that controller. MPRIS is `org.mpris.MediaPlayer2.ListeningRoom`; live
 radio reports no track skip or seek, while supported library queues and
 seekable items expose their actual capabilities. The hub excludes its own
-MPRIS identity when discovering external players. Quiet and Stop bypass queued
+MPRIS identity when discovering external players. MPRIS Play/Pause/PlayPause and the
+media keys act on the room (see Room transport). Quiet and Stop bypass queued
 discovery/load work and invalidate stale requests. Picture and audio
 replacement starts are serialized; canceled loaders cannot stop a newer
 player.
@@ -172,6 +213,8 @@ player.
 listening-roomctl enter midnight-library
 listening-roomctl quiet 10
 listening-roomctl resume
+listening-roomctl toggle        # room Play/Pause, as MPRIS and the media keys
+listening-roomctl music pause   # one layer: music|ambience pause|play|toggle|stop|next
 listening-roomctl save 'Rainy reading'
 listening-roomctl return
 listening-roomctl leave
@@ -199,7 +242,7 @@ The window (Rooms, Listen and Now with Mix, Timer and Output) is the only window
 `--ui=classic` are removed (the launcher refuses it with exit status 2); the code is in git history,
 before the commit that removed it. It sends no command
 that starts or changes playback until you act: Return, Enter and Tune in start sound;
-Pause is Quiet and Play is the existing resume. Space pauses or resumes, Esc closes Mix and
+Pause is Quiet and Play is Resume (see Room transport). Space pauses or resumes, Esc closes Mix and
 then goes back to browsing, Up and Down change room volume in Now and the mini player,
 Ctrl+1/2/3 open Rooms, Listen and Now, Ctrl+M opens the mini player, Ctrl+, Preferences,
 Ctrl+? the shortcuts. Its scene plays the room's reviewed loop, muted, only while the

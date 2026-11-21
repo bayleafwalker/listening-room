@@ -1306,7 +1306,14 @@ class ListenPage(ServicesMixin, SourcesMixin):
             button = Gtk.Button(label=action_label, valign=Gtk.Align.CENTER)
             button.connect('clicked', lambda b, *_: self.pressed(b, callback))
             box.append(button)
-        if menu:
+        if menu and len(menu) == 1:
+            # A ⋯ menu with one item is an extra click: show the lone action as a button.
+            lone_label, lone = menu[0]
+            button = Gtk.Button(label=lone_label, valign=Gtk.Align.CENTER)
+            button.add_css_class('flat')
+            button.connect('clicked', lambda *_: lone())
+            box.append(button)
+        elif menu:
             box.append(self.menu_button(entry.get('name') or 'this item', menu))
         return box
 
