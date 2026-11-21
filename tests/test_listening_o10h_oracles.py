@@ -172,6 +172,9 @@ class RenderedScenesUnchanged(unittest.TestCase):
 # Criterion 2 (model part): an unset Familiarity is labelled "A mix"
 # ======================================================================================================================
 class FamiliarityLabel(unittest.TestCase):
+    @unittest.skip('ORIGINAL, superseded by the window checks F1-F6 in tests/probes/listening-o10h-acceptance.py (coordinator decision: '
+                   "the model's return value for an unset preference is the implementer's design; the oracle is what the window shows "
+                   'and what choosing each option stores). It required next_station.choices() itself to return "A mix".')
     def test_unset_familiarity_is_a_mix_and_every_label_is_a_choice(self):
         import next_station
         for station in ({}, {'preferences': {}}, {'preferences': None}, {'preferences': {'energy': 'Low'}},
@@ -226,6 +229,22 @@ class Verdict(unittest.TestCase):
         # the literal text around a span is identity: a changed threshold is a different (missing) check
         self.assertNotEqual(self.run_verdict(['a within 150 ms (measured @@ ms)'],
                                              [('a within 999 ms (measured 12 ms)', True)])[0], 0)
+
+    def test_one_span_per_value_handles_a_repr_with_names(self):
+        # Coordinator decision: the o6 1l line prints a dict with quoted keys. Strict spans: one @@ per value, keys literal.
+        shown = "{'scope:all': 12.3, 'open Mix': 40.1, 'mood choice': 8.0}"
+        per_value = ["1l updates within 100 ms: {'scope:all': @@, 'open Mix': @@, 'mood choice': @@}"]
+        rc, out = self.run_verdict(per_value, [('1l updates within 100 ms: ' + shown, True)])
+        self.assertEqual(rc, 0, out)
+        # one @@ that would have to swallow the quoted keys does not match
+        rc, out = self.run_verdict(['1l updates within 100 ms: @@'], [('1l updates within 100 ms: ' + shown, True)])
+        self.assertNotEqual(rc, 0, out)
+        # a value that is not a measurement is not matched by its own span either
+        rc, out = self.run_verdict(per_value, [("1l updates within 100 ms: {'scope:all': 12.3, 'open Mix': slow, 'mood choice': 8.0}", True)])
+        self.assertNotEqual(rc, 0, out)
+        # the keys are identity: a renamed key is a different check
+        rc, out = self.run_verdict(per_value, [("1l updates within 100 ms: {'scope:all': 12.3, 'open Menu': 40.1, 'mood choice': 8.0}", True)])
+        self.assertNotEqual(rc, 0, out)
 
     # -- @@ no longer matches letters (adversarial) ----------------------------------------------------------------------
     def test_a_span_does_not_swallow_words(self):
