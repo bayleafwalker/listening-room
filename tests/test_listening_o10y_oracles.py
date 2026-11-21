@@ -367,6 +367,25 @@ class WatchOracles(Oracle):
                   if str(v.get('status', '')).lower() in ('playing', 'paused', 'watching') or v.get('active') is True]
         self.assertEqual(active, [], 'a closed video window is not reported as playing')
 
+    def test_quiet_while_watching_keeps_the_resume_offer(self):
+        """Added in phase 2 (2026-11-21) from the implementer's note that Quiet while watching replaces the
+        video's resume offer with Quiet's empty one. Criterion 1: stopping offers Resume. Pressing Quiet while the
+        room is already paused for Watch must not take that away."""
+        self.enter_room()
+        self.start_video()
+        self.settle(2)
+        offered = self.controller.snapshot()['resume_offer']
+        self.assertTrue(offered and set(ROOM_STATES) <= set(offered.get('layers') or []), offered)
+        self.action('quiet', {})
+        self.stop_video()
+        self.settle(2)
+        offer = self.controller.snapshot()['resume_offer']
+        self.assertTrue(offer and set(ROOM_STATES) <= set(offer.get('layers') or []),
+                        'after Quiet and Stop watching the room can still be resumed: %r' % offer)
+        self.action('resume', {})
+        for layer in ROOM_STATES:
+            self.assertEqual(self.backend.state[layer]['status'], 'Playing', layer)
+
     def test_watch_with_no_room_just_plays(self):
         self.assertIsNone(self.controller.active)
         self.start_video()
