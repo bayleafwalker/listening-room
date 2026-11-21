@@ -26,7 +26,8 @@ must not run by default (it needs built assets or minutes of CPU) gets a line wi
 reason in `tests/suites-manual.txt`; run it by name or with `test --all`. A test file not
 named `test_listening_*.py` fails the run, so none can be forgotten. Suites run with
 `tests/netguard.py` installed: a connection to anything but loopback fails with "fake it",
-so fake the network in tests and probes. Suites use isolated
+so fake the network in tests and probes; Python child processes a suite starts are guarded too (other
+programs are not). Suites use isolated
 HOME and XDG state and never touch your desktop session.
 
 **The asset render is expensive.** `nix build` renders every room's scene loop and sound
@@ -45,12 +46,17 @@ Xvfb display and D-Bus session with portals off. The acceptance probes in
 scripts/listening-dev.sh acceptance [OUTDIR]   # evidence probes, then the acceptance probes
 ```
 
+Both run their GUI children at low CPU priority (a user scope with CPUWeight=20 and nice 10),
+so a run does not starve your desktop; set `LISTENING_DEV_PRIORITY=normal` to turn that off.
+On a busy host the probes, and their timing checks, run slower.
+
 **Adding a probe.** Add `tests/probes/listening-<name>.py` (and, for an acceptance probe,
 a line in `tests/probes/acceptance.manifest`). An acceptance probe prints `PASS`/`FAIL`
 lines and writes its `*acceptance*.json` results into `--output`.
 `tests/probes/acceptance_verdict.py` judges a run by check names, not counts: any
 failure that is not a known one fails, and so does a check that disappeared. New passing
-checks need no edit. After a deliberate change, `scripts/listening-dev.sh acceptance OUTDIR --record`
+checks need no edit. In an expected line, `@@` stands for a measurement only (digits, sign, decimal point,
+list punctuation, units such as `ms`), and a `!` line cannot use it. After a deliberate change, `scripts/listening-dev.sh acceptance OUTDIR --record`
 rewrites `tests/probes/expected/<name>.checks`. A known failure is a line starting with
 `!` with a comment line above it saying why. Today O4 keeps the superseded "5i [ORIGINAL]" check, and O3 keeps
 its "hub test list registers the O2 and O3 suites" check, which looked for suite names in `nix/package.nix` and awaits a

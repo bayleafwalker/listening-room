@@ -5,6 +5,25 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- A station whose Familiarity was never set shows "A mix" (its neutral choice), not
+  "Familiar", the first button.
+- `tests/test_listening_station_eof.py` no longer fails now and then with
+  ConnectionRefused: the decoder creates its control socket a moment before it listens,
+  and the test now waits for the connection to be accepted, not for the file to exist.
+
+### Changed
+- Removed 17 scene tuning `color` keys the motion engine never reads (electrical effects
+  in four rooms and the second water effect in after-hours). The rendered loops are
+  byte-identical. Their colours are listed for a later scene review rather than honoured.
+- In an acceptance expectation, `@@` matches only a measurement (digits, sign, decimal
+  point, list punctuation, units), and a line that combines `!` with `@@` is refused.
+- `tests/netguard.py` also guards Python child processes that suites start (a
+  `sitecustomize` on `PYTHONPATH`, kept in explicit `env=` too); `tests/test_listening_netguard.py`
+  covers it. Non-Python children are not covered.
+- `scripts/listening-dev.sh probe` and `acceptance` run their GUI children in a low-CPU-weight
+  user scope at nice 10 (`LISTENING_DEV_PRIORITY=normal` turns it off).
+
 ## [2.4.0] - 2026-11-21
 
 ### Added
