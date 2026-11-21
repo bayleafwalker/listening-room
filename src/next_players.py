@@ -6,6 +6,7 @@ gi.require_version('Adw', '1')
 from gi.repository import Adw, GLib, Gtk
 
 import listening_hub as hub
+from next_async import run_async
 from next_widgets import icon_button, name_it
 
 OWN = ('radio', 'video')
@@ -71,15 +72,7 @@ class PlayersDialog(Adw.Dialog):
         def get():
             state = hub.inspect_state()
             return state.get('players') or [], state.get('system_volume') or {}
-        future = self.window.executor.submit(get)
-
-        def done(f):
-            try:
-                value = f.result()
-            except Exception:
-                return
-            GLib.idle_add(lambda: self.show(*value) or False)
-        future.add_done_callback(done)
+        run_async(get, lambda value: self.show(*value), None, self.window.executor)
         return True
 
     def show(self, players, system):

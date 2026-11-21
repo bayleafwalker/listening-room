@@ -13,10 +13,11 @@ import time
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gtk
 
 import channel_browse
 import next_station
+from next_async import run_async
 import youtube_search
 from next_widgets import label
 
@@ -124,13 +125,7 @@ class SourcesMixin:
             import atmosphere_catalogue
             return [sound for sound in atmosphere_catalogue.presets() if sound.get('available')]
 
-        def done(future):
-            try:
-                found = future.result()
-            except Exception:
-                found = []
-            GLib.idle_add(self.sounds_loaded, found)
-        self.executor.submit(read).add_done_callback(done)
+        run_async(read, self.sounds_loaded, lambda _error: self.sounds_loaded([]), self.executor)
 
     def sounds_loaded(self, found):
         if not self.closed:
@@ -163,13 +158,10 @@ class SourcesMixin:
             return
         self.twitch_loading = True
 
-        def done(future):
-            try:
-                found = future.result()
-            except Exception as problem:
-                found = {'state': 'attention', 'message': str(problem) or 'Twitch could not be read.', 'channels': []}
-            GLib.idle_add(self.twitch_read, found)
-        self.executor.submit(self.read_twitch).add_done_callback(done)
+        run_async(self.read_twitch, self.twitch_read,
+                  lambda problem: self.twitch_read({'state': 'attention', 'channels': [],
+                                                    'message': str(problem) or 'Twitch could not be read.'}),
+                  self.executor)
 
     @staticmethod
     def read_twitch():

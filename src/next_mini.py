@@ -7,8 +7,8 @@ left-click popover (`run_popover`, started by `listening-roomctl popover`), whic
 Break 10 min, Wind down 30 min and Leave room. Looking at it never changes playback;
 only Pause, Play, Return, the volume, the timer choices and Leave room do.
 """
-import concurrent.futures
 import subprocess
+import time
 
 import gi
 gi.require_version('Gtk', '4.0')
@@ -17,6 +17,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
 import next_model as model
 from next_actions import RoomActions, Ticket, when_finished
+from next_async import call_on_main, error_text, pool, run_async
 from next_widgets import FocalPicture, choose_renderer, show_texture, TimerPopover, accent_css, icon_button, install_css, label, name_it
 
 MINI_CSS = '''
@@ -42,17 +43,6 @@ MINI_CSS = '''
   { outline: 3px solid #111114; outline-offset: -6px; }
 window.mini-window { background: #0e0f12; }
 '''
-
-_mini_provider = None
-
-
-def install_mini_css(display):
-    global _mini_provider
-    if _mini_provider is None:
-        _mini_provider = Gtk.CssProvider()
-        _mini_provider.load_from_string(MINI_CSS)
-        Gtk.StyleContext.add_provider_for_display(display, _mini_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
-    return _mini_provider
 
 
 class MiniPlayer(Gtk.Overlay):
@@ -195,7 +185,8 @@ class MiniPlayer(Gtk.Overlay):
             if info:
                 self.state = info['state']
                 self.name.set_text(info['name'])
-                self.line.set_text(info['line'] + (' · ' + info['detail'] if info['detail'] else ''))
+                line, detail = model.without_name(info['name'], info['line'], info['detail'])
+                self.line.set_text(line + (' · ' + detail if detail else ''))
                 self.play.set_icon_name('media-playback-pause-symbolic' if info['state'] == 'playing'
                                         else 'media-playback-start-symbolic')
                 name_it(self.play, 'Pause the room' if info['state'] == 'playing' else 'Play the room')
@@ -258,28 +249,21 @@ class MiniKeys:
 
 class MiniWindow(Adw.Window):
     """The mini player as its own small window (Ctrl+M, the Waybar popover)."""
-    def __init__(self, app, host, extras=False, auto_close=False):
+    def __init__(self, app, host, extras=False):
         super().__init__(application=app, title='Room controls' if extras else 'Mini player')
         self.add_css_class('next')
         self.add_css_class('mini-window')
         self.set_default_size(480, 250 if extras else 190)
         self.set_size_request(320, 150)
         install_css(Gdk.Display.get_default())
-        install_mini_css(Gdk.Display.get_default())
+        install_css(Gdk.Display.get_default(), MINI_CSS, 1)
         self.toasts = Adw.ToastOverlay()
         self.player = MiniPlayer(host, extras=extras, closable=True)
         self.toasts.set_child(Gtk.WindowHandle(child=self.player))
         self.set_content(self.toasts)
+        # It stays open when it loses focus (with focus-follows-mouse it would close as soon as the pointer
+        # left it): Esc, its close control and Open the room window close it, and so does a second Waybar click.
         MiniKeys.install(self, self.player, escape=self.close)
-        self.was_active = False
-        if auto_close:
-            self.connect('notify::is-active', self.activity)
-
-    def activity(self, *_):
-        if self.is_active():
-            self.was_active = True
-        elif self.was_active and self.get_visible():
-            self.close()
 
     def toast(self, title, undo_label=None, undo=None):
         toast = Adw.Toast(title=title, timeout=5)
@@ -292,39 +276,60 @@ class MiniWindow(Adw.Window):
 class PopoverHost:
     """What the Waybar popover needs: its own polling, commands and toasts."""
     POLL_MS = 1000
+    FALLBACK_POLL_MS = 5000
 
-    def __init__(self, app, request, launch=None):
+    def __init__(self, app, request, launch=None, subscribe=None):
+        """``subscribe`` (session_client.subscribe) gives pushed snapshots; without it, or while its stream is
+        down, the host polls: every POLL_MS when it never had a stream, every FALLBACK_POLL_MS after an outage."""
         self.app = app
         self.request = request
         self.launch = launch or (lambda arguments: subprocess.Popen(['listening-room'] + arguments))
         self.snapshot = {}
         self.catalogue, self.presets = [], []
         self.closed = self.polling = self.offline = False
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-        self.urgent = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.executor = pool('mini-player', 2)
+        self.urgent = pool('mini-urgent')
+        self.poll_pool = pool('mini-poll')     # reads only: a slow command never delays a poll
         self.accent = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.accent,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
         self.actions = RoomActions(self.send, self.toast, lambda: self.snapshot)
-        self.window = MiniWindow(app, self, extras=True, auto_close=True)
+        self.window = MiniWindow(app, self, extras=True)
         self.window.connect('close-request', self.on_close)
         self.window.present()
-        self.poll_source = GLib.timeout_add(self.POLL_MS, self.poll)
+        self.stream, self.stream_up, self.stream_seen, self.polled_at = None, False, False, 0.
+        self.poll_source = GLib.timeout_add(self.POLL_MS, self.timed_poll)
         GLib.idle_add(self.load_static)
         self.poll()
+        if subscribe is not None:
+            try:
+                self.stream = subscribe(lambda update: call_on_main(self.pushed, update))
+            except Exception:
+                self.stream = None      # polling, as with a controller that has no stream
+
+    def pushed(self, update):
+        if self.closed:
+            return
+        if not update.connected:
+            self.stream_up = False
+            self.poll()
+            return
+        self.stream_up = self.stream_seen = True
+        self.polled(update.snapshot, None)
+
+    def timed_poll(self):
+        if self.closed:
+            return False
+        if self.stream_up or (self.stream_seen and (time.monotonic() - self.polled_at) * 1000 < self.FALLBACK_POLL_MS):
+            return True
+        return self.poll()
 
     def load_static(self):
         def get():
             import room_catalogue
             return room_catalogue.rooms()
 
-        def done(f):
-            try:
-                value = f.result()
-            except Exception:
-                return
-            GLib.idle_add(self.loaded, value)
-        self.executor.submit(get).add_done_callback(done)
+        run_async(get, self.loaded, None, self.executor)
         return False
 
     def loaded(self, catalogue):
@@ -342,19 +347,15 @@ class PopoverHost:
             return None
         ticket = Ticket()
         finish = ticket.finish
-        future = (self.urgent if urgent else self.executor).submit(self.request, action, args or {}, 5)
+        def ok(result):
+            finish()
+            self.succeeded(result, done)
 
-        def finished(f):
-            try:
-                result = f.result()
-            except Exception as error:
-                if finish:
-                    GLib.idle_add(lambda: finish() or False)
-                if not quiet:
-                    GLib.idle_add(lambda error=error: self.toast(model.plain_error(error)) or False)
-                return
-            GLib.idle_add(lambda: (finish() if finish else None, self.succeeded(result, done)) and False)
-        future.add_done_callback(finished)
+        def failed(error):
+            finish()
+            if not quiet:
+                self.toast(model.plain_error(error))
+        run_async(lambda: self.request(action, args or {}, 5), ok, failed, self.urgent if urgent else self.executor)
         return ticket
 
     def succeeded(self, result, done):
@@ -385,13 +386,10 @@ class PopoverHost:
         if self.polling:
             return True
         self.polling = True
+        self.polled_at = time.monotonic()
 
-        def done(f):
-            try:
-                GLib.idle_add(self.polled, f.result(), None)
-            except Exception as error:
-                GLib.idle_add(self.polled, None, str(error) or type(error).__name__)
-        self.executor.submit(self.request, 'inspect', {}, 3).add_done_callback(done)
+        run_async(lambda: self.request('inspect', {}, 3), lambda snapshot: self.polled(snapshot, None),
+                  lambda error: self.polled(None, error_text(error)), self.poll_pool)
         return True
 
     def polled(self, snapshot, error):
@@ -420,17 +418,31 @@ class PopoverHost:
             return False
         self.closed = True
         GLib.source_remove(self.poll_source)
+        if self.stream is not None:
+            self.stream.close()
         self.window.player.close()
-        self.executor.shutdown(wait=False, cancel_futures=True)
-        self.urgent.shutdown(wait=False, cancel_futures=True)
+        for workers in (self.executor, self.urgent, self.poll_pool):
+            workers.shutdown(wait=False, cancel_futures=True)
         return False
+
+
+def popover_activated(state, app, request, subscribe=None):
+    """A Waybar left-click: open the popover, or close it when it is already open (one instance, a toggle)."""
+    host = state.get('host')
+    if host is not None and not host.closed:
+        host.window.close()
+        return None
+    state['host'] = PopoverHost(app, request, subscribe=subscribe)
+    return state['host']
 
 
 def run_popover(argv, request=None):
     """`listening-roomctl popover`: the Waybar left-click controls. One instance at a time."""
+    subscribe = None
     if request is None:
         import session_client
         request = session_client.request
+        subscribe = getattr(session_client, 'subscribe', None)
     choose_renderer()
     app = Adw.Application(application_id='app.kotona.ListeningPopover')
     state = {}
@@ -438,11 +450,6 @@ def run_popover(argv, request=None):
     def startup(_app):
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
-    def activate(_app):
-        if state.get('host') is not None and not state['host'].closed:
-            state['host'].window.present()
-            return
-        state['host'] = PopoverHost(app, request)
     app.connect('startup', startup)
-    app.connect('activate', activate)
+    app.connect('activate', lambda _app: popover_activated(state, app, request, subscribe))
     return app.run(argv)

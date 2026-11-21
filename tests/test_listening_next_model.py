@@ -40,6 +40,47 @@ def library_queue():
     return value
 
 
+class SnapshotChangeTests(unittest.TestCase):
+    def test_only_keys_that_differ_count_and_the_clock_only_by_the_minute(self):
+        old = {'now': 600.0, 'active': {'id': 'a'}, 'stations': [{'id': 's'}], 'room_volume': 80}
+        self.assertIsNone(model.snapshot_changes(None, old))
+        self.assertIsNone(model.snapshot_changes(old, old), 'the same snapshot again draws everything')
+        same = copy.deepcopy(old)
+        same['now'] = 601.0
+        self.assertEqual(model.snapshot_changes(old, same), set())
+        moved = dict(same, room_volume=55, now=661.0)
+        self.assertEqual(model.snapshot_changes(old, moved), {'room_volume', 'minute'})
+        gone = {key: value for key, value in old.items() if key != 'stations'}
+        self.assertEqual(model.snapshot_changes(old, gone), {'stations'})
+
+    def test_touches(self):
+        self.assertTrue(model.touches(None, {'a'}))
+        self.assertFalse(model.touches(set(), None))
+        self.assertTrue(model.touches({'b', 'a'}, {'a'}))
+        self.assertFalse(model.touches({'stations'}, ignores=model.NOW_IGNORES))
+        self.assertTrue(model.touches({'stations', 'layers'}, ignores=model.NOW_IGNORES))
+
+
+class NowTextTests(unittest.TestCase):
+    def snapshot(self, title='', artist=''):
+        return {'active': {'id': 'adhoc', 'name': 'Your listening room', 'music': {'name': 'Groove Radio'}},
+                'layers': {'music': {'status': 'Playing', 'station': 'Groove Radio', 'title': title, 'artist': artist}}}
+
+    def test_a_room_named_after_its_station_says_the_name_once(self):
+        self.assertEqual(model.now_text(self.snapshot()), ('Groove Radio', '', ''))
+        self.assertEqual(model.now_text(self.snapshot('Night Drive')), ('Groove Radio', 'Night Drive', ''))
+        self.assertEqual(model.now_text(self.snapshot('Night Drive', 'Someone')), ('Groove Radio', 'Night Drive', 'Someone'))
+
+    def test_the_mix_button_and_mini_players_do_not_repeat_it_either(self):
+        snap = self.snapshot()
+        self.assertEqual(model.layer_summary(snap, 'Groove Radio'), 'Music')
+        self.assertEqual(model.layer_summary(snap), 'Groove Radio')
+        self.assertEqual(model.layer_summary(snap, 'Midnight library'), 'Groove Radio')
+        self.assertEqual(model.without_name('Groove Radio', 'groove radio ', 'Night Drive'), ('Night Drive', ''))
+        self.assertEqual(model.without_name('Groove Radio', 'Night Drive', 'Groove Radio'), ('Night Drive', ''))
+        self.assertEqual(model.without_name('Groove Radio', 'Night Drive', 'Someone'), ('Night Drive', 'Someone'))
+
+
 class LaunchTests(unittest.TestCase):
     def test_an_active_room_opens_now_otherwise_rooms(self):
         self.assertEqual(model.launch_view(snapshot()), 'now')

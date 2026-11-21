@@ -659,7 +659,16 @@ with tempfile.TemporaryDirectory(prefix='listening-listen-') as folder:
         entries = [widget for widget in widgets(dialog) if isinstance(widget, Gtk.Entry)]
         assert entries, 'New station has no name entry'
         entries[0].set_text('Probe station')
-        dialog.emit('response', 'save')
+        # The dialog is an Adw.Dialog with its own Create button (it has no "response" signal): give it a start
+        # through the link page, then create.
+        entries[1].set_text('https://radio.example.test/probe-station.mp3')
+        use = [w for w in widgets(dialog) if isinstance(w, Gtk.Button) and w.get_label() == 'Use this link']
+        assert use, 'New station has no Use this link'
+        use[0].emit('clicked')
+        pump(.4)
+        create = [w for w in widgets(dialog) if isinstance(w, Gtk.Button) and w.get_label() == 'Create station']
+        assert create and create[0].get_sensitive(), 'Create station is not offered after a start was chosen'
+        create[0].emit('clicked')
         settle(1.2)
         assert any(entry[0] == 'station.save' and entry[1]['station']['name'] == 'Probe station'
                    for entry in log[mark:]), mutating(mark)

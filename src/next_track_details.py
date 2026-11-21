@@ -5,7 +5,6 @@ are suggestions, confirmation is separate from reviewing audio, and a review is
 bound to the audio version the controller hashed. None of these actions starts
 music: the dialog only sends ``metadata.*`` and reads the session snapshot.
 """
-import concurrent.futures
 import json
 
 import gi
@@ -14,6 +13,7 @@ gi.require_version('Adw', '1')
 from gi.repository import Adw, GLib, Gtk
 
 import next_prefs
+from next_async import pool, run_async
 import next_widgets
 import session_client
 
@@ -140,11 +140,11 @@ class TrackDetailsDialog(Adw.Dialog):
         self.candidate_fingerprint = None
         self.closed = self.pending = False
         self.acoustid_ready = False
-        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix='room-track-details')
+        self.executor = pool('room-track-details', 2)
         self.set_title('Track details')
         self.set_content_width(520)
         self.set_content_height(620)
-        next_prefs.install_css(window.get_display())
+        next_widgets.install_css(window.get_display(), next_prefs.CSS, 2)
         self.build()
         try:
             self.connect('closed', lambda *_: self.cleanup())
@@ -302,13 +302,8 @@ class TrackDetailsDialog(Adw.Dialog):
             status = session_client.request('metadata.status', {}, timeout=3)
             return record, jobs, status
 
-        def complete(future):
-            try:
-                value, error = future.result(), None
-            except Exception as exc:
-                value, error = None, str(exc) or 'Metadata is unavailable'
-            GLib.idle_add(lambda: self.apply(value, error) or False)
-        self.executor.submit(work).add_done_callback(complete)
+        run_async(work, lambda value: self.apply(value, None),
+                  lambda exc: self.apply(None, str(exc) or 'Metadata is unavailable'), self.executor)
         return True
 
     def apply(self, value, error):
