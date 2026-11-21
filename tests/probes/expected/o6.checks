@@ -1,4 +1,8 @@
 # Entries with @@ declare the measured part of the name; everything else must match exactly.
+# KNOWN FAILURES: "6d/6o [ORIGINAL, superseded by 6d-R1/6o-R1]" are the original oracles, kept verbatim. O10-YOUTUBE
+# criterion 3 (UX Proposal B, N11; 2026-11-21) makes Play the primary of on-demand YouTube results and keeps Tune in for
+# live ones, so the originals fail by design once it lands (they still pass on main e45d947). 6d-R1 and 6o-R1 guard
+# the same intent: the results list, live results keep Tune in, and the primary starts the result as music in 1.5 s.
 1a the Rooms grid has room cards to click
 1b single click -> preview visible within 150 ms for every card (measured @@ ms)
 1c the GTK thread was never held for more than 150 ms after the first (cold) preview (gaps @@ ms), and never more than 400 ms
@@ -104,7 +108,9 @@
 6a the YouTube scope says how it works before any search
 6b the search ran yt-dlp with ytsearch, the query as one argument, and no API key
 6c a query cannot inject a command or an option
-6d results show title, channel and duration, with Tune in
+!6d [ORIGINAL, superseded by 6d-R1] results show title, channel and duration, with Tune in
+6d-R1 results show title, channel and duration; each on-demand result has Play as its primary, none Tune in
+6d-R1 live results keep Tune in as their primary
 6e each result has a menu with Play as ambience and Open elsewhere
 6f YouTube search is inert
 6g the GTK thread was not blocked by the search subprocess (worst gap @@ ms)
@@ -115,7 +121,8 @@
 6l a failing yt-dlp says the search did not finish (no raw error, no crash)
 6m a pasted YouTube link still offers the link sheet
 6n the link sheet offers Play and Play as ambience
-6o Tune in on a result sends one link command to play it as music
+!6o [ORIGINAL, superseded by 6o-R1] Tune in on a result sends one link command to play it as music
+6o-R1 Play (the primary) on an on-demand result sends one link command to play it as music
 6p without yt-dlp the YouTube scope says to install it, truthfully
 6q ... and does not pretend to search or hang on Searching
 6r Preferences says the same about yt-dlp
