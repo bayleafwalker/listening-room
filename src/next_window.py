@@ -1358,6 +1358,7 @@ class NextWindow(Adw.ApplicationWindow):
         """Draw a snapshot. Each surface draws only when something it reads changed since the last draw;
         drawing the same snapshot again (static data arrived) redraws everything."""
         changed = model.snapshot_changes(self.rendered, snapshot)
+        playing_changed = model.now_changes(changed, self.rendered, snapshot)
         self.snapshot = self.rendered = snapshot
         settings = snapshot.get('settings') or {}
         fading = (bool(settings.get('keep_controls')), bool(settings.get('reduced_motion')))
@@ -1398,9 +1399,9 @@ class NextWindow(Adw.ApplicationWindow):
                 self.want_now = False
                 if (snapshot.get('errors') or {}).get('music'):
                     self.error_toast(snapshot['errors']['music'])
-        if self.due('mini', changed, self.catalogue, self.presets):
+        if self.due('mini', playing_changed, self.catalogue, self.presets):
             self.guard('mini', self.mini_player.update, snapshot)
-        if self.mini_window is not None and self.due('mini-window', changed, self.mini_window, self.catalogue, self.presets):
+        if self.mini_window is not None and self.due('mini-window', playing_changed, self.mini_window, self.catalogue, self.presets):
             self.guard('mini-window', self.mini_window.player.update, snapshot)
         pending = self.pending
         if pending and pending['state'] == 'connecting' and pending['done'] and not snapshot.get('transition'):
@@ -1409,10 +1410,10 @@ class NextWindow(Adw.ApplicationWindow):
         now_state = (pending and pending['state'], self.offline, self.listen_first, self.catalogue, self.presets)
         if pending:
             self.guard('pending', self.render_pending) if pending['state'] == 'failed' else None
-            if active and pending['state'] == 'failed' and self.due('now', changed, *now_state):
+            if active and pending['state'] == 'failed' and self.due('now', playing_changed, *now_state):
                 self.guard('now', self.render_now, snapshot)
         elif active:
-            if self.due('now', changed, *now_state):
+            if self.due('now', playing_changed, *now_state):
                 self.guard('now', self.render_now, snapshot)
         elif self.current_page() == 'now':
             self.show_rooms()

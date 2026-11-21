@@ -40,6 +40,20 @@ def snapshot_changes(old, new):
     return changed
 
 
+def now_changes(changed, old, new):
+    """``changed`` as the playing-room surfaces see it: they read only the active room's own saved variant,
+    so a change to another saved room (a rename, a save) is not theirs."""
+    if changed and 'variants' in changed and active_variant(old) == active_variant(new):
+        return changed - {'variants'}
+    return changed
+
+
+def active_variant(snapshot):
+    active = (snapshot or {}).get('active') or {}
+    return next((item for item in (snapshot or {}).get('variants') or []
+                 if isinstance(item, dict) and item.get('id') == active.get('id')), None)
+
+
 def _minute(snapshot):
     now = snapshot.get('now')
     return int(now // 60) if isinstance(now, (int, float)) else None
@@ -369,8 +383,7 @@ def _music_identity(music):
 def room_base(snapshot, catalogue=()):
     """The saved room or catalogue room the active room was entered from, or None for an ad-hoc room."""
     active = (snapshot or {}).get('active') or {}
-    variant = next((item for item in (snapshot or {}).get('variants') or []
-                    if isinstance(item, dict) and item.get('id') == active.get('id')), None)
+    variant = active_variant(snapshot)
     if variant is not None:
         return {'name': variant.get('name'), 'music': variant.get('music') or {}}
     room = next((item for item in catalogue or () if item.get('id') == active.get('room_id')), None)
