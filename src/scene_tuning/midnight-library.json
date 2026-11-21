@@ -502,12 +502,7 @@
       "strength": 0.35,
       "seed": 2421,
       "cycles": 1,
-      "feather": 0.025,
-      "color": [
-        255,
-        190,
-        110
-      ]
+      "feather": 0.025
     },
     {
       "kind": "electrical",
@@ -559,12 +554,7 @@
       "strength": 0.35,
       "seed": 2422,
       "cycles": 1,
-      "feather": 0.025,
-      "color": [
-        255,
-        190,
-        110
-      ]
+      "feather": 0.025
     }
   ],
   "rigid": [

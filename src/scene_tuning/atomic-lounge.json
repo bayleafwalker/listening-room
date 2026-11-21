@@ -63,12 +63,7 @@
       "strength": 0.18,
       "seed": 8300,
       "cycles": 1,
-      "feather": 0.025,
-      "color": [
-        255,
-        190,
-        110
-      ]
+      "feather": 0.025
     },
     {
       "kind": "electrical",
@@ -124,12 +119,7 @@
       "strength": 0.18,
       "seed": 8301,
       "cycles": 1,
-      "feather": 0.025,
-      "color": [
-        255,
-        190,
-        110
-      ]
+      "feather": 0.025
     },
     {
       "kind": "electrical",
@@ -185,12 +175,7 @@
       "strength": 0.18,
       "seed": 8302,
       "cycles": 1,
-      "feather": 0.025,
-      "color": [
-        255,
-        190,
-        110
-      ]
+      "feather": 0.025
     },
     {
       "kind": "electrical",
@@ -222,12 +207,7 @@
       "strength": 0.9,
       "seed": 8266,
       "cycles": 2,
-      "feather": 0.02,
-      "color": [
-        255,
-        176,
-        82
-      ]
+      "feather": 0.02
     },
     {
       "kind": "electrical",
@@ -259,12 +239,7 @@
       "strength": 0.9,
       "seed": 8267,
       "cycles": 2,
-      "feather": 0.02,
-      "color": [
-        255,
-        176,
-        82
-      ]
+      "feather": 0.02
     },
     {
       "kind": "electrical",
@@ -296,12 +271,7 @@
       "strength": 0.9,
       "seed": 8268,
       "cycles": 2,
-      "feather": 0.02,
-      "color": [
-        255,
-        176,
-        82
-      ]
+      "feather": 0.02
     },
     {
       "kind": "cloud",
