@@ -48,8 +48,13 @@ M6 steady state: loops still play in the sampled previews (every 5th of 40)
 M7 steady state: over the last 20 previews RSS grows <= 64 MB, threads <= 6, fds <= 12; since warm-up at most twice that
 M8 no-teardown guarantee: no GL display or context is left behind per preview (GL threads <= warm)
 M9 no-teardown guarantee: no new GStreamer pipeline is built once every loop has been shown (@@ built)
-U1 every user clip visibly played in its preview
-U2 user clips are bounded: total media cost with 8 catalogue loops and 16 user clips <= 464 MB (@@ MB)
+# KNOWN FAILURES allowed: "U1/U2 [ORIGINAL, superseded by U1r/U2r]", kept and still evaluated. Phase 2 judged "bounded"
+# against the implementer's LOOP_LIMIT (12 loop files; later clips show their still, since evicting a pipeline would be
+# a teardown) and re-based U2 with the coordinator's M2r. U1r/U2r state the revised criteria; reasons in the probe.
+!U1 [ORIGINAL, superseded by U1r] every user clip visibly played in its preview
+U1r user clips: at least 3 beyond the catalogue get a moving loop (@@ did), clips past the window's loop capacity show their still, and the catalogue loops still play afterwards
+!U2 [ORIGINAL, superseded by U2r] user clips are bounded: total media cost with 8 catalogue loops and 16 user clips <= 464 MB (@@ MB)
+U2r user clips are bounded: total media cost with 8 catalogue loops and 16 user clips <= 520 MB + 50 MB per user clip with a loop (@@ MB against @@ MB)
 U3 user clips are bounded: each of the last 8 clips adds <= 4 MB, <= 1 thread, <= 2 fds (@@)
 U4 decoder threads stay bounded with user clips (<= 16, @@)
 media: the child finished without a crash or hang

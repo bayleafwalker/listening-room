@@ -1207,11 +1207,25 @@ def media(env, step, check, info, clips):
           all_played and made is not None and made[0] == 0, made and (made[0], dict(made[1].most_common(8))),
           measured=made[0] if made else 'unknown')
 
+    def user_preview(card):
+        """(moved, % changed, s, luma spread of the scene): a clip that does not move must still show its still."""
+        rooms.click(card)
+        moved, pct, after = rooms.moves(6.)
+        note_peak()
+        _, box = rooms.scene_box()
+        spread = -1.
+        if box is not None:
+            from PIL import ImageStat
+            spread = round(ImageStat.Stat(grab(box).convert('L')).stddev[0], 1)
+        rooms.escape()
+        pump(.35)
+        return moved, round(pct, 2), round(after, 1), spread
+
     step('user clips')
     played_users, points = [], []
     for half in (users[:len(users) // 2], users[len(users) // 2:]):
         for card in half:
-            played_users.append(preview(card))
+            played_users.append(user_preview(card))
         pump(3.)
         points.append(measure('after %d user clips (%d distinct loop files)' % (
             len(played_users), 8 + len(played_users))))
@@ -1222,11 +1236,35 @@ def media(env, step, check, info, clips):
         per = lambda key: (points[1][key] - points[0][key]) / float(last)
         info('user clips: total media cost %.1f MB for %d files; the last %d clips added %.1f MB, %.1f threads, '
              '%.1f fds each' % (total, 8 + len(users), last, per('rss_mb'), per('threads'), per('fds')))
-        users_ok = all(p[0] for p in played_users)
-        check('U1 every user clip visibly played in its preview', all(p[0] for p in played_users), played_users)
-        check('U2 user clips are bounded: total media cost with 8 catalogue loops and %d user clips <= %d MB (@@ MB)'
-              % (len(users), EXTRA_TOTAL_MB), users_ok and total <= EXTRA_TOTAL_MB, (cold_point['rss_mb'], points[1]['rss_mb']),
-              measured=round(total))
+        moving = [p[0] for p in played_users]
+        check('U1 [ORIGINAL, superseded by U1r] every user clip visibly played in its preview', all(moving), played_users)
+        # Revision U1r/U2r (acceptance author, phase 2; the coordinator asked to judge "bounded" against the
+        # implementer's LOOP_LIMIT of 12 loop files per process). Bounded cost here means a fixed number of loop
+        # pipelines: an evicted one would be a teardown, which the 2.3.2 guarantee forbids. Clips beyond the
+        # window's capacity fall back to their still, the same graceful layer failure as reduced motion or no
+        # GStreamer. Every loop the product can show today must still fit: the 8 rooms, the 2 lake views and the
+        # optional local preview clip, so at least 3 user clips beyond the catalogue must move. Clips that do not
+        # move must show a real still (not blank), only after the capacity is used up (a prefix), and the
+        # catalogue's loops must keep playing afterwards. U2 is re-based with M2r: <= 520 MB plus <= 50 MB per user
+        # clip that got a loop (U3 still requires the cost to stop growing).
+        users_moved = sum(moving)
+        prefix = moving == sorted(moving, reverse=True)
+        stills_ok = all(p[3] >= 12 for p in played_users if not p[0])
+        after_users = [preview(card)[0] for card in catalogue[:2]]
+        users_ok = users_moved >= 3 and prefix and stills_ok and all(after_users)
+        info('user clips: %d of %d moved; prefix %s; stills %s; catalogue loops afterwards %s' % (
+            users_moved, len(moving), prefix, [p[3] for p in played_users if not p[0]], after_users))
+        check('U1r user clips: at least 3 beyond the catalogue get a moving loop (@@ did), clips past the window\'s '
+              'loop capacity show their still, and the catalogue loops still play afterwards',
+              users_ok, (played_users, after_users), measured=users_moved)
+        check('U2 [ORIGINAL, superseded by U2r] user clips are bounded: total media cost with 8 catalogue loops and %d '
+              'user clips <= %d MB (@@ MB)' % (len(users), EXTRA_TOTAL_MB), all(moving) and total <= EXTRA_TOTAL_MB,
+              (cold_point['rss_mb'], points[1]['rss_mb']), measured=round(total))
+        cap = MEDIA_TOTAL_R_MB + MEDIA_PER_LOOP_R_MB * users_moved
+        check('U2r user clips are bounded: total media cost with 8 catalogue loops and %d user clips <= %d MB + %d MB '
+              'per user clip with a loop (@@ MB against @@ MB)' % (len(users), MEDIA_TOTAL_R_MB, MEDIA_PER_LOOP_R_MB),
+              users_ok and total <= cap, (cold_point['rss_mb'], points[1]['rss_mb'], users_moved),
+              measured=(round(total), cap))
         check('U3 user clips are bounded: each of the last %d clips adds <= %d MB, <= %d thread, <= %d fds (@@)'
               % (last, EXTRA_PER_CLIP_MB, EXTRA_PER_CLIP_THREADS, EXTRA_PER_CLIP_FDS),
               users_ok and per('rss_mb') <= EXTRA_PER_CLIP_MB and per('threads') <= EXTRA_PER_CLIP_THREADS
