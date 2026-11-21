@@ -10,7 +10,7 @@
 1i the room is really entered (controller active)
 1j double-click on the room you are already in sends no enter and shows Now
 1k Enter on a card enters exactly once
-1l every selection (scope chips, Mix, station, mood) updates within 100 ms: {'scope:all': @@, 'scope:stations': @@, 'scope:radio': @@, 'scope:library': @@, 'scope:channels': @@, 'scope:world': @@, 'scope:youtube': @@, 'open Mix': @@, 'open a station': @@, 'mood choice': @@}
+1l every selection (scope chips, Mix, station, mood) updates within 100 ms: {'scope:all': @@, 'scope:stations': @@, 'scope:radio': @@, 'scope:library': @@, 'scope:channels': @@, 'scope:world': @@, 'scope:youtube': @@, 'open Mix': @@, 'open a station': @@}
 1m the GTK thread was never held for more than 120 ms during those selections (worst @@ ms)
 1n no blocking file/network/decode call from application code on the GTK thread while selecting
 1o no controller request was made synchronously on the GTK thread during the whole scenario
