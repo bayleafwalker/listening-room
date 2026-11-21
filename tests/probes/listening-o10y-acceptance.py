@@ -449,7 +449,18 @@ def command_url(command):
 
 
 def watching_text(window):
-    return sorted(t for t in all_texts(window) if t.startswith('Watching'))
+    """The Watching chip as shown: mapped widgets outside toasts (revision H3)."""
+    # [ORIGINAL, superseded by H3]: sorted(t for t in all_texts(window) if t.startswith('Watching')) also read
+    # hidden labels and toast titles, so a hidden chip or a "Watching …" toast counted as the chip. Harness fix.
+    found = set()
+    for w in walk(window):
+        if not w.get_mapped() or in_toast(w, window.toasts):
+            continue
+        for getter in ('get_label', 'get_text'):
+            value = getattr(w, getter, lambda: None)()
+            if isinstance(value, str) and value.startswith('Watching'):
+                found.add(value)
+    return sorted(found)
 
 
 def scenario(fn):
