@@ -215,15 +215,22 @@ class FocalPicture(Gtk.Widget):
         snapshot.restore()
 
 
+_GST = {}                 # 'ready': whether GStreamer playback is there, checked once
+
+
 def gst_ready():
     """Gtk.MediaFile aborts the process when GStreamer playback is missing."""
-    try:
-        gi.require_version('Gst', '1.0')
-        from gi.repository import Gst
-        Gst.init(None)
-        return Gst.ElementFactory.find('playbin3') is not None
-    except (ValueError, ImportError, GLib.Error):
-        return False
+    if 'ready' not in _GST:
+        try:
+            gi.require_version('Gst', '1.0')
+            from gi.repository import Gst
+            Gst.init(None)
+            _GST['ready'] = Gst.ElementFactory.find('playbin3') is not None
+        except (ValueError, ImportError, GLib.Error):
+            _GST['ready'] = False
+        if _GST['ready']:
+            bound_decoders(Gst)
+    return _GST['ready']
 
 
 # Scene loops and GStreamer. Clearing or finalizing a Gtk.MediaFile drops GTK's reference on its
@@ -233,8 +240,83 @@ def gst_ready():
 # (g_object_unref <- gst_play_main). Each pipeline also leaves a GL display and context thread behind
 # for good. So there is one Gtk.MediaFile per loop file for the life of the process, shared by the
 # Scenes that show it and only ever played or paused, never cleared: the cost is bounded by the
-# catalogue's loops and flat once each has been shown.
+# number of loops (LOOP_LIMIT) and flat once each has been shown.
+#
+# Most of what a loop cost was its decoder: libav's H.264 decoder starts one frame thread per core by
+# default, each holding its own frames (about 120 MB per 1440x810 4:4:4 loop on 16 cores). One thread
+# decodes a 24 fps scene loop in real time, so every libav video decoder the process creates is capped
+# (bound_decoders). What remains per loop, paused or playing, is its reference frames and GTK's GL video
+# sink: about 40 MB with software GL.
+DECODER_THREADS = 1
+LOOP_LIMIT = 12           # loop files that may hold a pipeline: the catalogue's, plus a few of your own
 _LOOPS = {}               # loop path -> _Loop
+
+
+def bound_decoders(Gst):
+    """Cap the threads of every libav video decoder any pipeline in this process adds (once per process).
+
+    Gtk.MediaFile does not expose its pipeline, so this hooks GstBin::element-added for every bin and
+    caps a decoder when decodebin adds it, before it starts. PyGObject's own emission hooks corrupt
+    the emission (GObject.add_emission_hook, 3.58), so the hook is GObject's public C API through ctypes.
+    Without it the loops still play, only with libav's default of one thread per core."""
+    if _GST.get('hook') is not None:
+        return
+    try:
+        import ctypes
+        gobject = ctypes.CDLL('libgobject-2.0.so.0')
+        gst = ctypes.CDLL('libgstreamer-1.0.so.0')
+    except OSError:
+        _GST['hook'] = False
+        return
+    gobject.g_type_from_name.restype = ctypes.c_size_t
+    gobject.g_value_get_object.restype = ctypes.c_void_p
+    gobject.g_value_get_object.argtypes = [ctypes.c_void_p]
+    gobject.g_signal_lookup.restype = ctypes.c_uint
+    gobject.g_signal_lookup.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+    gobject.g_signal_add_emission_hook.restype = ctypes.c_ulong
+    gobject.g_signal_add_emission_hook.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p,
+                                                   ctypes.c_void_p, ctypes.c_void_p]
+    gobject.g_object_class_find_property.restype = ctypes.c_void_p
+    gobject.g_object_class_find_property.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    gst.gst_element_get_factory.restype = ctypes.c_void_p
+    gst.gst_element_get_factory.argtypes = [ctypes.c_void_p]
+    gst.gst_element_factory_get_metadata.restype = ctypes.c_char_p
+    gst.gst_element_factory_get_metadata.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    gst.gst_object_get_name.restype = ctypes.c_void_p
+    gst.gst_object_get_name.argtypes = [ctypes.c_void_p]
+    value_size = ctypes.sizeof(ctypes.c_size_t) + 2 * 8     # GValue: a GType and two 64-bit data words
+
+    def cap(element):
+        factory = gst.gst_element_get_factory(element)
+        if not factory:
+            return
+        name = gst.gst_object_get_name(factory)
+        decoder = ctypes.string_at(name).startswith(b'avdec_') if name else False
+        gobject.g_free(ctypes.c_void_p(name))
+        if (decoder and b'Video' in (gst.gst_element_factory_get_metadata(factory, b'klass') or b'') and
+                gobject.g_object_class_find_property(ctypes.c_void_p.from_address(element), b'max-threads')):
+            gobject.g_object_set(ctypes.c_void_p(element), b'max-threads', ctypes.c_int(DECODER_THREADS),
+                                 ctypes.c_void_p(None))
+
+    def added(_hint, count, values, _data):
+        try:
+            element = gobject.g_value_get_object(values + value_size) if count >= 2 else None
+            if element:
+                cap(element)
+        except Exception:   # never let a failure here unhook the cap (a False return removes the hook)
+            pass
+        return 1
+
+    hook = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p)(added)
+    signal = gobject.g_signal_lookup(b'element-added', gobject.g_type_from_name(b'GstBin'))
+    if not signal:
+        _GST['hook'] = False
+        return
+    hook_id = gobject.g_signal_add_emission_hook(signal, 0, ctypes.cast(hook, ctypes.c_void_p), None, None)
+    _GST['hook'] = hook     # held for the life of the process, like the loops
+    # No Python callback may run once the interpreter is finalizing.
+    import atexit
+    atexit.register(gobject.g_signal_remove_emission_hook, ctypes.c_uint(signal), ctypes.c_ulong(hook_id))
 
 
 class _Loop:
@@ -253,8 +335,11 @@ class _Loop:
 
 
 def shared_loop(path):
+    """The loop for this file, or None when LOOP_LIMIT loops already exist (the scene shows its still)."""
     loop = _LOOPS.get(path)
     if loop is None:
+        if len(_LOOPS) >= LOOP_LIMIT:
+            return None
         loop = _LOOPS[path] = _Loop(path)
     return loop
 
@@ -302,12 +387,13 @@ class Scene(Gtk.Overlay):
         self.still = texture = texture_for(still)
         self.picture.set_paintable(texture)
         if self.want_motion:
-            self.loop = shared_loop(assets['loop'])
-            self.media = media = self.loop.media
-            if media.get_error() is not None:   # this loop failed before: still art, like _fall_back
+            loop = shared_loop(assets['loop'])
+            if loop is None or loop.media.get_error() is not None:
+                # Too many loops already, or this one failed before: still art, like _fall_back.
                 self.want_motion = False
-                self._drop_media()
                 return
+            self.loop = loop
+            self.media = media = loop.media
             self.error_handler = media.connect('notify::error', Scene._failed, self)
             self.picture.set_paintable(media)
             self._visibility(mapped=self.get_mapped())
