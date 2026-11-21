@@ -453,6 +453,14 @@ def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
         preview (same launch path, cairo on Xvfb), i.e. ~50 MB per live pipeline including the first scene's
         one-time GL, decoder and llvmpipe set-up. 64 MB per loop file allows ~1.3x that, plus 160 MB for the
         one-time set-up: 672 MB for the 8 loop files shown here, 800 MB for 10.
+    Revision 3 (2026-11-21, coordinator decision for 2.3.2): the pool cap is re-based to POOL_BASE_MB + 150 MB
+    per loop file (~120 MB measured per live pipeline on c8d3882 with 16 cores, plus margin). Reason: the
+    operator's desktop crashes today and the crash and leak fixes both pass; the pool cost is bounded and no
+    longer grows; it is dominated by avdec_h264's one-thread-per-core decoding (16 `av:h264:dfN` threads per
+    pipeline), which Gtk.MediaFile's public API cannot limit. Cutting the steady-state cost (decoder threads,
+    idling off-screen loops) is O10 follow-up work.
+    [ORIGINAL, superseded by revision 3] pool cap 160 MB + 64 MB per loop file, still evaluated and printed
+    as INFO (c8d3882 measured 959 MB for 8 files against its 672 MB).
     Original criterion (revision 1, kept for the record; failed by a798dfd only on threads/fds/RSS): warm-up
     of 8 previews, live Scenes <= 2, live Gtk.MediaFiles <= 1 at baseline and end, threads <= baseline + 6,
     fds <= baseline + 12, RSS <= baseline + 64 MB. Main leaked ~9 MB, 3 threads and 13 fds per preview."""
@@ -461,7 +469,8 @@ def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
     Gtk = env.Gtk
     pump = env.pump
     failures = [0]
-    POOL_BASE_MB, POOL_PER_LOOP_MB = 160, 64
+    POOL_BASE_MB, POOL_PER_LOOP_MB = 160, 150          # revision 3
+    ORIGINAL_POOL_PER_LOOP_MB = 64                     # revision 2, superseded by revision 3
 
     def check(name, ok, detail=''):
         failures[0] += 0 if ok else 1
@@ -557,6 +566,11 @@ def lifetime(env, args, step, cards, click, on_preview, to_rooms, loop_rooms):
     base = sample('warm baseline after previewing all %d loop rooms (%d loop files)' % (len(rooms), len(loop_files)))
     cap = POOL_BASE_MB + POOL_PER_LOOP_MB * len(loop_files)
     check('lifetime: every scene-video loop played in its preview during warm-up', all(played), played)
+    original = POOL_BASE_MB + ORIGINAL_POOL_PER_LOOP_MB * len(loop_files)
+    print('INFO [ORIGINAL, superseded by revision 3] lifetime: pool memory <= %d + %d x %d = %d MB: %s (%.1f MB)' % (
+        POOL_BASE_MB, ORIGINAL_POOL_PER_LOOP_MB, len(loop_files), original,
+        'would pass' if base['rss_mb'] - cold['rss_mb'] <= original else 'would fail',
+        base['rss_mb'] - cold['rss_mb']), flush=True)
     check('lifetime: pool memory is bounded across every loop (RSS warm - cold <= %d + %d x %d = %d MB)' % (
           POOL_BASE_MB, POOL_PER_LOOP_MB, len(loop_files), cap), base['rss_mb'] - cold['rss_mb'] <= cap,
           (cold['rss_mb'], base['rss_mb'], round(base['rss_mb'] - cold['rss_mb'], 1)))
