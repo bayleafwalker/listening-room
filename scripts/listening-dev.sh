@@ -9,6 +9,10 @@
 #                                             against tests/probes/expected/ (--record rewrites those lists)
 #   scripts/listening-dev.sh shell            interactive shell with the same environment
 #
+# The GUI children of `probe` and `acceptance` run at low CPU priority (a user scope with CPUWeight=20, plus nice 10), so a
+# run does not starve the desktop; LISTENING_DEV_PRIORITY=normal turns that off. Timing checks see a slower probe when the host
+# is busy, not when it is idle.
+#
 # State is isolated by the suites and the probe themselves. The probe never
 # touches the desktop session: Wayland is unset and GTK is forced onto Xvfb.
 set -euo pipefail
@@ -24,6 +28,17 @@ export LISTENING_AMBIENCE_SOURCE="$src/ambience.py"
 export LISTENING_HUB_ASSETS="$assets"
 export PYTHONPATH="$src:$repo/tests"
 export PYTHONDONTWRITEBYTECODE=1
+
+# Low CPU priority for GUI children. A transient user scope with a low CPU weight is what keeps the desktop responsive (plain
+# nice only orders processes within one session group); without a user manager fall back to nice alone.
+lowprio=()
+if [ "${LISTENING_DEV_PRIORITY:-low}" != normal ]; then
+  if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --scope --quiet -p CPUWeight=20 true 2>/dev/null; then
+    lowprio=(systemd-run --user --scope --quiet -p CPUWeight=20 nice -n 10)
+  else
+    lowprio=(nice -n 10)
+  fi
+fi
 
 in_shell() { nix develop "$repo" -c "$@"; }
 
@@ -47,7 +62,7 @@ case "${1:-}" in
     runtime=$(mktemp -d); trap 'rm -rf "$runtime"' EXIT; chmod 700 "$runtime"
     # No portals and a private runtime dir: D-Bus activation must not reach
     # the live compositor or mount the documents portal in the real session.
-    in_shell env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u HYPRLAND_INSTANCE_SIGNATURE \
+    "${lowprio[@]}" nix develop "$repo" -c env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u HYPRLAND_INSTANCE_SIGNATURE \
       XDG_RUNTIME_DIR="$runtime" GDK_BACKEND=x11 GDK_DEBUG=no-portals \
       xvfb-run -a -s '-screen 0 1440x1000x24' \
       dbus-run-session python3 "tests/probes/${3:-listening-session-ui}.py" --output "$out"
@@ -59,7 +74,7 @@ case "${1:-}" in
     out=${2:-"${TMPDIR:-/tmp}/listening-acceptance"}
     runtime=$(mktemp -d); trap 'rm -rf "$runtime"' EXIT; chmod 700 "$runtime"
     gui() {
-      in_shell env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u HYPRLAND_INSTANCE_SIGNATURE \
+      "${lowprio[@]}" nix develop "$repo" -c env -u WAYLAND_DISPLAY -u DBUS_SESSION_BUS_ADDRESS -u HYPRLAND_INSTANCE_SIGNATURE \
         XDG_RUNTIME_DIR="$runtime" GDK_BACKEND=x11 GDK_DEBUG=no-portals \
         xvfb-run -a -s '-screen 0 1440x1000x24' dbus-run-session python3 "$@"
     }
