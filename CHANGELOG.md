@@ -89,7 +89,9 @@ All notable changes are recorded here. The format follows
 - The window does work in proportion to what changed: each surface draws only when
   something it shows changed, Rooms no longer builds a key every poll, and Listen
   rebuilds only the shelf whose contents changed. A poll that changes nothing draws
-  nothing (`tests/probes/wp2w-rebuild-probe.py` counts it).
+  nothing (`tests/probes/wp2w-rebuild-probe.py` counts it). Renaming or saving a room
+  that is not playing leaves Now alone, and redrawing Now (a volume change) creates
+  no widgets: the Mix's Change… buttons are relabelled only when their words change.
 - The window and the mini player take snapshots from the controller's stream when it
   has one; polling is the fallback (every 5 s while a stream that worked is down;
   a controller without a stream is polled as before). Polls have a worker of their own,

@@ -641,6 +641,16 @@ class WindowSmoke(unittest.TestCase):
     def test_a_poll_rebuilds_only_the_section_that_changed(self):
         import o6_env
         env = self.env
+        # A still controller clock: "Recently played" says "5 min ago" and rightly redraws when the minute
+        # turns, which must not land inside a check that nothing else drew.
+        frozen = time.time() // 60 * 60 + 30
+        clock = mock.patch.object(env.controller, 'clock', lambda: frozen)
+        clock.start()
+        self.addCleanup(clock.stop)
+        env.start_station_room()
+        saved = env.controller.dispatch('save', {'name': 'Smoke den'})['variant']
+        env.service.execute('leave', {})
+        env.settle(1.0)
         window = env.launch(page='listen')
         env.settle(.6)
         self.polls(window, 1)
@@ -665,15 +675,33 @@ class WindowSmoke(unittest.TestCase):
         env.start_station_room()
         window.show_now()
         env.pump(.8)
+        # Another saved room with music of its own: not the playing room, the last room or a recent one.
+        import json
+        variants_file = env.controller.directory / 'room-variants.json'
+        other = dict(saved, id='variant-smoke-other', name='Smoke hall',
+                     music={'kind': 'radio', 'source_id': 'smoke-other', 'url': 'https://radio.example.test/other'})
+        variants_file.write_text(json.dumps(json.loads(variants_file.read_text()) + [other]))
+        env.pump(2.5)                     # the controller re-reads its saved rooms after 2 s
         self.polls(window, 1)
         before = self.counts(window)
+        now = self.tagged(window.sheet)   # Now and its Mix
         self.polls(window)
         self.assertEqual(self.counts(window), before, 'a poll that changed nothing drew something while playing')
+        # Renaming a saved room that is not playing is the room cards' news, not Now's.
+        shown = window.snapshot
+        env.controller.dispatch('rename', {'id': other['id'], 'name': 'Smoke study'})
+        self.polls(window)
+        grown = {key for key, value in self.counts(window).items() if value != before.get(key, 0)}
+        self.assertFalse(grown & {'window.now', 'window.mini'}, 'renaming another room drew Now: %s (keys %s)'
+                         % (grown, env.next_window.model.snapshot_changes(shown, window.snapshot)))
+        self.assertEqual(self.tagged(window.sheet), now, 'renaming another room made widgets in Now')
+        before = self.counts(window)
         env.service.execute('room_volume', {'value': 37})
         self.polls(window)
         grown = {key for key, value in self.counts(window).items() if value != before.get(key, 0)}
         self.assertEqual(grown, {'window.now', 'window.mini'})
         self.assertEqual(round(window.volume.get_value()), 37)
+        self.assertEqual(self.tagged(window.sheet), now, 'a volume change made widgets in Now')
         env.service.execute('leave', {})
         env.settle(1.0)
 

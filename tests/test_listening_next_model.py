@@ -53,6 +53,16 @@ class SnapshotChangeTests(unittest.TestCase):
         gone = {key: value for key, value in old.items() if key != 'stations'}
         self.assertEqual(model.snapshot_changes(old, gone), {'stations'})
 
+    def test_now_sees_a_variants_change_only_for_the_room_it_shows(self):
+        old = {'active': {'id': 'v1'}, 'variants': [{'id': 'v1', 'name': 'Den'}, {'id': 'v2', 'name': 'Study'}]}
+        other = copy.deepcopy(old)
+        other['variants'][1]['name'] = 'Library'
+        self.assertEqual(model.now_changes({'variants', 'rooms'}, old, other), {'rooms'})
+        own = copy.deepcopy(old)
+        own['variants'][0]['name'] = 'Den two'
+        self.assertEqual(model.now_changes({'variants'}, old, own), {'variants'})
+        self.assertIsNone(model.now_changes(None, old, other))
+
     def test_touches(self):
         self.assertTrue(model.touches(None, {'a'}))
         self.assertFalse(model.touches(set(), None))
