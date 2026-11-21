@@ -486,8 +486,14 @@ GLib.timeout_add_seconds(GLib.MAXINT32, lambda *_: True, _LOOPS)
 
 class Scene(Gtk.Overlay):
     """The room scene, full bleed: still art, or the reviewed loop (muted) when allowed."""
-    def __init__(self):
+    motion_delay_ms = 0
+    delayed = 0             # the timeout that attaches a preview's loop
+    closed = False
+    def __init__(self, motion_delay_ms=0):
         super().__init__()
+        # A preview waits out the double-click time before it attaches its loop: a second click (enter)
+        # or the next card never pays for a pipeline, and skimmed cards never create one.
+        self.motion_delay_ms = motion_delay_ms
         self.add_css_class('scene-fallback')
         self.picture = FocalPicture()
         self.set_child(self.picture)
@@ -527,17 +533,29 @@ class Scene(Gtk.Overlay):
         still = assets.get('still') or assets.get('poster')
         self.still = texture = texture_for(still)
         self.picture.set_paintable(texture)
-        if self.want_motion:
-            loop = shared_loop(assets['loop'])
-            if loop is None or loop.media.get_error() is not None:
-                # Too many loops already, or this one failed before: still art, like _fall_back.
-                self.want_motion = False
-                return
-            self.loop = loop
-            self.media = media = loop.media
-            self.error_handler = media.connect('notify::error', Scene._failed, self)
-            self.picture.set_paintable(media)
-            self._visibility(mapped=self.get_mapped())
+        if self.want_motion and self.motion_delay_ms:
+            self.delayed = GLib.timeout_add(self.motion_delay_ms, Scene._motion_due, self, assets['loop'])
+        elif self.want_motion:
+            self._attach(assets['loop'])
+
+    @staticmethod
+    def _motion_due(scene, path):
+        scene.delayed = 0
+        if scene.want_motion and not scene.closed:
+            scene._attach(path)
+        return False
+
+    def _attach(self, path):
+        loop = shared_loop(path)
+        if loop is None or loop.media.get_error() is not None:
+            # Too many loops already, or this one failed before: still art, like _fall_back.
+            self.want_motion = False
+            return
+        self.loop = loop
+        self.media = media = loop.media
+        self.error_handler = media.connect('notify::error', Scene._failed, self)
+        self.picture.set_paintable(media)
+        self._visibility(mapped=self.get_mapped())
 
     def _fall_back(self):
         self._drop_media()
@@ -545,6 +563,9 @@ class Scene(Gtk.Overlay):
 
     def _drop_media(self):
         """Let go of the shared loop: it pauses when no Scene wants it; it is never cleared."""
+        if self.delayed:
+            GLib.source_remove(self.delayed)
+            self.delayed = 0
         if self.loop is not None:
             loop, self.loop, self.media = self.loop, None, None
             if self.error_handler:

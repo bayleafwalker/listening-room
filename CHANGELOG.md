@@ -20,6 +20,9 @@ All notable changes are recorded here. The format follows
 - GStreamer loads on a worker when the window opens, so the first room preview no
   longer freezes the window while GStreamer scans its plugins (1.6 s or more after a
   first start or an upgrade); a scene shown before that shows its still, then moves.
+- A room preview shows its still at once and starts its loop after the double-click
+  time, so a double-click that enters, or skimming across cards, never builds a scene
+  pipeline for the preview it passes.
 - The dev shell has the package's GStreamer plugins, so `scripts/listening-dev.sh test`
   and acceptance play scene loops like the installed window.
 

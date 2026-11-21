@@ -169,6 +169,21 @@ class LoopPoolLimit(unittest.TestCase):
         scene.get_mapped = lambda: True
         return scene
 
+    def test_a_preview_attaches_its_loop_only_after_the_double_click_time(self):
+        preview = self.scene()
+        preview.motion_delay_ms = 450
+        preview.show_room({'still': 'lake.jpg', 'loop': 'lake.mp4'}, True)
+        self.assertEqual((self.created, preview.picture.paintable), ([], 'still:lake.jpg'))
+        self.assertTrue(preview.delayed)
+        next_widgets.Scene._motion_due(preview, 'lake.mp4')
+        self.assertTrue(preview.playing_motion)
+        skimmed = self.scene()
+        skimmed.motion_delay_ms = 450
+        skimmed.show_room({'still': 'drive.jpg', 'loop': 'drive.mp4'}, True)
+        skimmed.close()                           # the next card, or a double-click that enters
+        self.assertFalse(skimmed.delayed)
+        self.assertEqual([media.path for media in self.created], ['lake.mp4'], 'a skimmed card made no pipeline')
+
     def test_clips_beyond_the_limit_show_their_still(self):
         scene = self.scene()
         limit = next_widgets.LOOP_LIMIT

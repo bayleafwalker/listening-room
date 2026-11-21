@@ -497,7 +497,7 @@ class RoomsPage:
         art_frame = Gtk.AspectFrame(ratio=16 / 9, obey_child=False)
         art_frame.add_css_class('preview-art')
         art_frame.set_overflow(Gtk.Overflow.HIDDEN)
-        scene = Scene()
+        scene = Scene(motion_delay_ms=int(Gtk.Settings.get_default().get_property('gtk-double-click-time')) + 50)
         preset = next((item for item in window.presets if item.get('id') == entry.get('view_id')), {})
         settings = snapshot.get('settings') or {}
         motion = bool(window.system_animations and not settings.get('reduced_motion') and not settings.get('still'))
