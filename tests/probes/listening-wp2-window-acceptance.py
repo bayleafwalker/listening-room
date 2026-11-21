@@ -333,6 +333,13 @@ with env:
             for w in after.get(name, []):
                 if id(w) not in old:
                     kinds[type(w).__name__] = kinds.get(type(w).__name__, 0) + 1
+                    if len(kinds.setdefault('_where', [])) < 3:
+                        chain, node = [], w
+                        while node is not None and len(chain) < 7:
+                            text = getattr(node, 'get_label', lambda: None)() if isinstance(node, (Gtk.Label, Gtk.Button)) else None
+                            chain.append(type(node).__name__ + ('[%s]' % text if text else ''))
+                            node = node.get_parent()
+                        kinds['_where'].append('<'.join(chain))
             out[name] = {'new': len(new - old), 'gone': len(old - new), 'total': len(new), 'new_types': kinds}
         return out
 
@@ -690,7 +697,12 @@ with env:
                 with mock.patch.object(next_window_module, 'START_GRACE_S', 1.0), \
                         mock.patch.object(session_client, 'request', side_effect=client):
                     buttons[0].emit('clicked')
-                    pump(.15)
+                    # Revised in phase 2 (2026-11-21), fixture only: the chip was read once after a fixed .15 s
+                    # (original: pump(.15); chips = env.labels(window, 'Connecting')), which raced the page change on
+                    # a loaded host (chip None at 1200x800, 640x520, 1000x420, 760x380 in the refused case while the
+                    # same case passed at 800x700). Now it waits up to 1 s for the chip to say Connecting; the overlap
+                    # oracle itself is unchanged.
+                    wait(lambda: bool(env.labels(window, 'Connecting')), 1.0)
                     chips = env.labels(window, 'Connecting')
                     chip = chips[0] if chips else None
                     wait(lambda: bool(env.buttons(window, 'Try again')), 4)
@@ -719,6 +731,59 @@ with env:
                     env.service.execute('leave', {})
                     settle(.8)
         report['failure_card_shots'] = shots
+
+    # Added in phase 2 (2026-11-21): the implementer's reproduction conditions for the leftover, kept independent:
+    # a room already playing, a 1000x460 window, a start whose controller answer comes late (past the grace time).
+    @section('U2b')
+    def failure_card_over_room():
+        real = session_client.request
+        for width, height in ((1000, 460), (760, 460)):
+            env.start_station_room()
+            room = (env.controller.active or {}).get('name')
+            window = env.launch(width, height, page='listen')
+            buttons = radio_tune_buttons(window)
+            window.show_now()
+            pump(.6)
+            name_label = window.room_name if window.room_name.get_mapped() else None   # the title, as the O9 probe reads it
+            window.show_listen()
+            pump(.4)
+
+            def late(action, arguments=None, *rest, **kw):
+                if action in ('music', 'link', 'station.start', 'online'):
+                    time.sleep(2.5)
+                return real(action, arguments, *rest, **kw)
+            with mock.patch.object(next_window_module, 'START_GRACE_S', 1.0), \
+                    mock.patch.object(session_client, 'request', side_effect=late):
+                buttons[-1].emit('clicked')
+                wait(lambda: bool(env.labels(window, 'Connecting')), 1.0)
+                chips = env.labels(window, 'Connecting')
+                chip = chips[0] if chips else None
+                wait(lambda: bool(env.buttons(window, 'Try again')), 4)
+                retry = env.buttons(window, 'Try again')
+                card = None
+                if retry:
+                    node = retry[0].get_parent()
+                    while node is not None and len([w for w in widgets(node) if isinstance(w, Gtk.Label)
+                                                    and w.get_mapped() and w.get_text()]) < 2:
+                        node = node.get_parent()
+                    card = node
+                pump(.3)
+                env.shot(window, 'acc-wp2w-u2b-late-over-room-%dx%d' % (width, height))
+                a = bounds(card, window)
+                covered = [w.get_text() for w in (chip, name_label) if w is not None and overlaps(a, bounds(w, window))]
+                check('U2b late answer over a playing room at %dx%d: the failure card covers neither the chip nor the room name'
+                      % (width, height), card is not None and chip is not None and name_label is not None and not covered,
+                      {'card': a, 'covered': covered, 'chip': chip and (chip.get_text(), bounds(chip, window)),
+                       'name': name_label and bounds(name_label, window)})
+                check('U2c ... and with the room still there, the chip no longer says Connecting under the failure card (%dx%d)'
+                      % (width, height), chip is not None and not (chip.get_mapped() and chip.get_text() == 'Connecting'),
+                      chip and chip.get_text())
+                wait(lambda: window.pending is None or window.pending.get('inflight') is False, 5)
+            window.close()
+            pump(.3)
+            wait(lambda: not env.controller.transition, 8)
+            env.service.execute('leave', {})
+            settle(.8)
 
     @section('U3')
     def now_name_once():
@@ -867,11 +932,43 @@ with env:
             pump(1.5)
         settle(1.0)
         stored = next_station.choices(next(item for item in env.controller.stations() if item['id'] == station['id']))
-        check('S3 a quick second choice during a slow first save keeps the first one shown',
+        check('S3 [ORIGINAL, superseded by S3-R1] a quick second choice during a slow first save keeps the first one shown',
               seen and all(pair == (first, second) for pair in seen), sorted(set(seen)) + [(first, second)])
         sent = [(a.get('station') or {}).get('preferences') for action, a in env.log[s3_mark:] if action == 'station.save']
-        check('S4 ... and both choices are stored in the end', stored['energy'] == first and stored['familiarity'] == second,
-              (stored, first, second, sent))
+        check('S4 [ORIGINAL, superseded by S4-R1] ... and both choices are stored in the end',
+              stored['energy'] == first and stored['familiarity'] == second, (stored, first, second, sent))
+        # S3-R1/S4-R1, phase 2 (2026-11-21): the original picked the second choice by the page's stored value
+        # (next_station.choices), not by the toggle actually shown. For an unset Familiarity the page value is 'Any',
+        # which is not a Familiarity label, so the group shows index 0 ('Familiar'); the original then "chose" index 0,
+        # the toggle already active, so no notify fired and no save was sent (debug run: one station.save, energy
+        # only). That was a probe artefact, on main and on the branch alike. The revision picks a toggle other than
+        # the one shown, and also checks the page sent a save for each choice.
+        pump(1.0)
+        group_e, group_f = window.listen.mood_groups['energy'], window.listen.mood_groups['familiarity']
+        first_index = next(i for i, (text, _v) in enumerate(moods['energy']['choices'])
+                           if i != group_e.get_active() and text != next_station.choices(window.listen.station)['energy'])
+        second_index = next(i for i in range(len(moods['familiarity']['choices'])) if i != group_f.get_active())
+        first = moods['energy']['choices'][first_index][0]
+        second = moods['familiarity']['choices'][second_index][0]
+        calls.clear()
+        s3_mark = len(env.log)
+        with mock.patch.object(session_client, 'request', side_effect=first_slow):
+            group_e.set_active(first_index)
+            pump(.15)
+            group_f.set_active(second_index)
+            seen = []
+            deadline = time.monotonic() + 3.5
+            while time.monotonic() < deadline:
+                pump(.1)
+                seen.append((shown('energy'), shown('familiarity')))
+            pump(1.5)
+        settle(1.0)
+        stored = next_station.choices(next(item for item in env.controller.stations() if item['id'] == station['id']))
+        sent = [(a.get('station') or {}).get('preferences') for action, a in env.log[s3_mark:] if action == 'station.save']
+        check('S3-R1 a quick second choice during a slow first save keeps the first one shown',
+              seen and all(pair == (first, second) for pair in seen), sorted(set(seen)) + [(first, second)])
+        check('S4-R1 ... a save is sent for each choice and both are stored in the end',
+              len(sent) >= 2 and stored['energy'] == first and stored['familiarity'] == second, (stored, first, second, sent))
 
     # =========================================================================== Z: push updates (criterion 5)
     @section('Z')
@@ -1003,8 +1100,65 @@ with env:
                 host = next_mini.PopoverHost(env.app, client, launch=lambda arguments: None)
                 pump(2.0)
                 times = [reach(host.window.player.volume.get_value, level) for level in (55, 35, 62)]
-                check('Z8 the popover mini player follows promptly through the stream (all under 0.5 s)',
-                      all(t is not None and t < .5 for t in times), times)
+                check('Z8 [ORIGINAL, superseded by Z8-R1] the popover mini player follows promptly through the stream '
+                      '(all under 0.5 s)', all(t is not None and t < .5 for t in times), times)
+                # Z8-R1, phase 2 (2026-11-21): the original built PopoverHost directly with only a request function.
+                # The implementation streams only when the caller hands it session_client.subscribe, which the real
+                # entry point (run_popover, i.e. `listening-roomctl popover`) does. The revision drives the real
+                # entry point in its own process against this socket; the child reports the value of the first
+                # range control in its visible windows (the room volume), so no implementer names are used.
+                host.window.close()
+                pump(.4)
+                host = None
+                fakebin = folder / 'bin'
+                fakebin.mkdir(exist_ok=True)
+                (fakebin / 'systemctl').write_text('#!/bin/sh\nexit 0\n')
+                os.chmod(fakebin / 'systemctl', 0o755)
+                child_env = dict(os.environ, LISTENING_SESSION_SOCKET=str(path), GDK_BACKEND='x11', GSK_RENDERER='cairo',
+                                 PYTHONPATH=os.pathsep.join([str(SOURCE), str(REPO / 'tests')]),
+                                 PATH=str(fakebin) + os.pathsep + os.environ.get('PATH', ''))
+                script = ('import sys\nimport gi\ngi.require_version("Gtk", "4.0")\nfrom gi.repository import GLib, Gtk\n'
+                          'def ranges(w):\n'
+                          '    if isinstance(w, Gtk.Range):\n        yield w\n'
+                          '    c = w.get_first_child()\n'
+                          '    while c is not None:\n        yield from ranges(c)\n        c = c.get_next_sibling()\n'
+                          'def report():\n'
+                          '    for win in Gtk.Window.list_toplevels():\n'
+                          '        if win.get_visible():\n'
+                          '            for r in ranges(win):\n'
+                          '                print("VOLUME %.1f" % r.get_value(), flush=True)\n                return True\n'
+                          '    return True\n'
+                          'GLib.timeout_add(30, report)\n'
+                          'sys.argv = ["listening-roomctl", "popover"]\nimport roomctl\nroomctl.popover()\n')
+                child = subprocess.Popen([sys.executable, '-c', script], env=child_env, cwd=str(folder),
+                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                lines = []
+                threading.Thread(target=lambda: [lines.append((time.monotonic(), l.strip())) for l in child.stdout],
+                                 daemon=True).start()
+                try:
+                    wait(lambda: any(l.startswith('VOLUME') for _t, l in lines), 15)
+                    pump(2.0)
+                    times = []
+                    for level in (55, 35, 62, 44, 58):
+                        started = time.monotonic()
+                        env.service.execute('room_volume', {'value': level})
+                        got = None
+                        while time.monotonic() - started < 2.0 and got is None:
+                            pump(.02)
+                            got = next((t - started for t, l in lines if t >= started and l.startswith('VOLUME')
+                                        and abs(float(l.split()[1]) - level) < 1.5), None)
+                        times.append(got)
+                    ok = [t for t in times if t is not None]
+                    median = sorted(ok)[len(ok) // 2] if len(ok) == len(times) else None
+                    check('Z8-R1 the popover (`listening-roomctl popover`) follows the stream promptly '
+                          '(all 5 under 0.5 s, median under 0.3 s)', median is not None and max(ok) < .5 and median < .3,
+                          {'times': times, 'tail': [l for _t, l in lines if not l.startswith('VOLUME')][-3:]})
+                finally:
+                    child.terminate()
+                    try:
+                        child.wait(5)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
             starts = [a for a in executed + [a for a, _t in attempts]
                       if a in ('music', 'online', 'link', 'station.start', 'station.replay', 'enter', 'return', 'resume')]
             check('Z9 nothing starts playback: no start command and the same room throughout',
@@ -1021,6 +1175,67 @@ with env:
             os.environ.pop('LISTENING_SESSION_SOCKET', None)
             next_window_module.POLL_MS = 250
 
+
+    # =========================================================================== N1: leaving Listen ends ambience mode
+    # Added in phase 2 (2026-11-21, scope from the UX assessment, sent by the coordinator): leaving Listen by any
+    # route ends ambience mode, so Music › Change… then opens music choices, not "Choose an ambience".
+    @section('N1')
+    def ambience_mode_ends():
+        note('window code under test: %s' % next_window_module.__file__)
+        env.start_station_room()
+        window = env.launch(page=None)
+        window.show_now()
+        pump(.8)
+
+        def banner():
+            return [w.get_text() for w in mapped_labels(window) if w.get_text().startswith('Choose an ambience')]
+
+        def escape():
+            controllers = [c for c in window.observe_controllers() if isinstance(c, Gtk.EventControllerKey)]
+            controllers.sort(key=lambda c: c.get_propagation_phase() != Gtk.PropagationPhase.CAPTURE)
+            window.set_focus(None)
+            for controller in controllers:
+                if controller.emit('key-pressed', Gdk.KEY_Escape, 0, 0):
+                    break
+        def back():
+            window.show_now()
+            pump(.4)
+            found = env.buttons(window, 'Back to Listen') or env.buttons(window, 'Back to rooms')
+            if found:
+                found[0].emit('clicked')
+        routes = (('the Rooms tab', lambda: find_stack(window, Adw.ViewStack, 'rooms').set_visible_child_name('rooms')),
+                  ('Now', window.show_now),
+                  ('Now, then Back', back),
+                  ('Esc', escape),
+                  ('the mini layout', lambda: window.set_property('mini-layout', True)))
+        for route, leave in routes:
+            window.set_property('mini-layout', False)
+            window.show_now()
+            pump(.4)
+            window.choose_other('atmosphere')
+            pump(.6)
+            opened = banner()
+            leave()
+            pump(.6)
+            window.set_property('mini-layout', False)
+            pump(.6)
+            window.show_listen()          # the Listen tab
+            pump(.6)
+            on_listen = window.current_page() == 'browse' and window.browse.get_visible_child_name() == 'listen'
+            note('N1 %s: listen mode %r, banner widget visible %r, mapped banner labels %r' % (
+                route, getattr(window.listen, 'mode', None), getattr(getattr(window.listen, 'ambience_banner', None),
+                                                                       'get_visible', lambda: None)(), banner()))
+            check('N1b after leaving Listen by %s, coming back to Listen shows music, not "Choose an ambience"' % route,
+                  bool(opened) and on_listen and not banner(), {'ambience banner first': opened, 'on Listen': on_listen,
+                                                                'banner on return': banner()})
+            window.show_now()
+            pump(.4)
+            window.choose_other('music')
+            pump(.6)
+            on_listen = window.current_page() == 'browse' and window.browse.get_visible_child_name() == 'listen'
+            check('N1 after leaving Listen by %s, Music › Change… opens music choices (no "Choose an ambience")' % route,
+                  bool(opened) and on_listen and not banner(), {'ambience banner first': opened, 'on Listen': on_listen,
+                                                                'banner after Music › Change…': banner()})
 
     # =========================================================================== W: the Waybar popover (decision 2026-11-20)
     # A user report ("It doesn't crash, but window closes when losing focus", Hyprland, follow_mouse=1) led to the
@@ -1120,7 +1335,16 @@ with env:
         flat = ' '.join(runbook.split())
         sentences = [s for s in re.split(r'(?<=[.!?])\s+', flat)
                      if re.search(r'\bclos', s, re.I) and re.search(r'\b(los(e|es|ing)|lost)\s+(the\s+|its\s+)?focus', s, re.I)]
-        check('W4 the runbook no longer says the popover closes when it loses focus', not sentences, sentences[:2])
+        check('W4 [ORIGINAL, superseded by W4-R1] the runbook no longer says the popover closes when it loses focus',
+              not sentences, sentences[:2])
+        # W4-R1, phase 2 (2026-11-21): the original flagged any sentence with "clos…" and "lose(s) focus", which also
+        # matches the corrected wording ("…; it does not close when it loses focus"). The revision flags such a
+        # sentence only when the focus clause is not negated.
+        affirmed = [s for s in sentences
+                    if not re.search(r"\b(not|never|no longer|doesn['’]t|won['’]t|stays open|remains open)\b"
+                                     r"[^.;]*\b(los(e|es|ing)|lost)\s+(the\s+|its\s+)?focus", s, re.I)]
+        check('W4-R1 the runbook does not say the popover closes when it loses focus (a negated mention is fine)',
+              not affirmed, {'affirmed': affirmed[:2], 'all mentions': sentences[:2]})
 
     # =========================================================================== G: checks (criterion 6)
     @section('G')
@@ -1141,7 +1365,15 @@ with env:
                       'tests/test_listening_*_oracles.py').stdout.split()
         mine = 'tests/probes/listening-wp2-window-acceptance.py'
         changed = [path for path in changed if path != mine]
-        check('G2 no existing acceptance probe or oracle suite was edited or removed', not changed, changed)
+        check('G2 [ORIGINAL, superseded by G2-R1] no existing acceptance probe or oracle suite was edited or removed',
+              not changed, changed)
+        # G2-R1, phase 2 (2026-11-21): the coordinator directed one acceptance edit, the o5 S5l revision made by this
+        # reviewer in e04b6db (popover focus-loss decision). The revision allows exactly that file as of e04b6db.
+        sanctioned = {'tests/probes/listening-o5-acceptance.py': 'e04b6db'}
+        unexpected = [path for path in changed if path not in sanctioned
+                      or git('diff', '--quiet', sanctioned[path], '--', path).returncode != 0]
+        check('G2-R1 no acceptance probe or oracle suite was edited or removed beyond the sanctioned o5 S5l revision',
+              not unexpected, unexpected)
 
     # =========================================================================== T: threads and one handoff (criterion 2)
     # Evaluated last, over everything the sections above did (polls, commands, preferences, mini, the popover host,
@@ -1159,8 +1391,16 @@ with env:
         for key, place, label in HANDOFFS:
             keys.setdefault(key, set()).add(label)
         report['handoffs'] = {k: sorted(v) for k, v in keys.items()}
-        check('T2 every worker-to-main handoff goes through one helper (%d handoffs seen)' % len(HANDOFFS),
-              len(HANDOFFS) > 0 and len(keys) == 1, sorted(keys)[:12])
+        check('T2 [ORIGINAL, superseded by T2-R1] every worker-to-main handoff goes through one helper (%d handoffs seen)'
+              % len(HANDOFFS), len(HANDOFFS) > 0 and len(keys) == 1, sorted(keys)[:12])
+        # T2-R1, phase 2 (2026-11-21): the implementation has run_async (one-shot work) and call_on_main (a stream's
+        # callback thread handing each pushed snapshot over), side by side in one helper module and sharing one
+        # delivery function. A subscription callback is not a run_async shape, so the original's "one function" was
+        # narrower than the brief's intent (no hand-written handoffs scattered in next_*.py). The revision requires
+        # every handoff to come from a single module that is not one of the view modules.
+        modules = {key.split(':')[0] for key in keys}
+        check('T2-R1 every worker-to-main handoff comes from one helper module (%d handoffs seen)' % len(HANDOFFS),
+              len(HANDOFFS) > 0 and len(modules) == 1, sorted(keys)[:12])
         sites = []
         for path in sorted(SOURCE.glob('next_*.py')):
             tree = ast.parse(path.read_text())
