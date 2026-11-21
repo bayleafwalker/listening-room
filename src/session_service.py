@@ -228,6 +228,7 @@ class RequestHandler(socketserver.StreamRequestHandler):
         feed = self.server.service.feed
         pipe = feed.open()
         try:
+            feed.refresh()
             self.connection.settimeout(SEND_TIMEOUT)
             poller = select.poll()
             poller.register(self.connection.fileno(), select.POLLIN)

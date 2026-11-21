@@ -16,6 +16,9 @@ All notable changes are recorded here. The format follows
   (the README snippet is updated; plain `status` still works for polling).
 
 ### Changed
+- A new `subscribe` stream starts from the controller's current state, so its first
+  snapshot includes every command acknowledged before it connected (under load it
+  could start one revision behind).
 - The controller's actions are declared once in a registry (handler, whether it runs
   at once or queues, argument types) that drives both dispatch and the socket
   service. Unknown actions and wrongly typed arguments now fail at once with a

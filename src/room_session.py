@@ -150,6 +150,7 @@ class SnapshotFeed:
         self.limit = limit
         self.session = os.urandom(8).hex()   # revisions restart with each controller process
         self._lock = threading.Lock()
+        self._publishing = threading.Lock()   # one snapshot-and-publish at a time, so revisions never go back
         self._dirty = threading.Event()
         self._closed = False
         self._revision, self._key, self._snapshot, self._encoded = 0, None, None, None
@@ -177,7 +178,16 @@ class SnapshotFeed:
             except Exception:   # the next change publishes again
                 pass
 
+    def refresh(self):
+        """Publish the controller's current state now, so a new subscriber's first
+        snapshot already includes every command acknowledged before it subscribed."""
+        self._publish()
+
     def _publish(self):
+        with self._publishing:
+            self._publish_current()
+
+    def _publish_current(self):
         snapshot = self.controller.snapshot()
         key = {name: value for name, value in snapshot.items() if name != 'now'}
         with self._lock:
