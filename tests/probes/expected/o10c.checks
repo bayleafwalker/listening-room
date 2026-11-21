@@ -7,11 +7,15 @@ N2b ... and the window never went back to Rooms while it failed
 N2c ... and nothing was left playing (the idle state is intact)
 N2d Try again sends one enter for the same room and, with the fault gone, that room plays
 N2e Back from that card returns to Rooms and the card is gone, still with nothing playing
+# Phase 2: N2f-h and N2k now start the playing room as a catalogue room (Midnight library); the station room
+# took the target's name after an earlier scenario entered it, so no enter was sent. N2f0/N2k0 guard that.
+N2f0 (setup) the playing room is not the target and the window sent an enter for the target
 N2f while another room plays, a room that fails shows the failure card named after the target (not the playing room), with Try again and Back
 N2g ... and the previous room is intact: same room, same layers, still playing
 N2h Back keeps the previous room playing and the card goes away
 N2i a room whose music alone fails is entered: its ambience plays
 N2j ... the window stays on Now and the failure shows on the music layer
+N2k0 (setup) the playing room is not Rainy quiet and the window sent an enter for it
 N2k while another room plays, a room whose music alone fails is entered with its ambience playing, on Now, with the music failure shown
 N2l a music change that fails inside a playing room shows on the music layer; the ambience keeps playing and the window stays on Now without a room failure card
 E0 (reference) the window's room Pause pauses music and ambience and keeps the scene
@@ -26,7 +30,10 @@ E7b MPRIS PlayPause on a room the window paused restores exactly what played
 E8 with only the ambience playing (music paused on its own), MPRIS still reports the room as Playing
 E9 ... and MPRIS Pause silences it: the ambience pauses too
 E10 with the music stopped and the ambience playing, MPRIS reports Playing and Pause pauses the ambience
-E11 MPRIS Stop stops the room: nothing is left audible
+# E11 sampled 0.9 s after MPRIS Stop; a Stop that runs the faded Leave (1.2 s, like the window's Leave) is
+# not a failure. Superseded by E11b (phase 2, 423dd3a); kept as a known failure.
+!E11 [ORIGINAL, superseded by E11b] MPRIS Stop stops the room: nothing is left audible
+E11b MPRIS Stop stops the room: within 5 s (a Leave fade) nothing is left audible
 E12 MPRIS metadata names the room
 E13 ... and what plays (the music's station or track)
 E14 with only the ambience playing, MPRIS metadata names the room and the ambience
@@ -63,5 +70,8 @@ C6f listening-roomctl pauses the music layer alone
 C6g listening-roomctl pauses the ambience layer alone
 C6h ... and resumes and stops each layer alone (the other layer keeps playing)
 C6i listening-roomctl --help lists the layer action
-C6j the session runbook documents the roomctl layer command
+# C6j wanted the literal `listening-roomctl WORD`; a usage line `listening-roomctl music|ambience ...` documents
+# the same command. Superseded by C6j2 (phase 2, 423dd3a); kept as a known failure.
+!C6j [ORIGINAL, superseded by C6j2] the session runbook documents the roomctl layer command
+C6j2 the session runbook documents the roomctl layer command (literally or as a usage line)
 C6k the CHANGELOG records the change above 2.4.0: MPRIS/media keys act on the room, and roomctl layer actions

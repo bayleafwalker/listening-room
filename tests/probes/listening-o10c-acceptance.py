@@ -436,20 +436,33 @@ def n2_room_fails_from_idle():
           (bool(back), window.current_page()))
 
 
+def previous_room():
+    """The room already playing when another is entered: a catalogue room never named after a target.
+
+    [Revised in phase 2] The first version used o6_env.start_station_room(); its station room inherits the name of
+    the last room entered, so after an earlier scenario had entered the target it was itself called after the target
+    and the Rooms card only showed Now (no enter was sent). The criterion is unchanged."""
+    enter_room('midnight-library', ambience=False)
+    return (snap().get('active') or {}).get('name')
+
+
 @section('N2')
 def n2_room_fails_while_playing():
     reset()
-    env.start_station_room()                 # "Morning lift" plays a radio station
-    before_active = (snap().get('active') or {}).get('name')
+    before_active = previous_room()
     before = {k: {f: v.get(f) for f in ('status', 'source_id', 'name')} for k, v in (snap().get('layers') or {}).items()}
     window = open_window('rooms')
     env.start_error = '[Errno 111] Connection refused'
     env.atmosphere_error = 'Ambience could not load'
     env.backend.fail_picture = True
+    mark = len(env.log)
     enter_from_rooms(window, TARGET)
     wait(lambda: failure_card(window, TARGET), 11)
     env.pump(1.0)
     env.shot(window, 'o10c-n2-playing-failed')
+    check('N2f0 (setup) the playing room is not the target and the window sent an enter for the target',
+          before_active and before_active != TARGET and any(c[0] == 'enter' for c in env.log[mark:]),
+          (before_active, env.commands(mark)))
     page = now_page(window)
     texts = mapped_texts(page) if page is not None else set()
     check('N2f while another room plays, a room that fails shows the failure card named after the target '
@@ -510,10 +523,15 @@ def n2_music_alone_fails():
     reset()
     # The same while another room plays: still never silent, still entered with its ambience.
     rainy_variant()
-    env.start_station_room()
+    playing = previous_room()
     window = open_window('rooms')
     env.start_error = '[Errno 111] Connection refused'
+    mark = len(env.log)
     enter_from_rooms(window, 'Rainy quiet')
+    env.pump(.5)
+    check('N2k0 (setup) the playing room is not Rainy quiet and the window sent an enter for it',
+          playing and playing != 'Rainy quiet' and any(c[0] == 'enter' for c in env.log[mark:]),
+          (playing, env.commands(mark)))
     wait(lambda: (snap().get('active') or {}).get('name') == 'Rainy quiet' and 'atmosphere' in audible(), 11)
     env.pump(1.0)
     check('N2k while another room plays, a room whose music alone fails is entered with its ambience playing, '
@@ -623,7 +641,10 @@ def mpris_partial_rooms():
           values.get('PlaybackStatus') == 'Playing' and not audible(), (values.get('PlaybackStatus'), status()))
     fresh()
     mpris('Stop')
-    check('E11 MPRIS Stop stops the room: nothing is left audible', not audible(), status())
+    check('E11 [ORIGINAL, superseded by E11b] MPRIS Stop stops the room: nothing is left audible', not audible(), status())
+    # E11 sampled 0.9 s after Stop, which calls a faded Leave (the window's own Leave fades for 1.2 s) a failure.
+    wait(lambda: not audible(), 5)
+    check('E11b MPRIS Stop stops the room: within 5 s (a Leave fade) nothing is left audible', not audible(), status())
 
 
 @section('MPRIS')
@@ -1134,7 +1155,12 @@ def roomctl_layers():
           (words, helptext[-400:]))
     runbook = (REPO / 'docs' / 'runbooks' / 'listening-room-session.md').read_text(errors='replace')
     documented = words and all(('listening-roomctl ' + w) in runbook for w in words)
-    check('C6j the session runbook documents the roomctl layer command', documented, words)
+    check('C6j [ORIGINAL, superseded by C6j2] the session runbook documents the roomctl layer command', documented, words)
+    # C6j required the literal `listening-roomctl WORD`; a usage line such as `listening-roomctl music|ambience pause|...`
+    # documents the same command.
+    documented = words and all(re.search(r'listening-roomctl\s+(?:[\w-]+\|)*' + re.escape(w) + r'(?:\||\s)', runbook)
+                               for w in words)
+    check('C6j2 the session runbook documents the roomctl layer command (literally or as a usage line)', documented, words)
     changelog = (REPO / 'CHANGELOG.md').read_text(errors='replace')
     head = changelog.split('## [2.4.0]', 1)[0]
     check('C6k the CHANGELOG records the change above 2.4.0: MPRIS/media keys act on the room, and roomctl layer actions',
