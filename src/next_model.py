@@ -393,10 +393,25 @@ def room_base(snapshot, catalogue=()):
 
 
 def room_changed(snapshot, catalogue=()):
-    """True when Tune in (or Change…) replaced the music of a saved or catalogue room."""
+    """True when Tune in (or Change…) replaced the music of a saved or catalogue room, or Show as
+    scene replaced its picture with a link."""
     active = (snapshot or {}).get('active')
     base = room_base(snapshot, catalogue) if active else None
-    return bool(base and _music_identity(active.get('music')) != _music_identity(base['music']))
+    return bool(base and (_music_identity(active.get('music')) != _music_identity(base['music'])
+                          or scene_changed(snapshot, catalogue)))
+
+
+def scene_changed(snapshot, catalogue=()):
+    """Show as scene put a linked video in the picture layer of a saved or catalogue room."""
+    active = (snapshot or {}).get('active') or {}
+    picture = active.get('picture') if isinstance(active.get('picture'), dict) else {}
+    if picture.get('preset_id') != 'pasted-link':
+        return False
+    variant = active_variant(snapshot)
+    if variant is not None:
+        saved = variant.get('picture') if isinstance(variant.get('picture'), dict) else {}
+        return (saved.get('preset_id'), saved.get('url')) != ('pasted-link', picture.get('url'))
+    return room_base(snapshot, catalogue) is not None
 
 
 def ad_hoc(snapshot, catalogue=()):

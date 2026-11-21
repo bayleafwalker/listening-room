@@ -4,8 +4,8 @@ It reuses the hub's data sources through their modules (the
 listening_hub catalogue and favourites, World Radio search, the Jellyfin
 library browse, Twitch channels, the controller's station and history
 commands) and never re-implements a provider. Browsing, searching and opening
-pages stay inert: only Tune in, Replay, the row menu's Play as ambience and
-Show as scene, and a chosen link destination start anything.
+pages stay inert: only Tune in or Play, Replay, Watch, the row menu's Play as
+ambience and Show as scene, and a chosen link destination start anything.
 """
 import collections
 import copy
@@ -936,7 +936,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
                 snapshot.get('stations'), snapshot.get('station_recent'),
                 self.window.radio, sorted(self.favorites), self.library_state, self.library,
                 self.channels, self.twitch['state'], self.sounds, self.world_cache,
-                self.services_signature(), self.remote)
+                self.services_signature(), self.remote, self.youtube_signature() if self.scope == 'youtube' else None)
 
     def shelf_parts(self):
         """The shelves as (name, inputs, build): a shelf is rebuilt only when its own inputs change."""
@@ -1061,8 +1061,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
             self.index_body.append(self.section('Sounds', rows, note=None if rows else (
                 'Loading the offline sounds…' if self.sounds_state == 'loading' else 'No offline sounds are installed.')))
         elif scope == 'youtube':
-            self.index_body.append(self.section('YouTube', [], note=self.youtube_note(),
-                                                trailing=self.youtube_trailing()))
+            self.render_youtube_home()
         elif scope == 'channels':
             rows = self.channel_rows()
             self.index_body.append(self.section('Live channels', rows, note=(
@@ -1306,6 +1305,8 @@ class ListenPage(ServicesMixin, SourcesMixin):
             button = Gtk.Button(label=action_label, valign=Gtk.Align.CENTER)
             button.connect('clicked', lambda b, *_: self.pressed(b, callback))
             box.append(button)
+        if entry.get('watch') and self.mode != 'ambience':
+            box.append(self.watch_button(entry))
         if menu:
             box.append(self.menu_button(entry.get('name') or 'this item', menu))
         return box
@@ -1478,7 +1479,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if not preview:
             return None
         menu = []
-        for key, text in next_links.destinations(preview):
+        for key, text in next_links.sheet_destinations(preview):
             menu.append((text, lambda key=key, preview=preview: self.choose_destination(
                 key, preview.get('url') or preview.get('original') or '')))
         entry = {'kind': 'link', 'name': preview.get('name') or 'Link', 'detail': next_links.detail(preview),
@@ -2174,6 +2175,9 @@ class ListenPage(ServicesMixin, SourcesMixin):
         if destination == 'original':
             self.open_external(url)
             return
+        if destination == 'video':
+            self.watch_youtube({'url': url, 'name': 'YouTube video'})
+            return
         if destination == 'music':
             self.window.start('link', {'url': url, 'destination': 'music'}, next_links.host(url) or 'the link')
             return
@@ -2220,6 +2224,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.closed = True
         self.cancel_debounce()
         self.stop_search()
+        self.youtube_close()
         if self.library_cancel is not None:
             self.library_cancel.set()
         if self.volume_timer:

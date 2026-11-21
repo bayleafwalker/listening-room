@@ -4,22 +4,27 @@
   inert; only that action starts sound, replaces the room's ambience layer and returns to
   where the listener came from.
 * Twitch: what is reachable with and without an account, said truthfully, with a way to set it up.
-* YouTube: search through yt-dlp, off the GTK thread and cancellable.
+* YouTube: search through yt-dlp, off the GTK thread and cancellable; suggestion shelves before
+  you type (no account); every video row offers Play, Watch (with sound, its own window) and
+  Show as scene (silent).
 
 Mixed into ListenPage; it uses the page's rows, sections, window and executor.
 """
+import threading
 import time
 
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, GLib, Gtk
 
 import channel_browse
+import next_model as model
 import next_station
 from next_async import run_async
 import youtube_search
-from next_widgets import label
+import youtube_shelves
+from next_widgets import label, name_it
 
 TWITCH_REFRESH_S = 45.
 
@@ -243,17 +248,54 @@ class SourcesMixin:
                                             'YouTube') if part)
 
     def youtube_entry(self, item):
+        """A video row: Play (Tune in only for a live stream), a Watch button, and ⋯ with Show as scene first,
+        because it never interrupts sound. Choosing an ambience, Watch and Play move into ⋯."""
         url = item.get('url') or ''
-        menu = [('Play as ambience', lambda item=item: self.play_ambience(item)),
+        play = ('Tune in' if item.get('live') else 'Play', lambda item=item: self.tune_youtube(item))
+        menu = [('Show as scene', lambda item=item: self.scene_from_video(item)),
+                ('Play as ambience', lambda item=item: self.play_ambience(item)),
                 ('Save as station', lambda item=item: self.save_as_station(next_station.source_from_video(item))),
                 ('Open elsewhere', lambda url=url: self.open_external(url))]
-        return {'kind': 'youtube', 'name': item.get('name') or 'YouTube video', 'detail': self.video_detail(item),
-                'keywords': item.get('channel') or '', 'item': item,
-                'action': ('Tune in', lambda item=item: self.tune_youtube(item)), 'menu': menu,
-                'ambience': lambda item=item: self.play_ambience(item)}
+        entry = {'kind': 'youtube', 'name': item.get('name') or 'YouTube video', 'detail': self.video_detail(item),
+                 'keywords': item.get('channel') or '', 'item': item, 'action': play, 'menu': menu,
+                 'ambience': lambda item=item: self.play_ambience(item)}
+        if self.mode == 'ambience':
+            entry['menu'] = [('Play as music' if not item.get('live') else 'Tune in as music', play[1]),
+                             ('Watch', lambda item=item: self.watch_youtube(item))] + menu
+        else:
+            entry['watch'] = lambda item=item: self.watch_youtube(item)
+        return entry
+
+    def watch_button(self, entry):
+        """The row's Watch control: video with sound in its own window."""
+        button = Gtk.Button(icon_name='video-x-generic-symbolic', valign=Gtk.Align.CENTER)
+        button.add_css_class('flat')
+        name_it(button, 'Watch with sound: ' + (entry.get('name') or 'this video'), tooltip='Watch with sound')
+        button.connect('clicked', lambda b, *_: self.pressed(b, entry['watch']))
+        return button
 
     def tune_youtube(self, item):
         return self.window.start('link', {'url': item.get('url'), 'destination': 'music'}, item.get('name') or 'the video')
+
+    def watch_youtube(self, item):
+        """Watch with sound. In ambience mode this leaves the mode: the room's audio is paused, not changed."""
+        if self.mode == 'ambience':
+            self.end_ambience()
+        return self.window.watching.watch(item)
+
+    def scene_from_video(self, item):
+        """Show as scene (silent): only the picture layer changes, and nothing starts sound."""
+        room = (self.snapshot.get('active') or {})
+        name = item.get('name') or 'The video'
+        return self.window.command('link', {'url': item.get('url'), 'destination': 'picture'},
+                                   done=lambda _result: self.scene_shown(name, room))
+
+    def scene_shown(self, name, room):
+        if room and model.room_base(self.snapshot, self.window.catalogue) is not None:
+            self.window.toast('Changed: %s is the scene in %s' % (name, room.get('name') or 'your room'),
+                              'Save as my room', self.window.save_dialog)
+        else:
+            self.window.toast('Scene: ' + name)
 
     def youtube_note(self):
         """The truthful line for the YouTube scope when there is nothing to list."""
@@ -266,3 +308,96 @@ class SourcesMixin:
         if youtube_search.available():
             return None
         return self.link_button('Open Preferences', self.window.open_preferences)
+
+    # ---- YouTube shelves (before you type) ----------------------------------------------
+
+    def youtube_room(self):
+        """The catalogue room behind the active room, whose tags seed "For ‹room›"."""
+        active = self.snapshot.get('active') or {}
+        identity = active.get('room_id') or active.get('id')
+        return next((room for room in self.window.catalogue or () if room.get('id') == identity), None)
+
+    def youtube_signature(self):
+        state = self.youtube_state()
+        room = self.youtube_room() or {}
+        return (room.get('id'), state['version'], state['loading'], youtube_search.available())
+
+    def youtube_state(self):
+        state = getattr(self, '_youtube_shelves', None)
+        if state is None:
+            state = self._youtube_shelves = {'entries': None, 'loading': False, 'tried': {}, 'failed': set(),
+                                             'version': 0}
+        return state
+
+    def render_youtube_home(self):
+        """The YouTube scope before a search: how it works, your saved YouTube (no network), then the
+        cached suggestion shelves, refreshed off the GTK thread. Nothing here plays until chosen."""
+        self.index_body.append(self.section('YouTube', [], note=self.youtube_note(), trailing=self.youtube_trailing()))
+        saved = youtube_shelves.saved_videos(self.snapshot.get('stations'), self.snapshot.get('station_recent'))
+        if saved:
+            self.index_body.append(self.section('Your saved YouTube', [self.youtube_entry(item) for item in saved]))
+        if not youtube_search.available():
+            return
+        state = self.youtube_state()
+        shelves = youtube_shelves.plan(self.youtube_room())
+        entries = state['entries'] or {}
+        now = time.time()
+        for shelf in shelves:
+            entry = entries.get(shelf['key'])
+            rows = [self.youtube_entry(item) for item in (entry or {}).get('rows') or []]
+            if rows:
+                note = youtube_shelves.age_words(entry['fetched_at'], now)
+                if shelf['key'] in state['failed']:
+                    note += '. Couldn’t refresh just now.'
+            elif state['loading'] or state['entries'] is None:
+                note = 'Looking for suggestions…'
+            else:
+                note = 'No suggestions right now.' if shelf['key'] in state['failed'] else None
+            if rows or note:
+                self.index_body.append(self.section(shelf['title'], rows, note=note))
+        self.refresh_youtube_shelves(shelves)
+
+    def refresh_youtube_shelves(self, shelves):
+        """Read the cache, show it, then refresh stale shelves; all off the GTK thread, at most hourly."""
+        state = self.youtube_state()
+        if state['loading'] or self.closed:
+            return
+        now = time.monotonic()
+        known = state['entries']
+        due = [shelf for shelf in shelves if known is None or (
+            youtube_shelves.stale(known.get(shelf['key'])) and now - state['tried'].get(shelf['key'], -1e9) >= (
+                youtube_shelves.RETRY_S if shelf['key'] in state['failed'] else 0))]
+        if not due:
+            return
+        for shelf in due:
+            state['tried'][shelf['key']] = now
+        state['loading'] = True
+        cancel = self.youtube_cancel = threading.Event()
+
+        def work():
+            cached = youtube_shelves.load() if known is None else known
+            if known is None:
+                GLib.idle_add(self.youtube_shelves_read, cached, None)
+            return youtube_shelves.refresh(due, cached, cancel)
+
+        run_async(work, lambda result: self.youtube_shelves_read(*result, finished=True),
+                  lambda _error: self.youtube_shelves_read(state['entries'] or {}, [s['key'] for s in due], finished=True),
+                  self.executor)
+
+    def youtube_shelves_read(self, entries, failed, finished=False):
+        state = self.youtube_state()
+        if self.closed:
+            return False
+        state['entries'] = dict(entries)
+        if finished:
+            state['loading'] = False
+            state['failed'] = set(failed or ())
+        state['version'] += 1
+        if self.scope == 'youtube' and not self.query:
+            self.refresh()
+        return False
+
+    def youtube_close(self):
+        cancel = getattr(self, 'youtube_cancel', None)
+        if cancel is not None:
+            cancel.set()
