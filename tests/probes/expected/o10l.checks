@@ -126,7 +126,7 @@ N3 at 560 px the station card and rows show the station name in full ("Morning l
 N2 at 640 px the Listen scope chips (Your stations, Live channels, …) are not ellipsized
 N3 at 640 px the station card and rows show the station name in full ("Morning lift", not "Mo…")
 N4 Recently played shows a station once even when it was played twice
-!N5 [ORIGINAL, superseded by N5-R1] at 1440 px the Rooms cards (or a hero) cover at least 45% of the area under the header
+N5 [ORIGINAL, superseded by N5-R1] at 1440 px the Rooms cards (or a hero) cover at least 45% of the area under the header
 N5-R1 at 1440 px the Rooms page still shows its room cards, all inside the window
 !N6 [ORIGINAL, superseded by N6-R1] the scene Change… list shows a picture for each scene, not text only
 N6-R1 the scene Change… list still offers the scenes as choices
