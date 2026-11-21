@@ -4,8 +4,11 @@ import html
 import json
 import os
 from pathlib import Path
+import select
+import stat
 import subprocess
 import sys
+import threading
 
 import session_client
 
@@ -37,6 +40,7 @@ def follow_status(output=None, subscription=None):
     output = output or sys.stdout
     subscription = subscription or session_client.Subscription(fields=['active', 'layers', 'station'])
     last = None
+    stop_watching = _close_when_reader_leaves(output, subscription)
     try:
         for update in subscription:
             line = json.dumps(status(update.snapshot or {}), ensure_ascii=False)
@@ -50,8 +54,46 @@ def follow_status(output=None, subscription=None):
     except KeyboardInterrupt:
         pass
     finally:
+        stop_watching()
         subscription.close()
     return 0
+
+
+def _close_when_reader_leaves(output, subscription):
+    """Close `subscription` as soon as the reader of a pipe `output` is gone.
+
+    Writing is the only other way to notice, and an unchanged status writes nothing,
+    so an orphaned `status --follow` would keep its subscriber slot forever. Returns a
+    function that stops the watch. Outputs without a descriptor, or that are not
+    pipes or sockets, have no reader to lose and are not watched.
+    """
+    try:
+        descriptor = output.fileno()
+        if not stat.S_ISFIFO(os.fstat(descriptor).st_mode) and not stat.S_ISSOCK(os.fstat(descriptor).st_mode):
+            return lambda: None
+    except (AttributeError, OSError, TypeError, ValueError):
+        return lambda: None
+    wake_read, wake_write = os.pipe()
+    def watch():
+        poller = select.poll()
+        poller.register(descriptor, 0)   # error and hang-up are always reported
+        poller.register(wake_read, select.POLLIN)
+        try:
+            for fd, _ in poller.poll():
+                if fd == descriptor:
+                    subscription.close()
+        finally:
+            os.close(wake_read)
+    thread = threading.Thread(target=watch, name='status-follow-reader', daemon=True)
+    thread.start()
+    def stop():
+        try:
+            os.write(wake_write, b'.')
+        except OSError:   # the watcher already ended
+            pass
+        thread.join(1)
+        os.close(wake_write)
+    return stop
 
 
 def remote_commands():
