@@ -63,3 +63,69 @@ def footnote(state, has_channels):
     if state in ('unknown',):
         return 'Looking for live channels…'
     return None
+
+
+# ---- live channel rows, chips and ordering ---------------------------------------------
+
+SIGNED_OUT_NOTE = 'Sign in to Twitch to see who’s live. Your channels still play.'
+SORTS = (('most', 'Most watched'), ('fewest', 'Fewest watched'), ('yours', 'Your channels first'))
+
+
+def viewers_text(count):
+    """"845 watching", "1.2 k watching" (a count that is not known says nothing)."""
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        return ''
+    if count < 0:
+        return ''
+    if count >= 1000:
+        thousands = count / 1000
+        return ('%d k' % thousands if thousands >= 100 else ('%.1f k' % thousands).replace('.0 k', ' k')) + ' watching'
+    return '%d watching' % count
+
+
+def channel_detail(channel):
+    """"Music · 1.2 k watching · EN" for a live channel; "Offline" or the plain "Live channel · Twitch" when
+    its status is not known."""
+    live = channel.get('live')
+    category = str(channel.get('category') or '')
+    if live is False:
+        return ' · '.join(part for part in (category, 'Offline') if part)
+    if live is None:
+        return ' · '.join(part for part in (category or 'Live channel', 'Twitch'))
+    return ' · '.join(part for part in (category or 'Live channel', viewers_text(channel.get('viewers')),
+                                        str(channel.get('language') or '').upper(), '' if category else 'Twitch') if part)
+
+
+def arrange(channels, sort='most'):
+    """Channels in the chosen order, never dropping one. Live ones come before offline ones in every order.
+
+    most:   viewers, high to low (Helix's own order for equal counts);
+    fewest: viewers, low to high, to find the smaller channels;
+    yours:  the listener's own (curated or followed) channels first, then by viewers."""
+    def viewers(channel):
+        try:
+            return int(channel.get('viewers') or 0)
+        except (TypeError, ValueError):
+            return 0
+    live = [c for c in channels if c.get('live') is not False]
+    offline = [c for c in channels if c.get('live') is False]
+    if sort == 'fewest':
+        live = sorted(live, key=viewers)
+    elif sort == 'yours':
+        live = sorted(live, key=lambda c: (not c.get('curated'), -viewers(c)))
+    else:
+        live = sorted(live, key=lambda c: -viewers(c))
+    return live + offline
+
+
+def interleave(groups):
+    """One list from several lists, taking turns, so a short shelf shows every category."""
+    found, seen = [], set()
+    for position in range(max((len(group) for group in groups), default=0)):
+        for group in groups:
+            if position < len(group) and group[position].get('login') not in seen:
+                seen.add(group[position].get('login'))
+                found.append(group[position])
+    return found

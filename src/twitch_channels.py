@@ -70,11 +70,17 @@ def save_preferences(style, logins, excluded=()):
             clean[key] = list(dict.fromkeys(_login(item) for item in data[key]))
     clean[style] = names
     clean['excluded'] = exclusions
+    if saved_categories():
+        clean['categories'] = saved_categories()   # the listener's extra categories survive a channel edit
+    _write_preferences(path, clean)
+
+
+def _write_preferences(path, data):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix='.twitch-', dir=path.parent)
     try:
         with os.fdopen(fd, 'w') as output:
-            json.dump(clean, output, indent=2)
+            json.dump(data, output, indent=2)
             output.write('\n')
         os.replace(temporary, path)
     finally:
@@ -118,23 +124,63 @@ def _json_get(request):
     return http_fetch.fetch_json(request, 5, 2 * 1024 * 1024)
 
 
+class Page(list):
+    """One Helix page: the rows, and the cursor that asks for the page after it (None on the last page)."""
+    cursor = None
+
+
 def _get(endpoint, params, client_id, token):
     url = 'https://api.twitch.tv/helix/' + endpoint + '?' + urllib.parse.urlencode(params, doseq=True)
     request = urllib.request.Request(url, headers={'Client-ID': client_id, 'Authorization': 'Bearer ' + token})
     data = _json_get(request)
     if not isinstance(data, dict) or not isinstance(data.get('data'), list):
         raise ValueError('Invalid Twitch response')
-    return data['data']
+    page = Page(data['data'])
+    pagination = data.get('pagination')
+    cursor = pagination.get('cursor') if isinstance(pagination, dict) else None
+    page.cursor = str(cursor) if cursor else None
+    return page
 
 
-def discover(style, curated=None, client_id=None, access_token=None):
+def thumbnail(template, width=160, height=90):
+    """A stream preview address from Helix's template, only when it is a public https Twitch image address."""
+    value = str(template or '').replace('{width}', str(width)).replace('{height}', str(height))
+    parsed = urllib.parse.urlsplit(value)
+    host = parsed.hostname or ''
+    if parsed.scheme != 'https' or not (host == 'twitch.tv' or host.endswith('.twitch.tv')
+                                        or host == 'jtvnw.net' or host.endswith('.jtvnw.net')):
+        return ''
+    return value
+
+
+def _channel(item, names, category):
+    login = _login(item.get('user_login', ''))
+    try:
+        viewers = max(0, int(item.get('viewer_count') or 0))
+    except (TypeError, ValueError):
+        viewers = 0
+    return {'login': login, 'name': str(item.get('user_name') or login),
+            'url': 'https://www.twitch.tv/' + login, 'live': True,
+            'title': str(item.get('title') or ''), 'curated': login in names,
+            'category': str(item.get('game_name') or category), 'viewers': viewers,
+            'language': str(item.get('language') or '').upper()[:8],
+            'thumbnail': thumbnail(item.get('thumbnail_url'))}
+
+
+def discover(style, curated=None, client_id=None, access_token=None, after=None, game_id=None, category=None):
     """Return channels and live certainty. Configured Helix also discovers category streams.
 
     Without Helix, curated channels remain selectable but their status is unknown.
     API failures never claim an offline result.
+
+    Each call returns one page of up to 100 streams of one category, most watched first, with the Helix
+    ``cursor`` for the next page (None on the last). Pass it back as ``after`` (with the ``game_id`` the first
+    page reported) to read the next page; curated channels are only checked on the first page.
+    ``category`` names a category other than the style's own (see ``search_categories``).
     """
     if style not in STYLES:
         raise ValueError('Unknown Twitch style')
+    category = str(category) if category else STYLES[style]['category']
     explicit_credentials = client_id is not None or access_token is not None
     names = list(dict.fromkeys(_login(item) for item in (curated_channels(style) if curated is None else curated)))
     # Helix accepts at most 100 user_login values per request.
@@ -143,7 +189,7 @@ def discover(style, curated=None, client_id=None, access_token=None):
     def unknown(message, reason='unavailable', http_status=None):
         return {'status': 'unknown', 'message': message, 'reason': reason, 'http_status': http_status, 'curated_status': {name: 'unknown' for name in names}, 'channels': [
             {'login': name, 'name': name, 'url': 'https://www.twitch.tv/' + name, 'live': None}
-            for name in names]}
+            for name in names], 'cursor': None}
     try:
         client_id, access_token = _credentials(client_id, access_token)
     except local_credentials.CredentialError as error:
@@ -151,28 +197,31 @@ def discover(style, curated=None, client_id=None, access_token=None):
     if not client_id or not access_token:
         return unknown('Connect Twitch through the CLI to discover live channels; saved channels remain available.', 'configuration')
     try:
-        games = _get('games', {'name': STYLES[style]['category']}, client_id, access_token)
-        if not games or not games[0].get('id'):
-            return unknown('Twitch category could not be resolved; live status is unknown.')
-        game_id = str(games[0]['id'])
-        streams = _get('streams', {'game_id': game_id, 'first': 100}, client_id, access_token)
-        curated_streams = _get('streams', {'user_login': names, 'first': 100}, client_id, access_token) if names else []
+        if not game_id:
+            games = _get('games', {'name': category}, client_id, access_token)
+            if not games or not games[0].get('id'):
+                return unknown('Twitch category could not be resolved; live status is unknown.')
+            game_id = str(games[0]['id'])
+        game_id = str(game_id)
+        params = {'game_id': game_id, 'first': 100}
+        if after:
+            params['after'] = str(after)
+        streams = _get('streams', params, client_id, access_token)
+        cursor = getattr(streams, 'cursor', None)
+        curated_streams = _get('streams', {'user_login': names, 'first': 100}, client_id, access_token) if names and not after else []
         curated_status = {name: 'offline' for name in names}
         for item in curated_streams:
             login = _login(item.get('user_login', ''))
             if login in curated_status:
                 curated_status[login] = 'live' if str(item.get('game_id', '')) == game_id else 'style_mismatch'
         channels = {}
-        for item in streams + curated_streams:
+        for item in list(streams) + list(curated_streams):
             if str(item.get('game_id', '')) != game_id:
                 continue
-            login = _login(item.get('user_login', ''))
-            channels[login] = {'login': login, 'name': str(item.get('user_name') or login),
-                               'url': 'https://www.twitch.tv/' + login, 'live': True,
-                               'title': str(item.get('title') or ''),
-                               'curated': login in names, 'category': STYLES[style]['category']}
+            channel = _channel(item, names, category)
+            channels[channel['login']] = channel
         return {'status': 'live' if channels else 'offline', 'channels': list(channels.values()),
-                'curated_status': curated_status,
+                'curated_status': curated_status, 'cursor': cursor, 'game_id': game_id,
                 'message': '' if channels else 'No live channels found for this style.'}
     except urllib.error.HTTPError as error:
         error.close()
@@ -183,7 +232,7 @@ def discover(style, curated=None, client_id=None, access_token=None):
                 except local_credentials.CredentialError as renewal_error:
                     return unknown(str(renewal_error), 'authentication', 401)
                 # Explicit arguments on this one retry prevent renewal loops.
-                result = discover(style, names, renewed.client_id, renewed.access_token)
+                result = discover(style, names, renewed.client_id, renewed.access_token, after, game_id, category)
                 if result['status'] in ('live', 'offline'):
                     result['authentication'] = 'renewed'
                     result['message'] = 'Saved Twitch login renewed. ' + (str(len(result['channels'])) + ' live choices in this style.' if result['channels'] else 'No live channels found for this style.')
@@ -196,6 +245,50 @@ def discover(style, curated=None, client_id=None, access_token=None):
         return unknown('Twitch discovery is temporarily unavailable (HTTP ' + str(error.code) + '). Try Refresh channels again.', 'service', error.code)
     except (OSError, ValueError, KeyError):
         return unknown('Could not reach Twitch discovery. Check the connection, then Refresh channels; saved channels remain available.', 'connection')
+
+
+def search_categories(query, client_id=None, access_token=None):
+    """Categories whose name matches ``query`` (Helix ``search/categories``) as {'id', 'name'} rows.
+    Raises OSError, ValueError or HTTPError when Twitch cannot answer, never an empty list standing for a failure."""
+    query = str(query or '').strip()
+    if not query:
+        return []
+    client_id, access_token = _credentials(client_id, access_token)
+    if not client_id or not access_token:
+        raise ValueError('Connect Twitch to search its categories.')
+    rows = _get('search/categories', {'query': query, 'first': 20}, client_id, access_token)
+    return [{'id': str(row['id']), 'name': str(row['name'])} for row in rows
+            if isinstance(row, dict) and row.get('id') and row.get('name')]
+
+
+def saved_categories():
+    """Categories the listener added with ＋ Category, as {'id', 'name'} rows (empty when none or unreadable)."""
+    try:
+        data = json.loads(preferences_path().read_text())
+    except (OSError, ValueError):
+        return []
+    rows = data.get('categories') if isinstance(data, dict) else None
+    return [{'id': str(row['id']), 'name': str(row['name'])} for row in rows or []
+            if isinstance(row, dict) and str(row.get('id') or '').isdigit() and str(row.get('name') or '').strip()][:12]
+
+
+def save_categories(rows):
+    """Atomically save the extra categories next to the channel preferences, keeping everything else."""
+    clean = []
+    for row in rows:
+        if str(row.get('id') or '').isdigit() and str(row.get('name') or '').strip():
+            item = {'id': str(row['id']), 'name': str(row['name']).strip()[:80]}
+            if item['id'] not in [c['id'] for c in clean]:
+                clean.append(item)
+    path = preferences_path()
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        data = {}
+    if not isinstance(data, dict):
+        raise ValueError('Invalid Twitch preferences')
+    data['categories'] = clean[:12]
+    _write_preferences(path, data)
 
 
 def choose(result, previous=None, excluded=(), rng=None):
