@@ -77,7 +77,10 @@ elif _argv0 and os.environ.get('WP4_MODE') not in ('record', 'replay'):
     sys.meta_path.insert(0, _Finder)
 
 _mode, _store = os.environ.get('WP4_MODE'), os.environ.get('WP4_STORE')
-_probe = (os.sep + 'tests' + os.sep + 'probes' + os.sep) in os.path.abspath(sys.argv[0] or '') and _argv0.endswith('.py')
+# Judging (acceptance_verdict.py) must always run live: replaying its recorded verdict would make
+# every judge control vacuous.
+_probe = ((os.sep + 'tests' + os.sep + 'probes' + os.sep) in os.path.abspath(sys.argv[0] or '') and _argv0.endswith('.py')
+          and _argv0 != 'acceptance_verdict.py')
 if _mode in ('record', 'replay') and _store and _probe:
     import json, shutil, subprocess, atexit
 
@@ -355,6 +358,8 @@ def cmd_judge(a):
         return
     slots = sorted(p for p in store.iterdir() if p.is_dir())
     acceptance = [s for s in slots if 'acceptance' in s.name and (s / 'meta.json').exists()]
+    stale = [s.name for s in slots if s.name.startswith('acceptance_verdict.py.')]
+    check('J0 the store holds no recorded verdicts (judging runs live in every replay)', not stale, stale)
     check('J0 the store holds recorded acceptance probes', bool(acceptance), [s.name for s in slots])
     copy = copy_repo(a.repo)
 
