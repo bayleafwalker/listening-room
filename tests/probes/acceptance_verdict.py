@@ -6,9 +6,11 @@
 RESULTS_DIR holds the probe's results file (the ``*acceptance*.json`` it writes: a list of
 ``{criterion, pass}`` records, or a dict holding that list). ``expected/NAME.checks`` lists one
 check name per line; an entry may declare the measured part of its name with ``@@``
-(for example ``... (worst gap @@ ms)``); that span matches anything and the rest of the name must match exactly.
+(for example ``... (worst gap @@ ms)``); that span matches only measurement characters (digits, sign, decimal point, the
+list punctuation ``, [ ]`` and space, and the units ``ms s % px fps Hz``, with at least one digit) and the rest of the name must match
+exactly, so a span cannot swallow a changed word or a ``FAILED`` marker.
 Nothing else is ignored: thresholds, scenario inputs and markers in a name are part of its identity. A line starting with ``!`` is a known failure, kept visible on purpose
-(the superseded "5i [ORIGINAL]" check in O4); comment lines start with ``# ``.
+(the superseded "5i [ORIGINAL]" check in O4); a line cannot combine ``!`` with ``@@`` (a failure is recorded under the exact name it failed with); comment lines start with ``# ``.
 
 The run passes when:
 - every failing check is a listed known failure and every known failure still fails;
@@ -17,10 +19,11 @@ The run passes when:
 Checks that are new, not listed, are reported and allowed if they pass, so adding a check to
 a probe needs no edit here. ``--record`` rewrites the list from the run, keeping comment lines. Every failing check is
 recorded as a known failure and printed, so review the diff: a ``!`` line needs a comment saying why.
-Entries that use ``@@`` are kept as written.
+Passing entries that use ``@@`` are kept as written; a failing one is recorded under its exact name.
 """
 from collections import Counter
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -45,26 +48,32 @@ def load_results(directory):
 
 
 WILDCARD = '@@'
+# What a measured span may hold: numbers (digits, sign, decimal point), list punctuation for a list of numbers, and units.
+_FILLER = r'(?:[+\-.,\[\]\s]|ms|s|%|px|fps|Hz)'
+MEASUREMENT = _FILLER + r'*[0-9](?:[0-9]|' + _FILLER + ')*'
 
 
 def pattern(entry):
     """The regex for an entry that declares measured spans with ``@@``, else None."""
     if WILDCARD not in entry:
         return None
-    return re.compile('.*?'.join(re.escape(part) for part in entry.split(WILDCARD)), re.S)
+    return re.compile(('(?:' + MEASUREMENT + ')').join(re.escape(part) for part in entry.split(WILDCARD)), re.S)
 
 
 def load_expected(path):
     names, known = Counter(), Counter()
     comments = []
     if path.exists():
-        for line in path.read_text().splitlines():
+        for number, line in enumerate(path.read_text().splitlines(), 1):
             if line.startswith('# ') or line == '#':
                 comments.append(line)
                 continue
             entry = line[1:] if line.startswith('!') else line
             if not entry:
                 continue
+            if line.startswith('!') and WILDCARD in entry:
+                sys.exit(f'{path.name}:{number}: a known failure ("!") cannot use "@@": a measured span would hide '
+                         f'what failed. List the failure under the exact name it fails with: {entry}')
             names[entry] += 1
             if line.startswith('!'):
                 known[entry] += 1
@@ -87,10 +96,11 @@ def main(argv):
     if len(args) != 2:
         sys.exit(__doc__)
     name, directory = args
-    expected_file = HERE / 'expected' / f'{name}.checks'
+    expected_file = Path(os.environ.get('LISTENING_VERDICT_EXPECTED') or HERE / 'expected') / f'{name}.checks'
     results = load_results(directory)
     names, known, comments = load_expected(expected_file)
     patterns = {entry: pattern(entry) for entry in names if pattern(entry)}
+    raw = [check for check, _ok in results]
     results = [(identify(check, names, patterns), ok) for check, ok in results]
     passed, failed = Counter(), Counter()
     for check, ok in results:
@@ -110,7 +120,7 @@ def main(argv):
     summary = (f'{name}: {sum(passed.values())} passed, {sum(failed.values())} failed '
                f'({sum(known.values())} known), {new} new, {sum(1 for p in problems if p.startswith("MISSING"))} missing')
     if record:
-        out = [('' if ok else '!') + check for check, ok in results]
+        out = [check if ok else '!' + exact for (check, ok), exact in zip(results, raw)]
         expected_file.parent.mkdir(exist_ok=True)
         expected_file.write_text('\n'.join(comments + out) + '\n')
         for problem in problems:

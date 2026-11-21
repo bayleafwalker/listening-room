@@ -1,4 +1,4 @@
-# Entries with @@ declare the measured part of the name; everything else must match exactly.
+# Entries with @@ declare a measured span (numbers, signs, list punctuation, units); everything else must match exactly.
 1a the Rooms grid has room cards to click
 1b single click -> preview visible within 150 ms for every card (measured @@ ms)
 1c the GTK thread was never held for more than 150 ms after the first (cold) preview (gaps @@ ms), and never more than 400 ms
@@ -10,7 +10,7 @@
 1i the room is really entered (controller active)
 1j double-click on the room you are already in sends no enter and shows Now
 1k Enter on a card enters exactly once
-1l every selection (scope chips, Mix, station, mood) updates within 100 ms: @@
+1l every selection (scope chips, Mix, station, mood) updates within 100 ms: {'scope:all': @@, 'scope:stations': @@, 'scope:radio': @@, 'scope:library': @@, 'scope:channels': @@, 'scope:world': @@, 'scope:youtube': @@, 'open Mix': @@, 'open a station': @@, 'mood choice': @@}
 1m the GTK thread was never held for more than 120 ms during those selections (worst @@ ms)
 1n no blocking file/network/decode call from application code on the GTK thread while selecting
 1o no controller request was made synchronously on the GTK thread during the whole scenario
