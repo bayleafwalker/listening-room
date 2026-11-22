@@ -563,6 +563,7 @@ class Controller:
         self.lock = threading.RLock()
         self.worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='room-session')
         self.presenter_worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='room-presenter')
+        self.presenter_play_worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='room-presenter-play')
         stored = hub.load_json(self.directory / 'session.json', {})
         self.last_session = stored.get('last_session') if isinstance(stored, dict) else None
         # The scene opens where you are ("here"). Workspace 9 stays only when it was chosen explicitly:
@@ -619,6 +620,8 @@ class Controller:
         self.presenter_prepare_pending = False
         self.presenter_slot_pending = False
         self.presenter_unit = None
+        self._music_position_item = None
+        self._music_position = 0.
         self.strict_pending = None
         self.verified_audio = None
         self.verified_record = None
@@ -1078,6 +1081,20 @@ class Controller:
                 if observed_generation != self.generation:
                     return
                 self.media = details
+                selected = (self.active or {}).get('music') or {}
+                reference = selected.get('reference') or {}
+                music_layer = self.live.get('music') or {}
+                if reference:
+                    item_identity = reference.get('id') or reference.get('name')
+                    music_layer['item'] = item_identity
+                    music_layer['id'] = reference.get('id')
+                    music_layer['name'] = reference.get('name') or music_layer.get('name')
+                if isinstance(details.get('position'), (int, float)):
+                    item_identity = reference.get('id') or reference.get('name') or music_layer.get('source_id')
+                    if item_identity != self._music_position_item:
+                        self._music_position_item, self._music_position = item_identity, 0.
+                    self._music_position = max(self._music_position, float(details['position']))
+                    music_layer['position'] = self._music_position
             atmosphere = (self.active or {}).get('atmosphere') or {}
             atmosphere_queue = atmosphere.get('queue') or []
             atmosphere_index = atmosphere.get('queue_index', 0)
@@ -1212,6 +1229,8 @@ class Controller:
     def _invalidate(self):
         with self.lock:
             self.cancel.set()
+            old_unit = self.presenter_unit
+            self.presenter_unit = None
             self.cancel = threading.Event()
             self.generation += 1
             self.atmosphere_generation += 1
@@ -1226,10 +1245,13 @@ class Controller:
             self.timer_ends.clear()
             self.transition = None
             if self.presenter_prepared:
-                self.presenter.discard(self.presenter_prepared)
+                self.presenter.discard(self.presenter_prepared, remove=True)
             self.presenter_prepared = None
             self.presenter_prepare_pending = False
             self.presenter_slot_pending = False
+            if old_unit:
+                try: self.backend.stop_presenter(old_unit)
+                except (OSError, ValueError, hub.HubError, AttributeError): pass
             return self.generation, self.cancel
 
     def enter(self, args):
@@ -2123,14 +2145,42 @@ class Controller:
             result = self.enter({'recipe': recipe, '_automatic': automatic, '_request_generation': expected_generation})
             return result
 
+    @staticmethod
+    def _primary_speech(station, active):
+        if station.get('speech') is True:
+            return True
+        for selection in ((active or {}).get(name) or {} for name in ('music', 'atmosphere')):
+            reference = selection.get('reference') or {}
+            kind = str(selection.get('kind') or reference.get('kind') or '').casefold()
+            provider = str(reference.get('provider') or selection.get('provider') or '').casefold()
+            identity = str(selection.get('id') or selection.get('source_id') or '').casefold()
+            if (selection.get('live') is True or kind in ('twitch', 'podcast', 'youtube', 'live')
+                    or provider in ('youtube', 'podcast')
+                    or any(word in identity for word in ('youtube', 'twitch', 'podcast', 'live-channel'))):
+                return True
+        return False
+
+    def _presenter_clip(self, station):
+        used = {segment.get('source') for segment in self.presenter.segments
+                if segment.get('outcome') == 'played' and segment.get('source')
+                and segment.get('_station_id') == station.get('id')}
+        for clip in station.get('presenter_clips') or []:
+            if (clip.get('allowed_placement') == 'between_tracks'
+                    and clip.get('expires_at', float('inf')) >= self.clock()
+                    and clip.get('source') not in used):
+                return clip
+        return None
+
     def _prepare_presenter(self, station, item, generation, cancel):
         """Provider work stays on the controller worker, outside the session lock."""
         try:
-            segment = self.presenter.prepare(station, item,
-                primary_speech=station.get('preferences', {}).get('speech') == 'Speech welcome')
+            record = self._metadata_cached(item)
+            segment = self.presenter.prepare(station, item, metadata_record=record,
+                primary_speech=self._primary_speech(station, self.active), clip=self._presenter_clip(station),
+                cancel=cancel)
             with self.lock:
                 if generation != self.generation or cancel.is_set() or self.closed:
-                    self.presenter.discard(segment)
+                    self.presenter.discard(segment, remove=True)
                 else:
                     self.presenter_prepared = segment
         finally:
@@ -2156,7 +2206,7 @@ class Controller:
         setting = presenter.preferences(station.get('presenter'))
         segment = self.presenter_prepared
         self.presenter_prepared = None
-        due = setting['enabled'] and tracks and tracks % setting['budget']['every_tracks'] == 0
+        due = setting['enabled'] and tracks and (tracks == 1 or (tracks - 1) % setting['budget']['every_tracks'] == 0)
         if not due:
             # Keep the already prepared receipt for its later budgeted slot.
             self.presenter_prepared = segment
@@ -2167,30 +2217,37 @@ class Controller:
             self.queue_step(1, automatic=True)
             return
         self.presenter_slot_pending = True
-        maximum, level_value, muted = segment['_max_seconds'], self.presenter.level, self.presenter.muted
+        duration, level_value, muted = min(segment['duration'], segment['_max_seconds']), self.presenter.level, self.presenter.muted
+        slot_cancel = self.cancel
         def play_slot():
             unit = None
             try:
+                if slot_cancel.is_set():
+                    self.presenter.discard(segment, remove=True)
+                    return
                 unit = self.backend.start_presenter(segment, level_value, muted)
                 with self.lock:
                     if generation == self.generation:
                         self.presenter_unit = unit
-                # This fixed slot is independent of mute; audio is additionally
-                # hard-limited by the player's --length option.
-                self.cancel.wait(maximum)
+                # Muting does not alter the programme clock; generation invalidation
+                # ends this exact slot immediately.
+                slot_cancel.wait(duration)
             except (OSError, ValueError, hub.HubError, AttributeError):
+                self.presenter.discard(segment, remove=True)
                 self.presenter.record_drop('audio unavailable', segment.get('sources', ()))
             finally:
                 try: self.backend.stop_presenter(unit)
                 except (OSError, ValueError, hub.HubError, AttributeError): pass
                 self.presenter.discard(segment)
                 with self.lock:
-                    self.presenter_unit = None
-                    self.presenter_slot_pending = False
+                    if self.presenter_unit == unit:
+                        self.presenter_unit = None
+                    if generation == self.generation:
+                        self.presenter_slot_pending = False
                     if generation == self.generation and not self.cancel.is_set():
                         self.queue_step(1, automatic=True)
                 self._changed()
-        self.presenter_worker.submit(play_slot)
+        self.presenter_play_worker.submit(play_slot)
 
     def _route_preferred(self):
         if not self.settings.get('preferred_output'):
@@ -2534,8 +2591,14 @@ class Controller:
         target = args.get('id') or ((self.program.station if self.program else ((self.active or {}).get('music', {}).get('station') or {})).get('id'))
         station = next((item for item in self.stations() if item['id'] == target), {})
         current = presenter.preferences(station.get('presenter'))
-        return self._act_presenter_configure({'id': target, 'enabled': False if args.get('action') == 'music_only' else current['enabled'],
-                                               'budget': dict(current['budget'], every_tracks=min(20, current['budget']['every_tracks'] + 2))})
+        less = dict(current['budget'])
+        if less['every_tracks'] < 20:
+            less['every_tracks'] = min(20, less['every_tracks'] + 2)
+        elif less['max_seconds'] > 5:
+            less['max_seconds'] -= 1
+        return self._act_presenter_configure({'id': target,
+                                               'enabled': False if args.get('action') == 'music_only' else current['enabled'],
+                                               'budget': less})
 
     @action('station.play_next')
     def _act_station_play_next(self, args):
@@ -2766,7 +2829,7 @@ class Controller:
             self.backend.stop_presenter(self.presenter_unit)
         except (OSError, ValueError, hub.HubError, AttributeError):
             pass
-        self.presenter.discard(self.presenter_prepared)
+        self.presenter.discard(self.presenter_prepared, remove=True)
         if self.verified_audio:
             self.verified_audio.close()
             self.verified_audio = None
@@ -2776,6 +2839,7 @@ class Controller:
             self.lighting_timer.cancel()
         self.worker.shutdown(wait=False, cancel_futures=True)
         self.presenter_worker.shutdown(wait=False, cancel_futures=True)
+        self.presenter_play_worker.shutdown(wait=False, cancel_futures=True)
         with self.lock:
             for job in self.metadata_jobs.values():
                 job['_cancel'].set()

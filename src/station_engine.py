@@ -71,6 +71,22 @@ def normalize(value):
     # Presenter preferences stay with the station's intent, never with prepared audio.
     import presenter
     presenter_settings = presenter.preferences(value.get('presenter'))
+    clips = value.get('presenter_clips') or []
+    if not isinstance(clips, list) or len(clips) > 20:
+        raise ValueError('Presenter clips must be a list')
+    clean_clips = []
+    for clip in clips:
+        if (not isinstance(clip, dict) or not isinstance(clip.get('source'), str)
+                or not clip['source'].strip() or not isinstance(clip.get('audio'), str)
+                or not clip['audio'] or clip.get('allowed_placement') != 'between_tracks'
+                or (clip.get('expires_at') is not None and (isinstance(clip['expires_at'], bool)
+                    or not isinstance(clip['expires_at'], (int, float))))):
+            raise ValueError('Choose a valid presenter clip')
+        clean_clips.append({key: copy.deepcopy(clip[key]) for key in
+                            ('source', 'audio', 'allowed_placement', 'expires_at', 'text') if key in clip})
+    primary_speech = value.get('speech', False)
+    if not isinstance(primary_speech, bool):
+        raise ValueError('Station speech marker must be on or off')
     policy = value.get('end_policy', 'stop')
     if policy not in ('stop', 'repeat'):
         raise ValueError('Choose stop or repeat for the station end')
@@ -86,7 +102,8 @@ def normalize(value):
     return {'id': identity, 'name': name, 'sources': [_source(s) for s in sources],
             'fallbacks': [_source(s) for s in fallbacks], 'preferences': clean_prefs,
             'end_policy': policy, 'arc': arc, 'generation': {'kind': generation['kind']},
-            'presenter': presenter_settings}
+            'presenter': presenter_settings, 'presenter_clips': clean_clips,
+            'speech': primary_speech}
 
 
 def identity(item):

@@ -4,7 +4,8 @@
 
 - Added an optional station presenter with a bounded budget, captured-metadata receipts,
   quiet failure status and separate Mix controls. Prepared voice is now played from an
-  ephemeral speech layer; late and unavailable slots fall straight through to music.
+  ephemeral speech layer for the WAV's actual bounded duration; late and unavailable
+  slots fall straight through to music. Local, expiring clips use the same scheduler.
 
 All notable changes are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).

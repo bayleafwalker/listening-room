@@ -4,6 +4,7 @@ Preparation is deliberately separate from playback.  A failed or slow provider o
 records a dropped slot: music carries on and no audio is retained in station state.
 """
 import json
+import io
 import os
 from pathlib import Path
 import tempfile
@@ -11,6 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import wave
 
 import online_services
 
@@ -36,14 +38,18 @@ def preferences(value=None):
     return {'enabled': enabled, 'budget': budget(value.get('budget'))}
 
 
-def metadata_sources(item):
-    """Only captured track fields become facts, and are named in the receipt."""
-    if not isinstance(item, dict):
+def metadata_sources(record):
+    """Project facts only from a captured metadata record, naming that record."""
+    if not isinstance(record, dict) or not record.get('item_id'):
         return []
     result = []
-    for key in ('name', 'artist', 'album'):
-        if isinstance(item.get(key), str) and item[key].strip():
-            result.append({'field': key, 'value': item[key].strip(), 'source': 'captured metadata'})
+    receipt = str(record['item_id'])
+    for observation in record.get('identities') or []:
+        if (isinstance(observation, dict) and isinstance(observation.get('name'), str)
+                and isinstance(observation.get('value'), str) and observation['value'].strip()
+                and observation.get('name') != 'revision'):
+            result.append({'field': observation['name'], 'value': observation['value'].strip(),
+                           'source': receipt, 'record': receipt})
     return result
 
 
@@ -66,9 +72,9 @@ class Presenter:
             self.segments.insert(0, {'text': '', 'sources': list(sources), 'outcome': 'dropped', 'reason': reason})
             del self.segments[self.history:]
 
-    def prepare(self, station, item, primary_speech=False, clip=None, timeout=3):
+    def prepare(self, station, item, metadata_record=None, primary_speech=False, clip=None, timeout=3, cancel=None):
         setting = preferences((station or {}).get('presenter'))
-        sources = metadata_sources(item)
+        sources = metadata_sources(metadata_record)
         if not setting['enabled']:
             return None
         if primary_speech:
@@ -76,17 +82,21 @@ class Presenter:
         if clip:
             if clip.get('expires_at', float('inf')) < self.clock():
                 self.record_drop('clip expired', sources); return None
-            if clip.get('placement') != 'between_tracks' or not clip.get('source'):
+            if clip.get('allowed_placement') != 'between_tracks' or not clip.get('source'):
                 self.record_drop('invalid clip', sources); return None
-            text = clip.get('text', '')
+            text = clip.get('text') or clip['source']
         elif not sources:
             self.record_drop('no captured metadata'); return None
         else:
             try:
                 text = self._chat(sources, setting['budget']['max_seconds'], timeout)
             except (ValueError, OSError, TimeoutError, urllib.error.URLError) as error:
+                if cancel is not None and cancel.is_set():
+                    return None
                 with self._lock: self.status = str(error) or 'Presenter unavailable; music only'
                 self.record_drop('language unavailable', sources); return None
+        if cancel is not None and cancel.is_set():
+            return None
         if not isinstance(text, str) or not text.strip() or len(text) > setting['budget']['max_seconds'] * 18:
             self.record_drop('malformed generation', sources); return None
         text = text.strip()
@@ -94,24 +104,41 @@ class Presenter:
             if text in self._texts:
                 self.record_drop('repeated segment', sources); return None
         try:
-            audio = clip.get('audio') if clip else self._speech(text, timeout)
+            if clip and Path(clip['audio']).stat().st_size > 2 * 1024 * 1024:
+                raise ValueError('Presenter voice unavailable; music only')
+            audio = Path(clip['audio']).read_bytes() if clip else self._speech(text, timeout)
+            if cancel is not None and cancel.is_set():
+                return None
+            duration = self._wav_duration(audio)
+            if duration > setting['budget']['max_seconds']:
+                self.record_drop('over budget', sources); return None
             path = self._runtime_audio(audio)
         except (ValueError, OSError, TypeError) as error:
             with self._lock: self.status = str(error) or 'Presenter voice unavailable; music only'
             self.record_drop('voice unavailable', sources); return None
         segment = {'text': text, 'sources': sources, 'outcome': 'played', '_audio_path': str(path),
-                   '_max_seconds': setting['budget']['max_seconds']}
+                   '_max_seconds': setting['budget']['max_seconds'], '_station_id': station.get('id'),
+                   'duration': duration}
+        if clip:
+            segment.update(source=clip['source'], placement=clip['allowed_placement'])
         with self._lock:
             self.status = ''
             self.segments.insert(0, segment); self._texts.insert(0, text)
             del self.segments[self.history:]; del self._texts[self.history:]
         return segment
 
-    def discard(self, segment):
+    def discard(self, segment, remove=False):
         """Remove the ephemeral voice file once its one scheduled slot is over."""
         if isinstance(segment, dict):
             try: Path(segment.get('_audio_path', '')).unlink(missing_ok=True)
             except (OSError, TypeError): pass
+            if remove:
+                with self._lock:
+                    if segment in self.segments:
+                        self.segments.remove(segment)
+                    text = segment.get('text')
+                    if text in self._texts:
+                        self._texts.remove(text)
 
     def _runtime_audio(self, audio):
         if not isinstance(audio, bytes) or not audio:
@@ -129,6 +156,17 @@ class Presenter:
         except Exception:
             Path(name).unlink(missing_ok=True)
             raise
+
+    @staticmethod
+    def _wav_duration(audio):
+        try:
+            with wave.open(io.BytesIO(audio), 'rb') as value:
+                frames, rate = value.getnframes(), value.getframerate()
+                if rate <= 0 or frames <= 0:
+                    raise ValueError()
+                return frames / rate
+        except (EOFError, wave.Error, ValueError, TypeError):
+            raise ValueError('Presenter voice unavailable; music only') from None
 
     def _request(self, service, path, payload, timeout):
         try:
@@ -151,6 +189,7 @@ class Presenter:
         except (ValueError, KeyError, IndexError, TypeError): return ''
 
     def _speech(self, text, timeout):
-        raw = self._request('presenter_voice', '/v1/audio/speech', {'model': 'presenter', 'voice': 'default', 'input': text}, timeout)
+        raw = self._request('presenter_voice', '/v1/audio/speech',
+                            {'model': 'presenter', 'voice': 'default', 'input': text, 'response_format': 'wav'}, timeout)
         if not raw: raise ValueError('Presenter voice unavailable; music only')
         return raw

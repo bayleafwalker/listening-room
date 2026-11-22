@@ -244,5 +244,9 @@ Preferences → Connections: `presenter_llm` serves `/v1/chat/completions` and
 `endpoint` and optional private `token_file`. If either endpoint is unavailable, the
 station continues with music only. Voice is prepared off the interface before its
 budgeted slot, played from a short-lived runtime file on its own Mix layer, and removed
-when that slot ends. The slot is fixed to the chosen maximum even when Presenter is
-muted, so muting speech never changes the music programme clock.
+when that slot ends. A slot lasts the WAV's actual duration (never beyond the chosen
+maximum), even when Presenter is muted, so muting speech never changes the music
+programme clock. The first slot is the first natural track end, then the configured
+number of naturally ended tracks apart; skips do not create slots. Eligible unexpired
+`presenter_clips` use the same slots before generated links (local `audio`, provenance
+`source`, `allowed_placement: "between_tracks"`, and optional Unix `expires_at`).

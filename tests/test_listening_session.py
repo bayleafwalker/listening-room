@@ -28,6 +28,8 @@ class FakeBackend:
         self.picture_block = None
         self.picture_started = threading.Event()
         self.media = {}
+        self.presenter_started = threading.Event()
+        self.presenter_stopped = threading.Event()
 
     def layers(self):
         return copy.deepcopy(self.state)
@@ -52,6 +54,19 @@ class FakeBackend:
 
     def media_details(self):
         return copy.deepcopy(self.media)
+
+    def start_presenter(self, segment, level, muted):
+        self.calls.append(('start_presenter', segment.get('duration'), level, muted))
+        self.presenter_started.set()
+        return {'unit': 'presenter-test'}
+
+    def stop_presenter(self, unit):
+        if unit:
+            self.calls.append(('stop_presenter', unit))
+            self.presenter_stopped.set()
+
+    def presenter_control(self, unit, action, value):
+        self.calls.append(('presenter_control', action, value))
 
     def music_control(self, action, value=None):
         self.calls.append(('music', action, value))
