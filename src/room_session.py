@@ -579,6 +579,7 @@ class Controller:
         # The outcome of the latest start (enter, Tune in, return): the window keeps a failed start's
         # card on Now, named after the room it tried, instead of reading "no room" as nothing happened.
         self.entry = None
+        self.entry_before = None   # what a start replaced (offer, errors, music state), restored by Cancel
         self.video = None   # the Watch window while it is open: status, name, url, started_at, room_paused
         self.generation = 0
         self.cancel = threading.Event()
@@ -1218,6 +1219,8 @@ class Controller:
                 self.eof_attempted = None
                 self.reconnect_attempted = False
                 self.playing_since = None
+            self.entry_before = {'id': generation, 'resume_offer': _copy(self.resume_offer), 'errors': _copy(self.errors),
+                                 'music': (self.live.get('music') or {}).get('status'), 'active': bool(self.active)}
             self.resume_offer = None
             self.errors = {}
             self.transition = {'kind': 'enter', 'name': recipe['name'], 'id': generation}
@@ -1373,6 +1376,9 @@ class Controller:
                     if not valid() or (strict_guard and playback_cancel.is_set()) or index == len(attempts) - 1 or not station:
                         raise
             if not valid():
+                # Cancelled (or interrupted) after the player started: this start leaves nothing playing.
+                # The one worker runs every start, so the current player is this attempt's own.
+                self._abandon(('music',) if not strict_guard else ())
                 return
             for field in ('id', 'url', 'name', 'kind', 'reference', 'queue', 'queue_index'):
                 if field in actual:
@@ -1406,10 +1412,16 @@ class Controller:
             if recipe['music'].get('position') and recipe['music'].get('reference'):
                 self.backend.music_control('seek', recipe['music']['position'])
             with self.lock:
-                if not valid():
-                    return
-                if strict_guard and strict_guard['event'].is_set():
+                committed = valid()
+                if committed and strict_guard and strict_guard['event'].is_set():
                     raise SessionError('Instrumental review was revoked')
+            if not committed:
+                self._abandon(('music',) if not strict_guard else ())
+                return
+            with self.lock:
+                if not valid():
+                    self._abandon(('music',) if not strict_guard else ())
+                    return
                 obsolete_units = [entry for entry in self.verified_units if not strict_guard or entry['unit'] != strict_guard['unit']]
                 if obsolete_units:
                     self.worker.submit(self._recover_verified_players, obsolete_units)
@@ -1525,7 +1537,13 @@ class Controller:
         if not started:
             return False
         with self.lock:
+            committed = valid()
+        if not committed:
+            self._abandon(started)
+            return False
+        with self.lock:
             if not valid():
+                self._abandon(started)
                 return False
             recipe['room_volume'] = self.room_volume
             self.active = recipe
@@ -1539,6 +1557,56 @@ class Controller:
         self._route_preferred()
         self._home_action('activate_room_scene', recipe.get('room_id'), cancel_event=cancel)
         return True
+
+    def _abandon(self, layers):
+        """Stop what an abandoned start already started (its music, or a failed music's ambience and scene)."""
+        for layer in layers:
+            try:
+                self._control(layer)('stop')
+            except (OSError, ValueError, hub.HubError):
+                pass
+
+    def cancel_entry(self, args):
+        """Cancel a start that is still connecting. The attempt is abandoned like any interrupted start
+        (its candidate player is stopped, nothing it began plays afterwards) and the room before it comes
+        back: its resume offer and errors, still playing when its music was never replaced. When the
+        candidate had already replaced the previous music, the room stops instead (idle), never half."""
+        wanted = args.get('id')
+        with self.lock:
+            entry = self.entry or {}
+            if entry.get('state') != 'connecting' or (self.transition or {}).get('kind') != 'enter' \
+                    or (wanted is not None and wanted != entry.get('id')):
+                state = 'started' if entry.get('state') == 'started' and (wanted is None or wanted == entry.get('id')) else None
+                return {'cancelled': False, 'state': state or entry.get('state'),
+                        'message': (entry.get('name') or 'The room') + ' has already started' if state else 'Nothing is connecting'}
+            before = self.entry_before if (self.entry_before or {}).get('id') == entry.get('id') else {}
+            generation, _cancel = self._invalidate()
+            self.resume_offer = before.get('resume_offer')
+            self.errors = before.get('errors') or {}
+            self.entry = {'id': entry.get('id'), 'name': entry.get('name'), 'state': 'cancelled',
+                          'kept': (self.active or {}).get('name')}
+            self.entry_before = None
+        # Queued behind the abandoned attempt on the one worker, so it sees what that attempt left.
+        self.worker.submit(self._settle_cancelled, generation, before)
+        self._changed()
+        return {'cancelled': True, 'message': 'Stopped connecting to ' + (entry.get('name') or 'the room')}
+
+    def _settle_cancelled(self, generation, before):
+        if self.closed or generation != self.generation:
+            return
+        try:
+            music = (self.backend.layers().get('music') or {}).get('status')
+        except (OSError, ValueError, hub.HubError):
+            music = None
+        with self.lock:
+            replaced = (generation == self.generation and self.active and before.get('active')
+                        and before.get('music') in ('Playing', 'Paused') and music == 'Stopped')
+        if replaced:
+            self.stop()
+            with self.lock:
+                if (self.entry or {}).get('state') == 'cancelled':
+                    self.entry['kept'] = None
+        self.refresh()
 
     def _home_action(self, method, *args, **kwargs):
         try:
@@ -1630,15 +1698,27 @@ class Controller:
                 'picture': self.backend.picture_control}[layer]
 
     def audible(self):
-        """Whether the room makes any sound: the room transport pauses when it does and plays when not."""
+        """Whether the room makes any sound: the room transport pauses when it does and plays when not.
+        A watched video is part of the room: it sounds too."""
         with self.lock:
-            return any((self.live.get(layer) or {}).get('status') == 'Playing' for layer in ('music', 'atmosphere'))
+            return (any((self.live.get(layer) or {}).get('status') == 'Playing' for layer in ('music', 'atmosphere'))
+                    or (self.video or {}).get('status') == 'Playing')
+
+    def _video_control(self, action):
+        """Pause or play the Watch window's player (the same mpv property Quiet already set)."""
+        control = getattr(self.backend, 'extra_video_control', None)
+        if control:
+            control(action)
 
     def quiet(self, minutes=None):
         """Room Pause: pause every playing layer and remember exactly those in the resume offer.
 
         A layer the user had already paused on its own is not in the offer, so Resume leaves it paused.
-        A second Quiet (a timer, a call, Watch) adds to an offer for the same room instead of erasing it."""
+        A second Quiet (a timer, a call, Watch) adds to an offer for the same room instead of erasing it.
+
+        A watched video that plays pauses too and is marked ``transport_paused`` on the snapshot's ``video``:
+        Resume plays it again. Quiet while watching keeps the video's offer (``reason: 'video'``), so room
+        Play brings back the video, not the room the video paused, and Stop watching still offers Resume."""
         duration = float(minutes or 0)
         if not math.isfinite(duration) or not 0 <= duration <= 1440:
             raise SessionError('Choose an interruption from 0 to 1440 minutes')
@@ -1647,6 +1727,7 @@ class Controller:
             current = _copy(self.live)
             identity = self.active.get('id') if self.active else None
             previous = _copy(self.resume_offer) if self.resume_offer and self.resume_offer.get('session_id') == identity else None
+            video = self.video if (self.video or {}).get('status') == 'Playing' else None
         paused, errors = [], {}
         for layer in self.PAUSABLE:
             if current.get(layer, {}).get('status') == 'Playing':
@@ -1655,10 +1736,10 @@ class Controller:
                     paused.append(layer)
                 except (OSError, ValueError, hub.HubError) as error:
                     errors[layer] = str(error)
-        extra_video = getattr(self.backend, 'extra_video_control', None)
+        video_paused = False
         try:
-            if extra_video:
-                extra_video('pause')
+            self._video_control('pause')
+            video_paused = video is not None
         except (OSError, ValueError, hub.HubError) as error:
             errors['video'] = str(error)
         kept = [layer for layer in (previous or {}).get('layers', [])
@@ -1667,6 +1748,13 @@ class Controller:
         with self.lock:
             self.resume_offer = {'layers': layers, 'session_id': identity, 'ready_at': self.clock() + duration * 60,
                                  'ready': not duration, 'message': 'Resume when you are ready'} if layers else None
+            if self.resume_offer and (previous or {}).get('reason') == 'video' and self.video is not None:
+                # Paused for the video before; what this Quiet paused (the Scene, a layer resumed under the
+                # video) comes back with the video.
+                again = [layer for layer in (previous or {}).get('with_video', []) if layer in kept]
+                self.resume_offer.update(reason='video', with_video=[layer for layer in layers if layer in paused or layer in again])
+            if video_paused and self.video is video:
+                video.update(status='Paused', transport_paused=True)
             self.errors.update(errors)
             for layer in paused:
                 self.live[layer]['status'] = 'Paused'
@@ -1774,25 +1862,48 @@ class Controller:
                 self.video = None
             else:
                 video['status'] = state.get('status') or video['status']
+                if video['status'] == 'Playing':
+                    video.pop('transport_paused', None)   # played again in its own window
 
     def resume(self):
         """Room Play. With an offer it plays exactly the layers room Pause paused; without one (every
-        layer was paused on its own) it plays every paused layer, so Play never does nothing."""
+        layer was paused on its own) it plays every paused layer, so Play never does nothing.
+
+        A paused watched video plays again when room Pause paused it, or when nothing else would resume
+        (it was paused in its own window). While the room is paused for that video (``reason: 'video'``)
+        only the video plays and the room's offer stays for after it."""
         with self.lock:
             offer = _copy(self.resume_offer)
             identity = self.active.get('id') if self.active else None
             paused = [layer for layer in self.PAUSABLE if (self.live.get(layer) or {}).get('status') == 'Paused']
-        if not offer and not (self.active and paused):
+            video = self.video if (self.video or {}).get('status') == 'Paused' else None
+        watching = bool(offer and offer.get('reason') == 'video')
+        play_video = bool(video and (video.get('transport_paused') or not offer or watching))
+        if not offer and not (self.active and paused) and not play_video:
             raise SessionError('There is no paused room to resume')
-        if offer and identity != offer['session_id']:
+        if offer and identity != offer['session_id'] and not play_video:
             raise SessionError('The paused room has changed; choose it again to resume')
-        for layer in offer['layers'] if offer else paused:
+        keep_offer = play_video and watching
+        layers = (offer.get('with_video') or [] if keep_offer else offer['layers'] if offer else
+                  paused if self.active else [])
+        for layer in layers:
             self._control(layer)('play')
             self.live[layer]['status'] = 'Playing'
+        if play_video:
+            self._video_control('play')
         with self.lock:
-            self.resume_offer = None
+            if not keep_offer:
+                self.resume_offer = None
+            elif self.resume_offer:
+                self.resume_offer.pop('with_video', None)
+                self.resume_offer['layers'] = [layer for layer in self.resume_offer['layers'] if layer not in layers]
+                if not self.resume_offer['layers']:
+                    self.resume_offer = None
+            if play_video and self.video is video:
+                video['status'] = 'Playing'
+                video.pop('transport_paused', None)
         self._changed()
-        return {'message': 'Room resumed'}
+        return {'message': 'Video resumed' if keep_offer else 'Room resumed'}
 
     def transport(self, action='toggle'):
         """The one room Play/Pause that MPRIS, media keys and roomctl share with the window's button:
@@ -1809,7 +1920,8 @@ class Controller:
         with self.lock:
             offer, active = self.resume_offer, _copy(self.active)
             paused = any((self.live.get(layer) or {}).get('status') == 'Paused' for layer in self.PAUSABLE)
-        if offer or (active and paused):
+            video_paused = (self.video or {}).get('status') == 'Paused'
+        if offer or (active and paused) or video_paused:
             return self.resume()
         if active:
             return self.enter({'recipe': active})
@@ -2559,6 +2671,11 @@ class Controller:
         if args.get('action') == 'stop':
             return self.stop_video()
         raise SessionError('Choose video start or stop')
+
+    # Cancel a start still connecting (the Mix's Cancel): it answers at once, like Stop.
+    @action('entry.cancel', args={'id': 'number'})
+    def _act_entry_cancel(self, args):
+        return self.cancel_entry(args)
 
     @action('stop')
     def _act_stop(self, args):

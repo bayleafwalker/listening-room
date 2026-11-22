@@ -2,22 +2,27 @@
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gdk, GLib, Gtk
 
 import next_model
 from next_widgets import icon_button, label, menu_item, name_it
 
 ICONS = {'music': 'audio-x-generic-symbolic', 'atmosphere': 'weather-showers-symbolic',
          'picture': 'image-x-generic-symbolic'}
+# The Mix's own keys (O11-CONTROL), one list for the window's shortcut table to merge: (keys, what they do).
+MIX_SHORTCUTS = (('M', 'Pause or play music, in the Mix'),
+                 ('A', 'Pause or play the ambience, in the Mix'),
+                 ('Shift+Up / Down', 'The focused row’s level, in the Mix'))
+LEVEL_STEP = 5
 
 
 class LayerRow(Gtk.Box):
     """One layer: tile, source and state, then its contextual controls.
 
-    Music and Ambience each pause, resume and stop on their own, from buttons on the row. A layer paused
-    here stays paused when the room resumes; room Pause then Play restores exactly what played. The ⋯
-    menu repeats the row's actions with Next track, and shows only while it holds more than one item:
-    a lone action is already a visible button."""
+    Music and Ambience each pause, resume and stop on their own, from buttons on the row, and Next track
+    sits on the row when the source can skip. A layer paused here stays paused when the room resumes;
+    room Pause then Play restores exactly what played. The ⋯ menu repeats the row's actions, and shows
+    only while it holds more than one item: a lone action is already a visible button."""
     def __init__(self, layer, send, choose_other, options):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.layer, self.send, self.options = layer, send, options
@@ -58,6 +63,12 @@ class LayerRow(Gtk.Box):
                                        lambda: self.send(*self.args(self.playing.action)), ['flat'])
             self.playing.action = 'pause'
             top.append(self.playing)
+        self.skip = None
+        if layer == 'music':
+            self.skip = icon_button('media-skip-forward-symbolic', 'Next track',
+                                    lambda: self.send(*self.args('next')), ['flat'])
+            self.skip.set_visible(False)
+            top.append(self.skip)
         self.mute = Gtk.ToggleButton(icon_name='audio-volume-high-symbolic')
         self.mute.connect('toggled', self.mute_toggled)
         if layer == 'picture':
@@ -190,6 +201,8 @@ class LayerRow(Gtk.Box):
             name_it(self.playing, ('Play ' if paused else 'Pause ') + row['title'].lower())
             self.playing.set_visible(state in ('playing', 'paused') and not row['closed'] and not empty)
             self.halt.set_visible(not row['closed'] and not empty)
+        if self.skip is not None:
+            self.skip.set_visible(bool(row.get('can_next')) and not row['closed'])
         self.next_item.set_visible(bool(row.get('can_next')))
         self.retry_item.set_visible(bool(row['failed']))
         self.stop_item.set_visible(not row['closed'])
@@ -213,6 +226,20 @@ class LayerRow(Gtk.Box):
             self.set_change_label('Open scene' if row['closed'] else 'Change…')
         self.updating = False
 
+    def toggle(self):
+        """M or A: what the row's play/pause button shows, when it shows."""
+        if self.playing is not None and self.playing.get_visible() and self.playing.get_sensitive():
+            self.send(*self.args(self.playing.action))
+            return True
+        return False
+
+    def nudge(self, step):
+        """Shift+Up/Down: the row's level, through the same debounced command as a drag."""
+        if self.scale is None or not self.scale.get_visible() or not self.controls.get_visible():
+            return False
+        self.scale.set_value(max(0, min(100, self.scale.get_value() + step)))
+        return True
+
 
 class MixSheet(Gtk.Box):
     """Sheet content: header with Save as my room…, then the three layer rows."""
@@ -226,14 +253,107 @@ class MixSheet(Gtk.Box):
         spacer = Gtk.Box()
         spacer.set_hexpand(True)
         head.append(spacer)
-        head.append(menu_item('Save as my room…', save, None, css=('pill',)))
+        self.save_button = menu_item('Save as my room…', save, None, css=('pill',))
+        head.append(self.save_button)
         head.append(icon_button('go-down-symbolic', 'Close mix', close, ['circular']))
         self.append(head)
         self.rows = {name: LayerRow(name, send, choose_other, options) for name in next_model.LAYER_ORDER}
         for row in self.rows.values():
             self.append(row)
+        # While a room connects the Mix shows only progress and Cancel (N9): nothing it shows could act yet.
+        self.connecting = Gtk.Box(spacing=14, margin_top=18, margin_bottom=18, visible=False)
+        self.connecting.add_css_class('layer-row')
+        self.connecting_spinner = Gtk.Spinner(spinning=False, valign=Gtk.Align.CENTER)
+        self.connecting_spinner.set_size_request(22, 22)
+        self.connecting.append(self.connecting_spinner)
+        self.connecting_text = label('', ['layer-title'], ellipsize=True)
+        self.connecting_text.set_hexpand(True)
+        self.connecting.append(self.connecting_text)
+        self.cancel_button = Gtk.Button(label='Cancel', valign=Gtk.Align.CENTER)
+        self.cancel_button.connect('clicked', lambda *_: self.cancel_clicked())
+        self.connecting.append(self.cancel_button)
+        self.append(self.connecting)
+        self.on_cancel = None
+        self.keys = None
+        self.connect('realize', lambda *_: self.install_keys())
+
+    def show_connecting(self, name, cancel=None):
+        """``name`` while a start connects (with ``cancel``, the honest Cancel), None once it ended."""
+        connecting = name is not None
+        self.on_cancel = cancel if connecting else None
+        self.connecting.set_visible(connecting)
+        self.connecting_spinner.set_spinning(connecting)
+        for widget in list(self.rows.values()) + [self.save_button]:
+            widget.set_visible(not connecting)
+        if connecting:
+            self.room.set_text('')
+            self.connecting_text.set_text('Connecting to ' + name + '…')
+            self.cancel_button.set_visible(cancel is not None)
+            self.cancel_button.set_sensitive(True)
+            self.cancel_button.set_label('Cancel')
+
+    def cancel_clicked(self):
+        if self.on_cancel is not None:
+            self.cancel_button.set_sensitive(False)   # one Cancel per start
+            self.cancel_button.set_label('Cancelling…')
+            self.on_cancel()
 
     def update(self, snapshot):
-        self.room.set_text((snapshot.get('active') or {}).get('name', ''))
+        if not self.connecting.get_visible():
+            self.room.set_text((snapshot.get('active') or {}).get('name', ''))
         for row in next_model.mix_rows(snapshot):
             self.rows[row['layer']].update(row)
+
+    # ---- keys -----------------------------------------------------------------------------
+
+    def install_keys(self):
+        """M and A pause or play Music and Ambience, Shift+Up/Down the focused row's level, while the Mix shows.
+
+        On the window in the capture phase, so a focused button or slider does not take the key first."""
+        root = self.get_root()
+        if self.keys is not None or root is None:
+            return
+        self.keys = Gtk.EventControllerKey()
+        self.keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        self.keys.connect('key-pressed', lambda _c, keyval, _code, state: self.key_pressed(keyval, state))
+        root.add_controller(self.keys)
+
+    def shown(self):
+        node = self.get_parent()
+        while node is not None and not isinstance(node, Adw.BottomSheet):
+            node = node.get_parent()
+        return self.get_mapped() and (node is None or node.get_open())
+
+    def key_pressed(self, keyval, state):
+        if not self.shown() or self.connecting.get_visible():
+            return False
+        root = self.get_root()
+        if root is not None and hasattr(root, 'get_visible_dialog') and root.get_visible_dialog() is not None:
+            return False
+        if state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK):
+            return False
+        focus = root.get_focus() if root is not None else None
+        node = focus
+        while node is not None:
+            if isinstance(node, (Gtk.Editable, Gtk.Popover)):
+                return False      # typing, or a menu: the key is theirs
+            node = node.get_parent()
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+        if keyval in (Gdk.KEY_Up, Gdk.KEY_Down) and shift:
+            row = self.focused_row(focus)
+            return bool(row and row.nudge(LEVEL_STEP if keyval == Gdk.KEY_Up else -LEVEL_STEP))
+        if shift:
+            return False
+        if keyval in (Gdk.KEY_m, Gdk.KEY_M):
+            return self.rows['music'].toggle()
+        if keyval in (Gdk.KEY_a, Gdk.KEY_A):
+            return self.rows['atmosphere'].toggle()
+        return False
+
+    def focused_row(self, focus):
+        node = focus
+        while node is not None and node is not self:
+            if isinstance(node, LayerRow):
+                return node
+            node = node.get_parent()
+        return None

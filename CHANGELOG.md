@@ -5,6 +5,35 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- A watched video is part of the room: the window's Pause, the popover, MPRIS, the media
+  keys and `listening-roomctl toggle|pause|play` pause it with the other layers and play it
+  again. While the room is paused for the video, Pause then Play brings back only the video,
+  and Stop watching still offers Resume (Quiet while watching keeps the video's offer).
+  Leave closes it. MPRIS names the video while it plays.
+- `listening-roomctl video` shows the room's video, `video URL` watches a public YouTube
+  video, `video stop` closes it.
+- Partial pause is reported: `listening-roomctl status` (and `--follow`) reads
+  "‹room› · Music paused · Rain on glass" with class `paused`, and the Mix summary says
+  "Music paused" too. MPRIS stays Playing while anything is audible. A watched video reads
+  "Watching ‹title›" or "Video paused". Other status lines are unchanged.
+- The Waybar popover has a per-layer line under the room name ("Music ▮▮ · Ambience ▶",
+  each tappable); the mini player keeps one room Pause/Play.
+- In the Mix, M and A pause or play Music and Ambience, Shift+Up/Down change the focused
+  row's level, and Next track is a button on the Music row when the source can skip.
+- While a room connects, the Mix shows only progress and Cancel. Cancel is honest: the
+  controller abandons the start (new `entry.cancel` action, `listening-roomctl cancel`),
+  nothing it began plays afterwards, and the previous room (or idle) is restored.
+
+### Changed
+- Controller (additive): the `video` snapshot field may carry `transport_paused`, the
+  resume offer may carry `reason: video` and `with_video` after Quiet while watching, and
+  `entry.state` may be `cancelled`. 2.5.0 clients and stored state keep working.
+
+### Fixed
+- A start interrupted just after its new player started (by Quiet, Stop, Cancel or another
+  start) no longer leaves that player playing outside the room.
+
 ## [2.5.0] - 2026-11-22
 
 ### Added

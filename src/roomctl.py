@@ -17,18 +17,38 @@ METADATA_MAX_RECORDS = 10000
 METADATA_BATCH_BYTES = 512 * 1024
 
 
+LAYER_NAMES = (('music', 'Music'), ('atmosphere', 'Ambience'))
+
+
 def status(snapshot):
+    """The Waybar line: room name, then what sounds.
+
+    With every audible layer playing (or nothing audible) the line is the 2.5.0 one. Partial pause says
+    which layer is paused before what still plays ("Northern quiet · Music paused · Rain on glass", class
+    paused); a watched video reads "Watching title" (or "Video paused"). Same keys, same string class."""
     active = snapshot.get('active') or {}
     layers = snapshot.get('layers') or {}
     music = layers.get('music') or {}
     atmosphere = layers.get('atmosphere') or {}
     playing = [item.get('name') or item.get('title') for item in (music, atmosphere)
                if item.get('status') == 'Playing' and (item.get('name') or item.get('title'))]
+    video = snapshot.get('video') if isinstance(snapshot.get('video'), dict) else {}
+    watching = video.get('status') == 'Playing'
+    if watching:
+        playing.append('Watching ' + (video.get('name') or 'a video'))
+    # Paused layers are named only while something else sounds; a fully paused room keeps the plain line.
+    paused = [word + ' paused' for key, word in LAYER_NAMES
+              if (layers.get(key) or {}).get('status') == 'Paused' and playing
+              and not (watching and (snapshot.get('resume_offer') or {}).get('reason') == 'video')]
+    if video.get('status') == 'Paused' and not playing:
+        paused = ['Video paused']
     station = snapshot.get('station') or {}
     name = station.get('name') or (station.get('definition') or {}).get('name') or active.get('name') or 'Listening room'
-    caption = name + (' · ' + ' + '.join(playing) if playing else '')
+    parts = paused + ([' + '.join(playing)] if playing else [])
+    caption = name + (' · ' + ' · '.join(parts) if parts else '')
+    css = ('paused' if paused else 'playing') if playing else 'paused' if active or video else 'stopped'
     return {'text': html.escape(caption), 'tooltip': html.escape(caption + '\nClick for room controls; right-click to browse'),
-            'class': 'playing' if playing else 'paused' if active else 'stopped', 'alt': 'room'}
+            'class': css, 'alt': 'room'}
 
 
 def follow_status(output=None, subscription=None):
@@ -38,7 +58,7 @@ def follow_status(output=None, subscription=None):
     and never starts it, like `status`; while it is unreachable the line reads stopped.
     """
     output = output or sys.stdout
-    subscription = subscription or session_client.Subscription(fields=['active', 'layers', 'station'])
+    subscription = subscription or session_client.Subscription(fields=['active', 'layers', 'station', 'video', 'resume_offer'])
     last = None
     stop_watching = _close_when_reader_leaves(output, subscription)
     try:
@@ -133,12 +153,14 @@ def popover():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, epilog='''Transport: toggle, pause and play act on the whole room, as the window's Play/Pause, MPRIS and the media keys do (pause is quiet; play resumes exactly what room pause paused, or every paused layer, or enters the room again).
 music and ambience take pause, play, toggle, stop or next and act on that layer alone; a layer paused on its own stays paused when the room resumes.
+Video: video shows the room's watched video (JSON, null when none); video URL watches a public YouTube video with sound in its own window (the room pauses); video stop closes it. The room transport pauses and resumes the video with the room, and leave stops it.
+cancel stops a room that is still connecting; the room before it stays as it was.
 Metadata: metadata-list shows a bounded preview; metadata-jobs reports progress.
 metadata-enrich accepts {"reference": {"provider": "jellyfin", "type": "Audio", "id": "TRACK_ID"}}.
 metadata-cancel accepts {"job_id": "JOB_ID"}; metadata-revoke accepts {"origin": "ORIGIN", "item_id": "TRACK_ID"}.
 metadata-review accepts those IDs plus classification (instrumental, vocal, spoken, unknown), reviewer, and acknowledged=true after listening to the whole exact recording. Enrich and review run as jobs. metadata-match and metadata-analyze take the same reference; match accepts method=musicbrainz or acoustid; metadata-confirm-identity takes job_id and provider_id.
 metadata-export writes all provenance pages as one JSON document to stdout. metadata-import takes a JSON file path; imported reviews and audio hashes are never trusted. Both allow up to 10,000 records and 32 MiB.''', formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('action', choices=['inspect','status','enter','return','quiet','resume','toggle','pause','play','music','ambience','leave','stop','save','menu','popover','remote-commands','link','volume','stations','tune','replay','station-save','station-update','play-next','metadata-list','metadata-jobs','metadata-enrich','metadata-match','metadata-analyze','metadata-confirm-identity','metadata-cancel','metadata-review','metadata-revoke','metadata-export','metadata-import'])
+    parser.add_argument('action', choices=['inspect','status','enter','return','quiet','resume','toggle','pause','play','music','ambience','leave','stop','save','menu','popover','remote-commands','link','volume','stations','tune','replay','station-save','station-update','play-next','video','cancel','metadata-list','metadata-jobs','metadata-enrich','metadata-match','metadata-analyze','metadata-confirm-identity','metadata-cancel','metadata-review','metadata-revoke','metadata-export','metadata-import'])
     parser.add_argument('value', nargs='?', help='ID or JSON object for the chosen action; metadata-review requires origin, item_id, classification, reviewer, and acknowledged=true')
     parser.add_argument('--follow', action='store_true', help='with status: print a new line whenever the status changes')
     args = parser.parse_args()
@@ -173,6 +195,16 @@ metadata-export writes all provenance pages as one JSON document to stdout. meta
             result = metadata_export() if args.action == 'metadata-export' else metadata_import(params) if args.action == 'metadata-import' else session_client.request(action, params)
             print(json.dumps(result, ensure_ascii=False))
             return 0
+        if args.action == 'video':
+            action, params = video_arguments(args.value)
+            result = session_client.request(action, params)
+            print(json.dumps(result.get('video') if action == 'inspect' else result, ensure_ascii=False))
+            return 0
+        if args.action == 'cancel':
+            if args.value:
+                raise ValueError('This action takes no value')
+            print(json.dumps(session_client.request('entry.cancel', {}), ensure_ascii=False))
+            return 0
         if args.action in ('toggle', 'pause', 'play', 'music', 'ambience'):
             action, params = transport_arguments(args.action, args.value)
             print(json.dumps(session_client.request(action, params), ensure_ascii=False))
@@ -189,6 +221,18 @@ metadata-export writes all provenance pages as one JSON document to stdout. meta
 
 
 LAYER_ACTIONS = ('pause', 'play', 'toggle', 'stop', 'next')
+
+
+def video_arguments(value=None):
+    """`video` shows the room's video (JSON, null when none), `video URL` watches a public YouTube video
+    with sound, `video stop` closes it. Pause and play are the room's transport (toggle, pause, play)."""
+    if value is None:
+        return 'inspect', {}
+    if value == 'stop':
+        return 'video', {'action': 'stop'}
+    if len(value) > 2048 or any(ord(char) < 32 for char in value) or not value.lower().startswith('https://'):
+        raise ValueError('Give a public YouTube video link (https://…), or stop')
+    return 'video', {'action': 'start', 'url': value}
 
 
 def transport_arguments(action, value=None):
