@@ -1,0 +1,72 @@
+# O11-SHELL acceptance (independent oracles, written from the brief before the implementation exists).
+# Every check below is expected to PASS on the finished outcome; there are no "!" known failures, so a failing line is a real gap.
+# On main 2.5.0 (70db15e) 29 of them fail on purpose: a text AlertDialog for shortcuts, the first Tab lands in the header,
+# Rooms covers 27% of a 1440x900 window on first run, Change… is a text list without the unavailable scene, Now with
+# no room keeps the previous room's loop, and no CHANGELOG entry. G1-G3 (N13 Listen chips and station card) and B4
+# already pass on main: O10 fixed the chip and card ellipsizing, and B4's baselines are main's own measurements.
+A0 precondition: no room and no history (a first run)
+A1 at 1200x800 the first run opens on Rooms with nothing focused in the header
+A2 at 1200x800 the first Tab press lands on the first room card or the hero's primary action, not in the header
+A3 at 1200x800 moving focus onto a card is inert: no command, no preview, nothing starts
+A2 at 1200x800 the first Down press lands on the first room card or the hero's primary action, not in the header
+A2 at 1200x800 the first Right press lands on the first room card or the hero's primary action, not in the header
+A1 at 1440x900 the first run opens on Rooms with nothing focused in the header
+A2 at 1440x900 the first Tab press lands on the first room card or the hero's primary action, not in the header
+A3 at 1440x900 moving focus onto a card is inert: no command, no preview, nothing starts
+A2 at 1440x900 the first Down press lands on the first room card or the hero's primary action, not in the header
+A2 at 1440x900 the first Right press lands on the first room card or the hero's primary action, not in the header
+B1 at 1440x900 on first run the Rooms content fills at least 45% of the window (share @@)
+B2 at 1440x900 no card is cut off at the sides and no room name is ellipsized
+B3 at 360 px the cards show whole across, with their names not ellipsized
+B4 at 600 px the Rooms content share is not below main's (share @@)
+B5 at 600 px no card is cut off at the sides and no room name is ellipsized
+B4 at 700 px the Rooms content share is not below main's (share @@)
+B5 at 700 px no card is cut off at the sides and no room name is ellipsized
+B4 at 800 px the Rooms content share is not below main's (share @@)
+B5 at 800 px no card is cut off at the sides and no room name is ellipsized
+C0 precondition: Ctrl+? is the shortcuts action's accelerator
+C1 Keyboard shortcuts opens an Adw.ShortcutsDialog (not a text alert)
+C2 every application accelerator (each window action with a key) is listed
+C3 every key of the window's shortcut controllers (Listen: Ctrl+F, Ctrl+L, Ctrl+V) is listed
+C4 the keys handled by key controllers are listed (Space, Esc, Up, Down)
+C5 the Rooms card options key (Menu or Shift+F10) is listed
+C6 the dialog lists no key that nothing installs (the reserved Mix keys aside)
+C7 every row has a title
+C8 rows are grouped by page: more than one titled section, the Listen keys under a Listen section and the volume keys under a Now section
+C9 the dialog is the same when opened again and from a second window, with no duplicate rows
+C10 one shortcut table: each installed Ctrl shortcut is written in one statement of the source (source text)
+C11 the table reserves the O11-CONTROL Mix keys (M, A, Shift+Up/Down) with a comment (source text)
+D0 precondition: a room with its own scene is active, and one room scene is unavailable
+D1 Scene › Change… shows a tile for every room scene, the unavailable one included
+D2 each tile shows its own scene's card poster as a thumbnail
+D3 thumbnails are card-sized (at most 640 px wide), not full posters
+D4 the thumbnails form a grid (more than one per row, more than one row)
+D5 the current scene's tile is marked: it differs from every other available tile (not by focus)
+D6 the unavailable scene's tile is visibly unavailable (insensitive, dimmed or saying so)
+D7 keyboard: a tile takes focus and Right moves it to another scene tile
+D8 browsing the grid is inert: no command, no backend call, no new loop playing, no video in a tile
+D9 activating the unavailable scene changes nothing
+D10 Enter on another scene's tile changes the scene to it
+D11 ... and only the scene: music and ambience are untouched and nothing starts
+D12 reopened, the mark is on the newly chosen scene
+D13 closing the grid without choosing sends nothing
+E0 control: with a room, Now shows that room's scene art (the detector sees it)
+E1 Now with no room and a video playing shows (precondition: Now is the page, Stop watching is there)
+E2 ... a neutral state: no room's scene art and no loop on Now (left the room while on Now)
+E3 a new window over the same no-room video: Now is neutral too
+E4 entering a room afterwards shows its scene art again
+G1 at 560 px no Listen scope chip is ellipsized
+G2 at 560 px the station cards show whole names and Tune in (nothing ellipsized)
+G3 at 560 px a station card's detail line is never cut inside its first word
+G1 at 600 px no Listen scope chip is ellipsized
+G2 at 600 px the station cards show whole names and Tune in (nothing ellipsized)
+G3 at 600 px a station card's detail line is never cut inside its first word
+G1 at 640 px no Listen scope chip is ellipsized
+G2 at 640 px the station cards show whole names and Tune in (nothing ellipsized)
+G3 at 640 px a station card's detail line is never cut inside its first word
+G1 at 700 px no Listen scope chip is ellipsized
+G2 at 700 px the station cards show whole names and Tune in (nothing ellipsized)
+G3 at 700 px a station card's detail line is never cut inside its first word
+K16r returning user (a last room, nothing active): Rooms with the hero button focused, nothing started
+B6 at 1440x900 for a returning user (hero shown) the Rooms content fills at least 45% of the window (share @@)
+H1 CHANGELOG records the change above 2.5.0 and mentions the keyboard shortcuts and the scene choice
