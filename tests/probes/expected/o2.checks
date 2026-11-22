@@ -63,11 +63,15 @@
 6b after Enter room the Rooms preview is gone and the window shows Now
 6c returning to Rooms shows the grid, not a stale preview
 6d scene toggle off -> enter with with_view false
-6e double-click enters exactly once
-6f after a double-click no preview is open on Now
-6g going back to Rooms after a double-click shows the grid (no pushed preview)
-6h double-click with a 200 ms gap still only enters (once, no preview)
-6h2 and nothing is pushed later
+# R1 (acceptance author, O10-PERF phase 2, at the coordinator's request): 6e-6h2 delivered presses without the Rooms
+# stack's CAPTURE gesture, so they failed with frame timing under load (and passed with the second-press entry disabled).
+# They still run and print as SUPERSEDED [ORIGINAL] lines, not counted; 6e-R1..6h2-R1 deliver each press through the
+# full gesture chain in GTK's propagation order (GTK's own pick, capture first).
+6e-R1 double-click (80 ms, full gesture chain) enters exactly once
+6f-R1 after that double-click no preview is open on Now
+6g-R1 going back to Rooms after it shows the grid (no pushed preview)
+6h-R1 double-click with a 200 ms gap (full gesture chain) still only enters (once, no preview)
+6h2-R1 and nothing is pushed later
 6i single click previews and does not start
 6j Enter on a focused card enters it (explicit), once
 6k Space on a focused card previews it and starts nothing

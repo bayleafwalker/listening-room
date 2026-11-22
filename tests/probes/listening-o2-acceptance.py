@@ -164,6 +164,75 @@ def mouse(child, presses=1, gap=.09, button=1):
         spin(gap)
 
 
+_CLAIMS = []
+
+
+def _record_claims():
+    """GTK cancels the other gestures once one claims the press; record claims made by handlers (set_state)."""
+    if getattr(Gtk.Gesture, '_o2_recording', False):
+        return
+    original = Gtk.Gesture.set_state
+
+    def set_state(gesture, state):
+        if state == Gtk.EventSequenceState.CLAIMED:
+            _CLAIMS.append(gesture)
+        return original(gesture, state)
+    Gtk.Gesture.set_state = set_state
+    Gtk.Gesture._o2_recording = True
+
+
+def pointer(window, child, presses=1, gap=.09, button=1):
+    """Revision R1 of the double-click delivery (acceptance author, O10-PERF): each press goes through the whole
+    gesture chain in GTK's propagation order, the way a real pointer's press does.
+
+    GTK's own pick (Gtk.Widget.pick at the press point, in window coordinates) decides the target at the time of
+    each press: during and after the Rooms crossfade that is whatever is on top there, not necessarily the card.
+    Every Gtk.GestureClick on the target and its ancestors gets the press, with coordinates in its own widget:
+    CAPTURE-phase gestures from the window down first, then the target's own, then BUBBLE-phase gestures from the
+    target up. A gesture that claims the press (set_state CLAIMED) ends its delivery, as GTK cancels the rest.
+    The original mouse() fed only the card's and the FlowBox's gestures, never the Rooms stack's CAPTURE gesture a
+    real second press goes through, so it passed or failed with frame timing under load."""
+    _record_claims()
+    ok, point = child.compute_point(window, Graphene.Point().init(child.get_width() / 2, child.get_height() / 2))
+    assert ok, 'card not on screen'
+    wx, wy = point.x, point.y
+    start = time.monotonic()
+    for n in range(1, presses + 1):
+        # A real pointer's presses are `gap` apart in wall time: when handling the previous press held the GTK
+        # thread longer than the gap, the next press is already queued and is handled at once.
+        spin(max(0., start + (n - 1) * gap - time.monotonic()))
+        pressed_at = time.monotonic() - start
+        target = window.pick(wx, wy, Gtk.PickFlags.DEFAULT) or window
+        chain, widget = [], target
+        while widget is not None:
+            chain.append(widget)
+            if widget is window:
+                break
+            widget = widget.get_parent()
+        order = [(w, g) for w in reversed(chain) for g in gestures_of(w)
+                 if g.get_propagation_phase() == Gtk.PropagationPhase.CAPTURE]
+        order += [(w, g) for w in chain for g in gestures_of(w)
+                  if g.get_propagation_phase() == Gtk.PropagationPhase.BUBBLE
+                  or (w is target and g.get_propagation_phase() == Gtk.PropagationPhase.TARGET)]
+        delivered = []
+        for widget, gesture in order:
+            if gesture.get_button() not in (0, button):
+                continue
+            ok, local = window.compute_point(widget, Graphene.Point().init(wx, wy))
+            gx, gy = (local.x, local.y) if ok else (0., 0.)
+            del _CLAIMS[:]
+            gesture.emit('pressed', n, gx, gy)
+            delivered.append((gesture, gx, gy))
+            if gesture in _CLAIMS:
+                break
+        for gesture, gx, gy in delivered:
+            gesture.emit('released', n, gx, gy)
+        print('NOTE pointer press %d at +%.0f ms (handled in %.0f ms): picked %s; delivered to %s; claimed by %s' % (
+            n, pressed_at * 1000, (time.monotonic() - start - pressed_at) * 1000, type(target).__name__, [type(w).__name__ for w, g in order if any(g is d[0] for d in delivered)],
+            [type(g.get_widget()).__name__ for g in _CLAIMS]), flush=True)
+    spin(gap)
+
+
 def mutating_names(mark):
     return [c[0] for c in mutating_since(mark)]
 
@@ -705,25 +774,64 @@ def s6_explicit_enter_and_double_click():
         click(enter_button(window)); settle(1.2)
         s_ = starts(mark)
         check('6d room without a scene enters without a view', len(s_) == 1 and not s_[0][1].get('with_view'), repr(s_))
-    # Double click: enters, and leaves no preview open and pushes none later
+    # Double click. Revision R1 (acceptance author, O10-PERF; requested by the coordinator after the implementer's
+    # root cause): each press is delivered through the full gesture chain in GTK's propagation order (pointer()),
+    # as a real pointer press is; real X pointer double-clicks passed 72/72 with the GTK thread held 300 ms. The
+    # original checks below still run, unchanged, under their [ORIGINAL ...] names. Same intent and strictness:
+    # exactly one enter of the clicked room, no preview left open, nothing pushed later, 80 ms and 200 ms gaps.
+    def reset_to_grid():
+        goto(window, 'rooms'); pump(.8)
+        if preview_open(window) and back_to_rooms(window) is not None:
+            click(back_to_rooms(window)); pump(.6)
+    reset_to_grid()
+    mark = len(COMMANDS)
+    pointer(window, card(window, 'Finnish discoveries'), 2, gap=.08)
+    pump(1.3)
+    s_ = starts(mark)
+    check('6e-R1 double-click (80 ms, full gesture chain) enters exactly once',
+          len(s_) == 1 and s_[0][0] == 'enter' and s_[0][1].get('room_id') == 'finnish-discoveries', repr(s_))
+    check('6f-R1 after that double-click no preview is open on Now', not preview_open(window), repr(texts(window)[:8]))
+    goto(window, 'rooms'); pump(1.0)
+    check('6g-R1 going back to Rooms after it shows the grid (no pushed preview)',
+          not preview_open(window) and 'Finnish discoveries' in card_names(window), repr(texts(window)[:8]))
+    reset_to_grid()
+    mark = len(COMMANDS)
+    pointer(window, card(window, 'Night drive'), 2, gap=.2)
+    pump(1.3)
+    s_ = starts(mark)
+    check('6h-R1 double-click with a 200 ms gap (full gesture chain) still only enters (once, no preview)',
+          len(s_) == 1 and s_[0][1].get('room_id') == 'night-drive' and not preview_open(window), repr(s_))
+    goto(window, 'rooms'); pump(.8)
+    check('6h2-R1 and nothing is pushed later', not preview_open(window), '')
+    reset_to_grid()
+    # Double click: enters, and leaves no preview open and pushes none later.
+    # [ORIGINAL, superseded by R1]: mouse() never delivers the press to the Rooms stack's CAPTURE gesture, so the
+    # second press only enters through the FlowBox while the 200 ms crossfade keeps the grid mapped: it fails
+    # whenever a frame takes longer than that (host load), not when the product is wrong, and it passed with the
+    # stack's second-press entry disabled. Like 0a [ORIGINAL] (R-src1) it still runs and prints its result as a
+    # SUPERSEDED line, not counted: at load it fails some runs and passes others, so it can be neither an expected
+    # pass nor a known failure.
+    def superseded(name, ok, detail=''):
+        print('SUPERSEDED %s %s%s' % ('PASS' if ok else 'FAIL', name, '' if ok else ': ' + str(detail)[:300]), flush=True)
     goto(window, 'rooms'); pump(.8)
     mark = len(COMMANDS)
     mouse(card(window, 'Northern quiet'), 2, gap=.08)
     pump(1.3)
     s_ = starts(mark)
-    check('6e double-click enters exactly once', len(s_) == 1 and s_[0][0] == 'enter' and s_[0][1].get('room_id') == 'northern-quiet', repr(s_))
-    check('6f after a double-click no preview is open on Now', not preview_open(window), repr(texts(window)[:8]))
+    superseded('6e [ORIGINAL, superseded by R1] double-click enters exactly once', len(s_) == 1 and s_[0][0] == 'enter' and s_[0][1].get('room_id') == 'northern-quiet', repr(s_))
+    superseded('6f [ORIGINAL, superseded by R1] after a double-click no preview is open on Now', not preview_open(window), repr(texts(window)[:8]))
     goto(window, 'rooms'); pump(1.0)
-    check('6g going back to Rooms after a double-click shows the grid (no pushed preview)', not preview_open(window) and 'Northern quiet' in card_names(window), repr(texts(window)[:8]))
+    superseded('6g [ORIGINAL, superseded by R1] going back to Rooms after a double-click shows the grid (no pushed preview)', not preview_open(window) and 'Northern quiet' in card_names(window), repr(texts(window)[:8]))
     # Slow double-click (inside the system double-click time but near the 300ms wait)
-    goto(window, 'rooms'); pump(.5)
+    reset_to_grid()   # R1 harness fix: a preview left open by a failed original made card() None and crashed s6
     mark = len(COMMANDS)
     mouse(card(window, 'Velvet circuit'), 2, gap=.2)
     pump(1.3)
     s_ = starts(mark)
-    check('6h double-click with a 200 ms gap still only enters (once, no preview)', len(s_) == 1 and not preview_open(window), repr(s_))
+    superseded('6h [ORIGINAL, superseded by R1] double-click with a 200 ms gap still only enters (once, no preview)', len(s_) == 1 and not preview_open(window), repr(s_))
     goto(window, 'rooms'); pump(.8)
-    check('6h2 and nothing is pushed later', not preview_open(window), '')
+    superseded('6h2 [ORIGINAL, superseded by R1] and nothing is pushed later', not preview_open(window), '')
+    reset_to_grid()
     # single click, then wait: preview only, no start
     mark = len(COMMANDS)
     mouse(card(window, 'After hours'), 1)
