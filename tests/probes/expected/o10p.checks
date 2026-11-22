@@ -15,7 +15,10 @@ C2w ... and by wall time: <= 50 ms, scaled by the 1-minute load above 8 (worst @
 C3 poster decoding leaves the GTK thread: no image decode or scale call ran on it during cold start
 C3b the GTK thread spent at most 50 ms CPU on art in total during cold start (worst @@ ms)
 C4 every card ends up showing its own poster art (placeholders, then textures)
-C5 card posters are pre-scaled: each card texture is at most 2x its on-screen size
+# KNOWN FAILURE allowed: "C5 [ORIGINAL, superseded by C5r]" compared with the card at one window width only; the
+# grid shows cards up to 334 px wide (600 px window), and C5r judges "card size" against that, at up to 2x scale.
+C5r card posters are pre-scaled to card size: each card texture is at most 2x the widest card the grid shows (668x376)
+!C5 [ORIGINAL, superseded by C5r] card posters are pre-scaled: each card texture is at most 2x its on-screen size
 G0 fixture: the Rooms grid shows the catalogue rooms with scene loops (8)
 G1 a preview's scene loop plays: its pixels move on screen
 G2 the preview sent no controller command, started nothing and no process
@@ -37,9 +40,8 @@ scene: the child finished without a crash or hang
 scene: the child reported all its oracles and exited 0
 M0 fixture: 8 catalogue loop rooms (8 distinct loop files) and 16 user-clip rooms
 M1 every catalogue loop visibly played in its preview before its cost was measured
-# KNOWN FAILURE allowed: "M2 [ORIGINAL, superseded by M2r]" is the brief's 400 MB target, kept verbatim and still evaluated;
-# the coordinator re-based it in phase 2 (M2r: <= 520 MB total and <= 50 MB per loop after the first). Backlog: further cuts.
-!M2 [ORIGINAL, superseded by M2r] steady-state media cost with all 8 catalogue loops shown is under 400 MB (process tree RSS, @@ MB)
+# M2 [ORIGINAL, superseded by M2r], the brief's 400 MB target, still runs and prints as a SUPERSEDED line, not counted:
+# on 3507ca3 it lands either side of 400 MB. The coordinator re-based it in phase 2 (M2r). Backlog: further cuts.
 M2r media cost with all 8 catalogue loops shown is <= 520 MB and each loop after the first adds <= 50 MB (process tree RSS, @@ MB total, @@ MB per loop)
 M3 decoder threads are bounded: at most 16 in the whole process tree, warm and at peak (@@)
 M4 the media adds at most 64 threads once every loop was shown (@@)

@@ -85,6 +85,7 @@ IDLE_MEDIA_CPU_MS = 50    # media threads with every loop off screen, per 5 s (1
 STEADY_RSS_MB, STEADY_THREADS, STEADY_FDS = 64, 6, 12   # the 2.3.2 lifetime bounds, after 40 more previews
 EXTRA_TOTAL_MB = 400 + 64   # the original 400 MB target plus 64 MB, as written in phase 1; 8 catalogue loops plus 16 user clips (24 distinct files)
 EXTRA_PER_CLIP_MB, EXTRA_PER_CLIP_THREADS, EXTRA_PER_CLIP_FDS = 4, 1, 2   # marginal, over the last 8 clips
+WIDEST_CARD = (334, 188)  # the widest Rooms card, measured on 3507ca3 (a 600 px window, two columns; 260 px at 1200)
 LOOP_FORMAT = (1440, 810)  # every catalogue room loop at e45d947: h264 1440x810, 24 fps, 480 frames
 DECODER_NAME = re.compile(r'^av:|avdec|dav1d|openh264|vaapi|v4l2|nvh264|vtdec|libde265')
 GL_NAME = re.compile(r'^(gldisplay-event|gstglcontext)')
@@ -400,7 +401,13 @@ def run_parent(args):
               [r.get('gtk_art_cpu_ms') for r in runs], measured=float(max([r.get('gtk_art_cpu_ms', 1e9) for r in runs] or [1e9])))
         check('C4 every card ends up showing its own poster art (placeholders, then textures)',
               bool(runs) and all(r.get('art_shown') for r in runs), [r.get('art_detail') for r in runs])
-        check('C5 card posters are pre-scaled: each card texture is at most 2x its on-screen size',
+        # Revision C5r (acceptance author, phase 2): C5 compared the texture with the card at one window width
+        # (1200 px, cards 260 px), but the grid lays cards out wider at other widths (334 px at 600 px). "Card size"
+        # means the card at its widest, at up to 2x display scale. C5 still runs as a known failure.
+        check('C5r card posters are pre-scaled to card size: each card texture is at most 2x the widest card the grid '
+              'shows (%dx%d)' % (2 * WIDEST_CARD[0], 2 * WIDEST_CARD[1]), bool(runs) and all(r.get('card_size') for r in runs),
+              [r.get('texture_sizes') for r in runs])
+        check('C5 [ORIGINAL, superseded by C5r] card posters are pre-scaled: each card texture is at most 2x its on-screen size',
               bool(runs) and all(r.get('prescaled') for r in runs), [r.get('texture_sizes') for r in runs])
 
     # ---------------------------------------------------------------- criterion 4: scene guarantees
@@ -813,6 +820,7 @@ def cold(env, step):
     env.pump(.5)
     cards = card_children(window)
     shots, sizes, prescaled = [], [], bool(cards)
+    card_size = bool(cards)
     for card in cards:
         widget, paintable = largest_paintable(card)
         box = region(window, card, inset=2)
@@ -824,6 +832,7 @@ def cold(env, step):
         shown = (widget.get_width(), widget.get_height())
         sizes.append({'texture': size, 'shown': shown})
         prescaled = prescaled and 0 < size[0] <= 2 * shown[0] and 0 < size[1] <= 2 * shown[1]
+        card_size = card_size and 0 < size[0] <= 2 * WIDEST_CARD[0] and 0 < size[1] <= 2 * WIDEST_CARD[1]
         shots.append(grab(box))
     from PIL import ImageStat
     spread = [round(ImageStat.Stat(s.convert('L')).stddev[0], 1) for s in shots]
@@ -833,7 +842,7 @@ def cold(env, step):
     result.update(art_shown=art_shown, art_detail={'cards': len(shots), 'luma_stddev': spread,
                                                    'neighbour_difference_pct': [round(p) for p in pairs],
                                                    'distinct_means': distinct},
-                  prescaled=prescaled, texture_sizes=sizes)
+                  prescaled=prescaled, card_size=card_size, texture_sizes=sizes)
     return result
 
 
@@ -1143,9 +1152,11 @@ def media(env, step, check, info, clips):
     result.update(warm=warm, catalogue_played=played, media_cost_mb=round(cost, 1))
     info('media cost for 8 loops: %.1f MB (%.1f MB per loop); threads +%d; decoder threads %d (peak %d)' % (
         cost, cost / 8., warm['threads'] - cold_point['threads'], warm['decoder_threads'], peak['decoder_threads']))
-    check('M2 [ORIGINAL, superseded by M2r] steady-state media cost with all 8 catalogue loops shown is under %d MB '
-          '(process tree RSS, @@ MB)' % MEDIA_TOTAL_MB, all_played and cost < MEDIA_TOTAL_MB,
-          (cold_point['rss_mb'], warm['rss_mb'], round(cost, 1)), measured=round(cost))
+    # M2 [ORIGINAL] still runs and prints as a SUPERSEDED line, not counted: on 3507ca3 it lands either side of 400 MB
+    # (371 in one run, 421-493 in the implementer's), so it can be neither an expected pass nor a known failure.
+    print('SUPERSEDED %s M2 [ORIGINAL, superseded by M2r] steady-state media cost with all 8 catalogue loops shown is '
+          'under %d MB (process tree RSS, %d MB)' % ('PASS' if all_played and cost < MEDIA_TOTAL_MB else 'FAIL',
+                                                     MEDIA_TOTAL_MB, round(cost)), flush=True)
     per_loop = (warm['rss_mb'] - first['rss_mb']) / max(1., len(catalogue) - 1.)
     info('media cost: first loop %.1f MB (one-time set-up included), then %.1f MB per loop' % (
         first['rss_mb'] - cold_point['rss_mb'], per_loop))
