@@ -1,13 +1,17 @@
 # O11-MEDIA acceptance (tests/probes/listening-o11m-acceptance.py), written by the independent acceptance author.
-# This is the TARGET: every check passes. On main 70db15e (2.5.0) it fails F8 Mix (Listen sits at its limit), H1 (41 MB per
+# This is the TARGET: every check passes. On main 70db15e (2.5.0) it fails H1 (41 MB per
 # loop), P1-P3 (paused loops keep +66-80 threads, 56 streaming threads, ~41 MB each), R0, R1 (the first return to a loop
 # holds the GTK thread ~200 ms) and N1. Evidence and readings: the O11m acceptance phase-1 report.
-# Limits set by the author, not the brief (P1, P2, P3, F8, F9, the 15 s release wait) are flagged for a coordinator ruling.
+# Author-set limits P1 <= 24, P2 <= 7, P3 <= 10 MB, F9 <= 0.1 and the 15 s let-go wait were accepted by the coordinator (phase 1).
 # Entries with @@ declare the measured part of the name; everything else must match exactly.
 S1 the dev shell provides GStreamer playbin3 to the window (scene loops can play)
-F8 switching to Listen costs at most 14.4 ms GTK-thread CPU (median of 10, @@ ms)
-F8 switching to Now costs at most 24.0 ms GTK-thread CPU (median of 10, @@ ms)
-F8 opening Mix costs at most 11.0 ms GTK-thread CPU (median of 10, @@ ms)
+# F8 [ORIGINAL, superseded by F8r] (old build 0750cc4's median + 25%: Listen 14.4, Now 24.0, Mix 11.0 ms) still runs and
+# prints as a SUPERSEDED line, not counted: Listen lands either side of its limit on main. Coordinator ruling, phase 1:
+# record each median and guard against regression, no worse than 2.5.0's measured median + 25% (baseline: the worse of
+# the two phase-1 main runs, Listen 14.5, Now 16.9, Mix 12.9 ms).
+F8r switching to Listen: median GTK-thread CPU recorded and no worse than 2.5.0's 14.5 ms + 25% = 18.1 ms (median of 10, @@ ms)
+F8r switching to Now: median GTK-thread CPU recorded and no worse than 2.5.0's 16.9 ms + 25% = 21.1 ms (median of 10, @@ ms)
+F8r opening Mix: median GTK-thread CPU recorded and no worse than 2.5.0's 12.9 ms + 25% = 16.1 ms (median of 10, @@ ms)
 pages: the child finished without a crash or hang
 pages: the child reported all its oracles and exited 0
 M0 fixture: 8 catalogue loop rooms with 8 distinct loop files

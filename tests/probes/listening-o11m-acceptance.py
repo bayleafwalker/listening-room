@@ -14,10 +14,11 @@ first), imported from that file so the numbers compare with 2.5.0's.
 Parts (each child is a subprocess, so a segfault is a result):
 
   pages   finding 8: GTK-thread CPU of the Listen, Now and Mix switches, measured as the assessment's
-          perfprobe did (from the action to the next frame painted, n = 10 per page).
-  media   criteria 1-3 and 5 in one window, under host load (the parent adds CPU-bound helper processes,
-          outside the window's process tree, until the 1-minute load is at least 20; each is a busy loop at
-          the probe's own niceness and they are stopped when the stress part ends):
+          perfprobe did (from the action to the next frame painted, n = 10 per page), recorded and guarded
+          against regression from 2.5.0 (F8r).
+  media   criteria 1-3 and 5 in one window; the cost under host load (the parent adds CPU-bound helper processes
+          at nice 19, outside the window's process tree, until the 1-minute load is at least 20, and stops them
+          as soon as the cost samples are taken):
             - every catalogue loop is previewed once (it must visibly play) and left; after each one the
               cost is sampled. Criterion 3 judges it the O10 way (first loop, then per loop, then total)
               AND as a robust slope (Theil-Sen over the 8 points), so a single low sample cannot pass it.
@@ -36,7 +37,7 @@ Parts (each child is a subprocess, so a segfault is a result):
               (GST_DEBUG element creation), and no Gtk.MediaFile with an open file is cleared, re-opened
               or finalized (Python hooks on Gtk.MediaFile: the calls that tear GstPlay down).
   stress  criterion 2: tests/probes/listening-scene-media-stress.py, 10 children x 30 cycles = 300 cycles,
-          3 at a time, under the same added load (above 15 for part of the run); every signal is a crash.
+          3 at a time, at the host's own load (it must be above 15 for part of the run); every signal is a crash.
   notes   the CHANGELOG records the change (a source-text check: documentation has no behaviour).
 
   --inject teardown   DIAGNOSTIC ONLY, never in acceptance: on every leave, the probe itself clears the
@@ -111,7 +112,13 @@ WRAPPERS_PER_PREVIEW = .1  # author: finding 9 (1.2 per preview without video, +
                            # leave at most 2 more live Python GObject wrappers
 # Finding 8 (author, from the assessment's old build 0750cc4, the cost O9 doubled): median GTK-thread CPU per
 # switch at most old's median plus 25%. Listen 11.5, Now 19.2, Mix 8.8 ms on old.
-PAGE_CPU_MS = {'Listen': 14.4, 'Now': 24.0, 'Mix': 11.0}
+PAGE_CPU_MS = {'Listen': 14.4, 'Now': 24.0, 'Mix': 11.0}   # [ORIGINAL, superseded by F8r]
+# Revision F8r (coordinator ruling, phase 1, O11-DECISIONS.md): the assessment's harness differs and Listen flakes
+# around its old-build limit on main, so F8r records each page's median and guards against regression: no worse than
+# 2.5.0's measured median plus 25%. Baseline: the worse of the two phase-1 main runs (70db15e, load 16-27):
+# Listen 14.5 / 12.9, Now 16.9 / 14.1, Mix 12.4 / 12.9 ms -> Listen 14.5, Now 16.9, Mix 12.9 ms.
+PAGE_CPU_BASE_MS = {'Listen': 14.5, 'Now': 16.9, 'Mix': 12.9}
+PAGE_CPU_R_MS = {page: round(value * 1.25, 1) for page, value in PAGE_CPU_BASE_MS.items()}   # 18.1, 21.1, 16.1
 
 STREAMING = re.compile(r'^(typefind|multiqueue|qtdemux|matroskadem|vqueue|aqueue|queue\d|video-dmabuf|'
                        r'.*:(src|sink|sr|si|s)$)')
@@ -151,6 +158,7 @@ def die_with_parent():
     """A load helper never outlives the probe, even when the probe is killed."""
     import ctypes
     no_core_dumps()
+    os.setpriority(os.PRIO_PROCESS, 0, 19)     # nice 19 (coordinator ruling): the load average still counts it
     ctypes.CDLL(None).prctl(1, 15, 0, 0, 0)    # PR_SET_PDEATHSIG = 1, SIGTERM
 
 
@@ -300,7 +308,10 @@ def run_parent(args):
 
     load = Load(info)
     try:
-        if 'media' in parts or ('stress' in parts):
+        # Coordinator ruling (phase 1): the helpers run at nice 19 and only for the cost measurements: raised just
+        # before the media child (the 1-minute load needs a minute or two to get there) and stopped when the child
+        # says its cost samples are taken. The stress run uses the host's own load and its own children.
+        if 'media' in parts:
             note_load('before load')
             load.raise_to(args.load_target)
             note_load('load raised')
@@ -310,7 +321,6 @@ def run_parent(args):
 
         # ------------------------------------------------------------ criterion 2: stress, zero crashes
         if 'stress' in parts:
-            load.raise_to(STRESS_LOAD + 1, wait_s=120)   # only what the brief asks for the stress run
             stress_out = output / 'stress'
             stress_out.mkdir(exist_ok=True)
             runs, loads, active = [], [], []
@@ -496,9 +506,14 @@ def pages(env, step, check, info):
         load, dict(cost), medians))
     for page in ('Listen', 'Now', 'Mix'):
         median = medians.get(page)
-        check('F8 %s %s costs at most %.1f ms GTK-thread CPU (median of 10, @@ ms)' % (
-            'opening' if page == 'Mix' else 'switching to', page, PAGE_CPU_MS[page]),
-            median is not None and median <= PAGE_CPU_MS[page], cost[page], measured=float(median or -1))
+        action = 'opening' if page == 'Mix' else 'switching to'
+        check('F8r %s %s: median GTK-thread CPU recorded and no worse than 2.5.0\'s %.1f ms + 25%% = %.1f ms '
+              '(median of 10, @@ ms)' % (action, page, PAGE_CPU_BASE_MS[page], PAGE_CPU_R_MS[page]),
+              median is not None and median <= PAGE_CPU_R_MS[page], cost[page], measured=float(median or -1))
+        # F8 [ORIGINAL] still runs and prints as a SUPERSEDED line, not counted (Listen lands either side of 14.4 ms).
+        print('SUPERSEDED %s F8 [ORIGINAL, superseded by F8r] %s %s costs at most %.1f ms GTK-thread CPU (median of 10, '
+              '%s ms)' % ('PASS' if median is not None and median <= PAGE_CPU_MS[page] else 'FAIL', action, page,
+                          PAGE_CPU_MS[page], median), flush=True)
     return {'page_cpu_ms': dict(cost), 'medians': medians, 'load1': load, 'uptime': uptime()}
 
 
