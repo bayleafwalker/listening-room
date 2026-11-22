@@ -1,6 +1,7 @@
 """Small GTK/libadwaita building blocks for the next Listening Room window."""
 import collections
 import os
+import threading
 
 import gi
 gi.require_version('Gtk', '4.0')
@@ -9,9 +10,13 @@ gi.require_version('Graphene', '1.0')
 from gi.repository import Adw, Gdk, GLib, Graphene, Gtk
 
 import next_model
+import poster_cards
+from next_async import pool, run_async
 
 TEXTURE_LIMIT = 64          # decoded images kept; the least recently shown goes first
 _TEXTURES = collections.OrderedDict()
+CARD_SIZE = poster_cards.CARD_SIZE
+_ART = {'pool': None, 'waiting': {}}   # the decoding threads, and art key -> pictures waiting for it
 _STYLES = {}                # stylesheet text -> its provider, installed once
 _UNSET = object()
 
@@ -43,12 +48,75 @@ def texture_for(path):
 def show_texture(picture, path):
     """Point a picture at an image file's texture, leaving it alone when nothing changed."""
     texture = texture_for(path)
+    picture._art_key = None
+    _show(picture, texture)
+    return texture
+
+
+def _show(picture, texture):
     # Not every picture widget here has get_paintable (FocalPicture only sets), so
     # remember what was shown on the widget itself.
     if getattr(picture, '_shown_texture', _UNSET) is not texture:
         picture.set_paintable(texture)
         picture._shown_texture = texture
-    return texture
+
+
+def show_art(picture, path, size=None):
+    """Point a picture at image art without decoding it on the GTK thread.
+
+    Art decoded before shows at once. Otherwise the picture keeps what it shows (a new card shows its
+    plain background) while a worker decodes the file, then shows the texture; the GTK thread only
+    hands it over. With ``size`` the art is decoded at about that size: the build's pre-scaled
+    ``.card.jpg`` when there is one, else the file scaled on the worker. A later call for the same
+    picture wins over a decode still in flight."""
+    try:
+        key = (path, os.stat(path).st_mtime_ns, size) if path else None
+    except OSError:
+        key = None
+    picture._art_key = key
+    if key is None:
+        _show(picture, None)
+        return
+    texture = _TEXTURES.get(key)
+    if texture is not None:
+        _TEXTURES.move_to_end(key)
+        _show(picture, texture)
+        return
+    waiting = _ART['waiting']
+    if key in waiting:
+        waiting[key].append(picture)
+        return
+    waiting[key] = [picture]
+    if _ART['pool'] is None:
+        _ART['pool'] = pool('art', 2)
+    run_async(lambda: decode_art(path, size), lambda texture: _art_ready(key, texture),
+              lambda _error: _art_ready(key, None), _ART['pool'])
+
+
+def decode_art(path, size=None):
+    """A texture for an image file, at about ``size`` when given. Runs on a worker: GdkTexture loading is
+    thread-safe, and nothing here touches a widget."""
+    if size is None:
+        return Gdk.Texture.new_from_filename(path)
+    card = poster_cards.card_file(path) if tuple(size) == CARD_SIZE else None
+    if card is not None:
+        return Gdk.Texture.new_from_filename(card)
+    try:
+        width, height, alpha, pixels = poster_cards.scaled(path, size)
+    except Exception:       # no Pillow, or a format only GTK reads: the whole image, still off the GTK thread
+        return Gdk.Texture.new_from_filename(path)
+    return Gdk.MemoryTexture.new(width, height, Gdk.MemoryFormat.R8G8B8A8 if alpha else Gdk.MemoryFormat.R8G8B8,
+                                 GLib.Bytes.new(pixels), width * (4 if alpha else 3))
+
+
+def _art_ready(key, texture):
+    if texture is not None:
+        _TEXTURES[key] = texture
+        while len(_TEXTURES) > TEXTURE_LIMIT:
+            _TEXTURES.popitem(last=False)
+    for picture in _ART['waiting'].pop(key, ()):
+        if getattr(picture, '_art_key', None) == key:
+            _show(picture, texture)
 
 
 def choose_renderer(environ=None, nvidia_marker='/proc/driver/nvidia/version'):
@@ -215,15 +283,74 @@ class FocalPicture(Gtk.Widget):
         snapshot.restore()
 
 
-def gst_ready():
-    """Gtk.MediaFile aborts the process when GStreamer playback is missing."""
+_GST = {'lock': threading.Lock(), 'waiting': []}   # 'ready' once GStreamer is checked; scenes waiting for it
+
+
+def gst_ready(wait=True):
+    """Whether GStreamer playback is there (Gtk.MediaFile aborts the process without it).
+
+    Loading GStreamer scans its plugin registry, which takes seconds on a fresh cache (a first start,
+    or after an upgrade), so the window starts it on a worker (warm_gst). With wait=False this never
+    blocks: None means "not known yet"."""
+    if 'ready' not in _GST:
+        if not wait:
+            warm_gst()
+            return None
+        thread = _GST.get('thread')
+        if thread is not None:
+            thread.join()
+        else:
+            _load_gst()
+    return _GST['ready']
+
+
+def warm_gst():
+    """Load GStreamer on a worker thread, once; scenes that asked meanwhile are shown again when it is."""
+    with _GST['lock']:
+        if 'thread' in _GST or 'ready' in _GST:
+            return
+        _GST['thread'] = threading.Thread(target=_load_gst, args=(True,), name='gst-warm', daemon=True)
+    _GST['thread'].start()
+
+
+DMABUF_WARM_MS = 1000
+
+
+def _warm_dmabuf():
+    """GTK's video sink asks the display for its dmabuf formats, and the first ask sets up a Vulkan
+    instance on the GTK thread (about 200 ms with software rendering). Ask once while the window is idle
+    after opening, so the first room preview does not pay it."""
+    display = Gdk.Display.get_default()
+    if display is not None and hasattr(display, 'get_dmabuf_formats'):
+        display.get_dmabuf_formats()
+    return False
+
+
+def _load_gst(notify=False):
+    ready = False
     try:
         gi.require_version('Gst', '1.0')
         from gi.repository import Gst
         Gst.init(None)
-        return Gst.ElementFactory.find('playbin3') is not None
+        ready = Gst.ElementFactory.find('playbin3') is not None
+        if ready:
+            bound_decoders(Gst)
     except (ValueError, ImportError, GLib.Error):
-        return False
+        ready = False
+    _GST['ready'] = ready
+    if notify:
+        GLib.idle_add(_gst_known)
+
+
+def _gst_known():
+    if _GST['ready']:
+        GLib.timeout_add(DMABUF_WARM_MS, _warm_dmabuf, priority=GLib.PRIORITY_LOW)
+    waiting, _GST['waiting'] = _GST['waiting'], []
+    for scene, assets, motion in waiting:
+        if scene.key == (assets.get('still'), assets.get('loop'), bool(motion)) and not scene.closed:
+            scene.key = None
+            scene.show_room(assets, motion)
+    return False
 
 
 # Scene loops and GStreamer. Clearing or finalizing a Gtk.MediaFile drops GTK's reference on its
@@ -233,8 +360,83 @@ def gst_ready():
 # (g_object_unref <- gst_play_main). Each pipeline also leaves a GL display and context thread behind
 # for good. So there is one Gtk.MediaFile per loop file for the life of the process, shared by the
 # Scenes that show it and only ever played or paused, never cleared: the cost is bounded by the
-# catalogue's loops and flat once each has been shown.
+# number of loops (LOOP_LIMIT) and flat once each has been shown.
+#
+# Most of what a loop cost was its decoder: libav's H.264 decoder starts one frame thread per core by
+# default, each holding its own frames (about 120 MB per 1440x810 4:4:4 loop on 16 cores). One thread
+# decodes a 24 fps scene loop in real time, so every libav video decoder the process creates is capped
+# (bound_decoders). What remains per loop, paused or playing, is its reference frames and GTK's GL video
+# sink: about 40 MB with software GL.
+DECODER_THREADS = 1
+LOOP_LIMIT = 12           # loop files that may hold a pipeline: the catalogue's, plus a few of your own
 _LOOPS = {}               # loop path -> _Loop
+
+
+def bound_decoders(Gst):
+    """Cap the threads of every libav video decoder any pipeline in this process adds (once per process).
+
+    Gtk.MediaFile does not expose its pipeline, so this hooks GstBin::element-added for every bin and
+    caps a decoder when decodebin adds it, before it starts. PyGObject's own emission hooks corrupt
+    the emission (GObject.add_emission_hook, 3.58), so the hook is GObject's public C API through ctypes.
+    Without it the loops still play, only with libav's default of one thread per core."""
+    if _GST.get('hook') is not None:
+        return
+    try:
+        import ctypes
+        gobject = ctypes.CDLL('libgobject-2.0.so.0')
+        gst = ctypes.CDLL('libgstreamer-1.0.so.0')
+    except OSError:
+        _GST['hook'] = False
+        return
+    gobject.g_type_from_name.restype = ctypes.c_size_t
+    gobject.g_value_get_object.restype = ctypes.c_void_p
+    gobject.g_value_get_object.argtypes = [ctypes.c_void_p]
+    gobject.g_signal_lookup.restype = ctypes.c_uint
+    gobject.g_signal_lookup.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+    gobject.g_signal_add_emission_hook.restype = ctypes.c_ulong
+    gobject.g_signal_add_emission_hook.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p,
+                                                   ctypes.c_void_p, ctypes.c_void_p]
+    gobject.g_object_class_find_property.restype = ctypes.c_void_p
+    gobject.g_object_class_find_property.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    gst.gst_element_get_factory.restype = ctypes.c_void_p
+    gst.gst_element_get_factory.argtypes = [ctypes.c_void_p]
+    gst.gst_element_factory_get_metadata.restype = ctypes.c_char_p
+    gst.gst_element_factory_get_metadata.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    gst.gst_object_get_name.restype = ctypes.c_void_p
+    gst.gst_object_get_name.argtypes = [ctypes.c_void_p]
+    value_size = ctypes.sizeof(ctypes.c_size_t) + 2 * 8     # GValue: a GType and two 64-bit data words
+
+    def cap(element):
+        factory = gst.gst_element_get_factory(element)
+        if not factory:
+            return
+        name = gst.gst_object_get_name(factory)
+        decoder = ctypes.string_at(name).startswith(b'avdec_') if name else False
+        gobject.g_free(ctypes.c_void_p(name))
+        if (decoder and b'Video' in (gst.gst_element_factory_get_metadata(factory, b'klass') or b'') and
+                gobject.g_object_class_find_property(ctypes.c_void_p.from_address(element), b'max-threads')):
+            gobject.g_object_set(ctypes.c_void_p(element), b'max-threads', ctypes.c_int(DECODER_THREADS),
+                                 ctypes.c_void_p(None))
+
+    def added(_hint, count, values, _data):
+        try:
+            element = gobject.g_value_get_object(values + value_size) if count >= 2 else None
+            if element:
+                cap(element)
+        except Exception:   # never let a failure here unhook the cap (a False return removes the hook)
+            pass
+        return 1
+
+    hook = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p)(added)
+    signal = gobject.g_signal_lookup(b'element-added', gobject.g_type_from_name(b'GstBin'))
+    if not signal:
+        _GST['hook'] = False
+        return
+    hook_id = gobject.g_signal_add_emission_hook(signal, 0, ctypes.cast(hook, ctypes.c_void_p), None, None)
+    _GST['hook'] = hook     # held for the life of the process, like the loops
+    # No Python callback may run once the interpreter is finalizing.
+    import atexit
+    atexit.register(gobject.g_signal_remove_emission_hook, ctypes.c_uint(signal), ctypes.c_ulong(hook_id))
 
 
 class _Loop:
@@ -243,18 +445,36 @@ class _Loop:
         self.media.set_loop(True)
         self.media.set_muted(True)
         self.wanted = set()   # ids of the Scenes that want it playing now
+        self.seam = 0         # the end-of-stream watch, connected while the loop plays
 
     def want(self, scene, playing):
         (self.wanted.add if playing else self.wanted.discard)(id(scene))
         if self.wanted:
+            if not self.seam:
+                self.seam = self.media.connect('notify::timestamp', _Loop._restart_at_end)
             self.media.play()
         else:
             self.media.pause()
+            if self.seam:
+                self.media.disconnect(self.seam)
+                self.seam = 0
+
+    @staticmethod
+    def _restart_at_end(media, _spec):
+        """set_loop(True) does not loop here (GTK 4.24, GStreamer 1.28): at the end of the stream the
+        timestamp stays at the duration, still "playing" and not ended. So the loop seeks back to the
+        start itself, on the same pipeline; the seek is asynchronous (GstPlay's thread)."""
+        duration = media.get_duration()
+        if duration > 0 and media.get_timestamp() >= duration and not media.is_seeking():
+            media.seek(0)
 
 
 def shared_loop(path):
+    """The loop for this file, or None when LOOP_LIMIT loops already exist (the scene shows its still)."""
     loop = _LOOPS.get(path)
     if loop is None:
+        if len(_LOOPS) >= LOOP_LIMIT:
+            return None
         loop = _LOOPS[path] = _Loop(path)
     return loop
 
@@ -266,8 +486,14 @@ GLib.timeout_add_seconds(GLib.MAXINT32, lambda *_: True, _LOOPS)
 
 class Scene(Gtk.Overlay):
     """The room scene, full bleed: still art, or the reviewed loop (muted) when allowed."""
-    def __init__(self):
+    motion_delay_ms = 0
+    delayed = 0             # the timeout that attaches a preview's loop
+    closed = False
+    def __init__(self, motion_delay_ms=0):
         super().__init__()
+        # A preview waits out the double-click time before it attaches its loop: a second click (enter)
+        # or the next card never pays for a pipeline, and skimmed cards never create one.
+        self.motion_delay_ms = motion_delay_ms
         self.add_css_class('scene-fallback')
         self.picture = FocalPicture()
         self.set_child(self.picture)
@@ -276,7 +502,9 @@ class Scene(Gtk.Overlay):
         self.still = None
         self.key = None
         self.want_motion = False
+        self.closed = False
         self.mapped = self.minimized = False
+        warm_gst()          # the first room with motion should not wait for GStreamer's registry scan
         # Plain functions, not closures over self: a handler holding its own widget is a cycle that
         # keeps every closed preview (and its loop) alive.
         self.connect('map', Scene._mapped, True)
@@ -297,20 +525,37 @@ class Scene(Gtk.Overlay):
             return
         self.key = key
         self._drop_media()
-        self.want_motion = bool(motion and assets.get('loop') and gst_ready())
+        self.closed = False
+        ready = gst_ready(wait=False) if motion and assets.get('loop') else False
+        if ready is None:   # still loading: the still now, the loop once GStreamer is known (_gst_known)
+            _GST['waiting'].append((self, assets, motion))
+        self.want_motion = bool(ready)
         still = assets.get('still') or assets.get('poster')
         self.still = texture = texture_for(still)
         self.picture.set_paintable(texture)
-        if self.want_motion:
-            self.loop = shared_loop(assets['loop'])
-            self.media = media = self.loop.media
-            if media.get_error() is not None:   # this loop failed before: still art, like _fall_back
-                self.want_motion = False
-                self._drop_media()
-                return
-            self.error_handler = media.connect('notify::error', Scene._failed, self)
-            self.picture.set_paintable(media)
-            self._visibility(mapped=self.get_mapped())
+        if self.want_motion and self.motion_delay_ms:
+            self.delayed = GLib.timeout_add(self.motion_delay_ms, Scene._motion_due, self, assets['loop'])
+        elif self.want_motion:
+            self._attach(assets['loop'])
+
+    @staticmethod
+    def _motion_due(scene, path):
+        scene.delayed = 0
+        if scene.want_motion and not scene.closed:
+            scene._attach(path)
+        return False
+
+    def _attach(self, path):
+        loop = shared_loop(path)
+        if loop is None or loop.media.get_error() is not None:
+            # Too many loops already, or this one failed before: still art, like _fall_back.
+            self.want_motion = False
+            return
+        self.loop = loop
+        self.media = media = loop.media
+        self.error_handler = media.connect('notify::error', Scene._failed, self)
+        self.picture.set_paintable(media)
+        self._visibility(mapped=self.get_mapped())
 
     def _fall_back(self):
         self._drop_media()
@@ -318,6 +563,9 @@ class Scene(Gtk.Overlay):
 
     def _drop_media(self):
         """Let go of the shared loop: it pauses when no Scene wants it; it is never cleared."""
+        if self.delayed:
+            GLib.source_remove(self.delayed)
+            self.delayed = 0
         if self.loop is not None:
             loop, self.loop, self.media = self.loop, None, None
             if self.error_handler:
@@ -339,6 +587,7 @@ class Scene(Gtk.Overlay):
         return self.loop is not None and id(self) in self.loop.wanted and self.media.get_playing()
 
     def close(self):
+        self.closed = True
         self._drop_media()
 
 

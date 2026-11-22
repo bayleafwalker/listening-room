@@ -75,11 +75,41 @@ let
       --set LISTENING_EMBED_MODEL "$out/share/listening-hub/models/msd-musicnn.onnx" \
       --prefix PATH : "$out/bin:${runtimePath}"
   '';
+  # GStreamer for the scene loops. The dev shell takes this same list (passthru), so the
+  # dev loop and acceptance play loops exactly as the package does.
+  gstPlugins = [
+    gst_all_1.gstreamer
+    gst_all_1.gst-plugins-base
+    gst_all_1.gst-plugins-good
+    gst_all_1.gst-plugins-bad
+    gst_all_1.gst-libav
+  ];
   # The rendered scene loops and sound beds, built from src/artwork and
   # src/scene_tuning only (see assets.nix).
-  assets = import ./assets.nix {
+  rendered = import ./assets.nix {
     inherit lib stdenvNoCC ffmpeg;
     python = assetPython;
+  };
+  # The render plus every poster pre-scaled to card size (NAME.card.jpg), so opening the
+  # window never decodes a full poster for a card. Kept apart from the render so changing
+  # the card size does not re-render the scenes.
+  assets = stdenvNoCC.mkDerivation {
+    pname = "listening-room-scene-assets";
+    version = "1";
+    dontUnpack = true;
+    nativeBuildInputs = [ assetPython ];
+    buildPhase = ''
+      runHook preBuild
+      cp -r --no-preserve=mode ${rendered} assets
+      python3 ${../src/poster_cards.py} assets
+      runHook postBuild
+    '';
+    installPhase = ''
+      runHook preInstall
+      cp -r assets "$out"
+      runHook postInstall
+    '';
+    dontFixup = true;
   };
 in
 stdenvNoCC.mkDerivation {
@@ -105,12 +135,8 @@ stdenvNoCC.mkDerivation {
     gtk4
     libadwaita
     adwaita-icon-theme
-    gst_all_1.gstreamer
-    gst_all_1.gst-plugins-base
-    gst_all_1.gst-plugins-good
-    gst_all_1.gst-plugins-bad
-    gst_all_1.gst-libav
-  ];
+  ]
+  ++ gstPlugins;
 
   buildPhase = ''
     runHook preBuild
@@ -177,8 +203,8 @@ stdenvNoCC.mkDerivation {
 
   # Lets scripts/listening-dev.sh reuse the reviewed scene render without
   # rebuilding or re-testing the whole package, and the dev shell reuse the
-  # package's Python environment.
-  passthru = { inherit assets python; };
+  # package's Python environment and GStreamer plugins.
+  passthru = { inherit assets python gstPlugins; };
 
   meta = {
     description = "Native listening menu for desktop players, internet radio and music discovery";

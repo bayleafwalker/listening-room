@@ -28,6 +28,32 @@ All notable changes are recorded here. The format follows
 - Snapshot feed listeners run only on the feed thread, as documented, and may call
   `refresh()` without deadlocking.
 
+### Changed
+- The window opens faster: Rooms paints its cards at once and their posters arrive
+  from a worker thread, so the GTK thread no longer decodes art at startup (about
+  300 ms of it before, under 1 ms now). The package build writes every poster at card
+  size (`NAME.card.jpg`, 640x360) and cards show that; a poster without one (your own
+  rooms) is scaled on the worker the first time it is shown.
+- Scene loops cost far less memory: GStreamer's libav video decoders run one thread
+  instead of one per core, which roughly halves what the eight catalogue loops hold
+  once each has been shown (about 930 MB to 420-490 MB in the software-rendered
+  test harness). Loops still play only while on screen and are still never torn down.
+- At most 12 loop files hold a pipeline for the life of the window (the catalogue's
+  and a few of your own clips); a clip beyond that shows its still.
+- GStreamer loads on a worker when the window opens, so the first room preview no
+  longer freezes the window while GStreamer scans its plugins (1.6 s or more after a
+  first start or an upgrade); a scene shown before that shows its still, then moves.
+- A room preview shows its still at once and starts its loop after the double-click
+  time, so a double-click that enters, or skimming across cards, never builds a scene
+  pipeline for the preview it passes.
+- The dev shell has the package's GStreamer plugins, so `scripts/listening-dev.sh test`
+  and acceptance play scene loops like the installed window.
+
+### Fixed
+- Scenes loop again: a scene stopped moving at the end of its clip (about 20 s after
+  entering a room), because GTK's own looping stops at the end of the stream with
+  this GTK and GStreamer. A playing loop now starts over itself, on the same pipeline.
+
 ### Added
 - Choosing an ambience now has its own header: the Rooms | Listen switcher gives way to a
   back arrow ("Back to Mix") and "Choose ambience · room name" in the room's accent, until the

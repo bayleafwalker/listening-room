@@ -70,11 +70,12 @@
         system:
         let
           p = nixpkgs.legacyPackages.${system};
+          package = self.packages.${system}.default;
         in
         {
           default = p.mkShell {
             packages = [
-              self.packages.${system}.default.python
+              package.python
               p.xvfb-run
               p.dbus
               p.mpv
@@ -85,10 +86,13 @@
               p.gobject-introspection
               p.wrapGAppsHook4
             ];
+            # The package's own GStreamer plugins: the suites and acceptance play scene
+            # loops like the installed window (the setup hook sets GST_PLUGIN_SYSTEM_PATH_1_0).
             buildInputs = [
               p.gtk4
               p.libadwaita
-            ];
+            ]
+            ++ package.gstPlugins;
           };
         }
       );
