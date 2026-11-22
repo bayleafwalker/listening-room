@@ -81,8 +81,13 @@ MEDIA_TOTAL_MB = 400      # criterion 2 target: total under 400 MB for the 8 cat
 MEDIA_TOTAL_R_MB, MEDIA_PER_LOOP_R_MB = 520, 50
 DECODER_THREADS_MAX = 16  # bounded: on main avdec_h264 starts 16 threads per loop (one per core), 128 for 8
 MEDIA_THREADS_MAX = 64    # all threads the media adds after every loop was shown (main: +215 for 8 loops)
+# M4-R1 (coordinator ruling, phase 2): GStreamer keeps ~10 threads per paused playbin3 (GstPlay, typefind, demux,
+# multiqueue, queue, GL sink) even with one decoder thread per loop; the bound is per loop that has been shown,
+# with an explicit ceiling at the implementer's loop capacity of 12 loop files per process.
+MEDIA_THREADS_PER_LOOP, LOOP_CAPACITY = 12, 12
 IDLE_MEDIA_CPU_MS = 50    # media threads with every loop off screen, per 5 s (1% of a core)
 STEADY_RSS_MB, STEADY_THREADS, STEADY_FDS = 64, 6, 12   # the 2.3.2 lifetime bounds, after 40 more previews
+STEADY_FDS_STEP_R = 40    # M7-R1 (coordinator ruling, phase 2): one-time fd step allowed since warm-up (3507ca3: +28)
 EXTRA_TOTAL_MB = 400 + 64   # the original 400 MB target plus 64 MB, as written in phase 1; 8 catalogue loops plus 16 user clips (24 distinct files)
 EXTRA_PER_CLIP_MB, EXTRA_PER_CLIP_THREADS, EXTRA_PER_CLIP_FDS = 4, 1, 2   # marginal, over the last 8 clips
 WIDEST_CARD = (334, 188)  # the widest Rooms card, measured on 3507ca3 (a 600 px window, two columns; 260 px at 1200)
@@ -1172,6 +1177,12 @@ def media(env, step, check, info, clips):
     check('M4 the media adds at most %d threads once every loop was shown (@@)' % MEDIA_THREADS_MAX,
           all_played and warm['threads'] - cold_point['threads'] <= MEDIA_THREADS_MAX, (cold_point['threads'], warm['threads']),
           measured='+%d' % (warm['threads'] - cold_point['threads']))
+    # M4 [ORIGINAL] stays a known failure: 3507ca3 adds 10 threads per paused pipeline (+80 for 8 loops), every run.
+    added = warm['threads'] - cold_point['threads']
+    shown_cap = MEDIA_THREADS_PER_LOOP * min(len(catalogue), LOOP_CAPACITY)
+    check('M4-R1 the media adds at most %d threads per loop shown, here %d for %d catalogue loops, never more than %d '
+          '(@@)' % (MEDIA_THREADS_PER_LOOP, shown_cap, len(catalogue), MEDIA_THREADS_PER_LOOP * LOOP_CAPACITY),
+          all_played and added <= shown_cap, (cold_point['threads'], warm['threads']), measured='+%d' % added)
     before = threads_cpu()
     pump(5.)
     idle = media_cpu_ms(before, threads_cpu(), baseline)
@@ -1205,13 +1216,25 @@ def media(env, step, check, info, clips):
     # Steady means flat: no growth over the second half of the cycles, and a bounded one-time step after warm-up
     # (main opened 12-13 fds once in the first 20 previews and none after).
     half = halfway or warm
-    check('M7 steady state: over the last %d previews RSS grows <= %d MB, threads <= %d, fds <= %d; since warm-up '
-          'at most twice that' % (env.args.steady_cycles - env.args.steady_cycles // 2, STEADY_RSS_MB, STEADY_THREADS,
-                                  STEADY_FDS),
-          all_played and end['rss_mb'] <= half['rss_mb'] + STEADY_RSS_MB and end['threads'] <= half['threads'] + STEADY_THREADS
-          and end['fds'] <= half['fds'] + STEADY_FDS and end['rss_mb'] <= warm['rss_mb'] + 2 * STEADY_RSS_MB
-          and end['threads'] <= warm['threads'] + 2 * STEADY_THREADS and end['fds'] <= warm['fds'] + 2 * STEADY_FDS,
-          (warm, half, end))
+    last_n = env.args.steady_cycles - env.args.steady_cycles // 2
+    leak_ok = (all_played and end['rss_mb'] <= half['rss_mb'] + STEADY_RSS_MB
+               and end['threads'] <= half['threads'] + STEADY_THREADS and end['fds'] <= half['fds'] + STEADY_FDS
+               and end['rss_mb'] <= warm['rss_mb'] + 2 * STEADY_RSS_MB
+               and end['threads'] <= warm['threads'] + 2 * STEADY_THREADS)
+    # M7 [ORIGINAL] still runs and prints as a SUPERSEDED line, not counted: its fd allowance since warm-up (2 x 12)
+    # sits next to the one-time step (main +12-13, 3507ca3 +28), so it can be neither an expected pass nor a known
+    # failure. M7-R1 (coordinator ruling) keeps every leak bound and allows a one-time fd step of <= +40.
+    print('SUPERSEDED %s M7 [ORIGINAL, superseded by M7-R1] steady state: over the last %d previews RSS grows <= %d MB, '
+          'threads <= %d, fds <= %d; since warm-up at most twice that (fds +%d since warm-up)' % (
+              'PASS' if leak_ok and end['fds'] <= warm['fds'] + 2 * STEADY_FDS else 'FAIL', last_n, STEADY_RSS_MB,
+              STEADY_THREADS, STEADY_FDS, end['fds'] - warm['fds']), flush=True)
+    check('M7-R1 steady state: over the last %d previews RSS grows <= %d MB, threads <= %d, fds <= %d; since warm-up '
+          'RSS and threads at most twice that, fds <= +%d (@@)' % (last_n, STEADY_RSS_MB, STEADY_THREADS, STEADY_FDS,
+                                                                   STEADY_FDS_STEP_R),
+          leak_ok and end['fds'] <= warm['fds'] + STEADY_FDS_STEP_R, (warm, half, end),
+          measured='RSS %+.0f MB, threads %+d, fds %+d over the last %d; fds %+d since warm-up' % (
+              end['rss_mb'] - half['rss_mb'], end['threads'] - half['threads'], end['fds'] - half['fds'], last_n,
+              end['fds'] - warm['fds']))
     check('M8 no-teardown guarantee: no GL display or context is left behind per preview (GL threads <= warm)',
           all_played and end['gl_threads'] <= warm['gl_threads'], (warm['gl_threads'], end['gl_threads']))
     check('M9 no-teardown guarantee: no new GStreamer pipeline is built once every loop has been shown (@@ built)',
@@ -1276,6 +1299,13 @@ def media(env, step, check, info, clips):
               'per user clip with a loop (@@ MB against @@ MB)' % (len(users), MEDIA_TOTAL_R_MB, MEDIA_PER_LOOP_R_MB),
               users_ok and total <= cap, (cold_point['rss_mb'], points[1]['rss_mb'], users_moved),
               measured=(round(total), cap))
+        loops_shown = min(len(catalogue) + users_moved, LOOP_CAPACITY)
+        added_u = points[1]['threads'] - cold_point['threads']
+        check('M4-R1u with user clips the media adds at most %d threads per loop shown and never more than %d '
+              '(@@ against @@)' % (MEDIA_THREADS_PER_LOOP, MEDIA_THREADS_PER_LOOP * LOOP_CAPACITY),
+              users_ok and added_u <= MEDIA_THREADS_PER_LOOP * loops_shown,
+              (cold_point['threads'], points[1]['threads'], loops_shown),
+              measured=('+%d' % added_u, MEDIA_THREADS_PER_LOOP * loops_shown))
         check('U3 user clips are bounded: each of the last %d clips adds <= %d MB, <= %d thread, <= %d fds (@@)'
               % (last, EXTRA_PER_CLIP_MB, EXTRA_PER_CLIP_THREADS, EXTRA_PER_CLIP_FDS),
               users_ok and per('rss_mb') <= EXTRA_PER_CLIP_MB and per('threads') <= EXTRA_PER_CLIP_THREADS
