@@ -42,11 +42,13 @@ P9 every status line read in this probe stays parseable and keeps the 2.x line o
 U1 the popover shows a tappable Music item and a tappable Ambience item
 U2 ... under the room name
 U3 the popover keeps one room Pause/Play besides the per-layer items
-U4 (no per-layer items to tap)
-U5 (no per-layer items to tap)
-U6 (no per-layer items to tap)
-U7 (no per-layer items to tap)
-U8 (no per-layer items to tap)
+# U4-U8 were recorded on main under the probe's fallback names "(no per-layer items to tap)", the name
+# used when the popover has no items; phase 2 (4574991) lists the real check names. Same checks, oracle fix.
+U4 tapping Music pauses the music alone (the ambience keeps playing)
+U5 ... and the Music item then shows it is paused (its look changed), the Ambience item unchanged
+U6 tapping Music again plays it
+U7 tapping Ambience pauses the ambience alone, and again plays it
+U8 a pause made elsewhere (listening-roomctl music pause) shows on the popover line within 2 s
 U9 the mini player keeps one room Pause/Play and no per-layer items
 M1 in the Mix, M pauses the music alone
 M2 ... and M again plays it
