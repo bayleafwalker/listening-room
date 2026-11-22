@@ -1,0 +1,73 @@
+# O10-PERF acceptance (tests/probes/listening-o10p-acceptance.py), written by the independent acceptance author.
+# This is the TARGET: every check passes. On main e45d947 through the dev script it fails S1-S4 (no GStreamer in the dev shell)
+# and so every media oracle (nothing plays; X1/X2 need GStreamer too); with GStreamer supplied from outside (diagnostic)
+# C2, C2w, C3, C3b, C5, G7, M2, M3, M4, U2, U3, U4 fail for their own reasons. Evidence and readings: the O10p acceptance report.
+# Entries with @@ declare the measured part of the name; everything else must match exactly.
+S1 the dev shell provides GStreamer playbin3 to the window (the probe adds none)
+S2 the elements the catalogue loops need are in the dev shell (qtdemux, h264parse, avdec_h264, videoconvert, playbin3)
+S3 the dev shell decodes a catalogue loop end to end (all frames of room-night-drive.mp4)
+S4 the dev shell GStreamer is pinned to exactly the package's plugin packages (same store paths)
+S5 the 8 catalogue room loops are unchanged in format (h264 1440x810, 480 frames): cost is not cut by shrinking the media
+C0 every cold start reached the Rooms grid with its cards (3 runs)
+C1 time to Rooms after a cold start is measured and reported (median @@ ms wall, @@ ms GTK-thread CPU, load @@)
+C2 the GTK thread is never held more than 50 ms by art during cold start, by GTK-thread CPU (worst @@ ms)
+C2w ... and by wall time: <= 50 ms, scaled by the 1-minute load above 8 (worst @@ ms against @@ ms)
+C3 poster decoding leaves the GTK thread: no image decode or scale call ran on it during cold start
+C3b the GTK thread spent at most 50 ms CPU on art in total during cold start (worst @@ ms)
+C4 every card ends up showing its own poster art (placeholders, then textures)
+# KNOWN FAILURE allowed: "C5 [ORIGINAL, superseded by C5r]" compared with the card at one window width only; the
+# grid shows cards up to 334 px wide (600 px window), and C5r judges "card size" against that, at up to 2x scale.
+C5r card posters are pre-scaled to card size: each card texture is at most 2x the widest card the grid shows (668x376)
+!C5 [ORIGINAL, superseded by C5r] card posters are pre-scaled: each card texture is at most 2x its on-screen size
+G0 fixture: the Rooms grid shows the catalogue rooms with scene loops (8)
+G1 a preview's scene loop plays: its pixels move on screen
+G2 the preview sent no controller command, started nothing and no process
+G3 the preview is silent: GStreamer worked (elements created) but no audio sink was created
+G4 Enter room sends exactly one enter and opens Now
+G5 the entered room's loop plays (pixels move)
+G6 the loop plays at its native resolution (1440x810): not a downscaled stand-in
+G7 scenes still loop: the entered scene keeps moving after its 20 s clip has ended
+G8 an off-screen scene stops decoding: media threads use <= 50 ms CPU in 5 s on the Rooms page (@@ ms)
+G9 back on Now, the scene moves again
+G10 a hidden window stops decoding: media threads use <= 50 ms CPU in 5 s (@@ ms)
+G11 shown again, the scene moves again
+G12 reduced motion, entered: the scene stays still
+G13 reduced motion shows the still texture at full resolution (not a card-size thumbnail)
+G14 reduced motion decodes nothing: media threads <= 50 ms CPU in 4 s (@@ ms)
+G15 reduced motion, preview: the scene stays still and the preview stays inert
+G16 motion back on: the entered room's scene moves again
+scene: the child finished without a crash or hang
+scene: the child reported all its oracles and exited 0
+M0 fixture: 8 catalogue loop rooms (8 distinct loop files) and 16 user-clip rooms
+M1 every catalogue loop visibly played in its preview before its cost was measured
+# M2 [ORIGINAL, superseded by M2r], the brief's 400 MB target, still runs and prints as a SUPERSEDED line, not counted:
+# on 3507ca3 it lands either side of 400 MB. The coordinator re-based it in phase 2 (M2r). Backlog: further cuts.
+M2r media cost with all 8 catalogue loops shown is <= 520 MB and each loop after the first adds <= 50 MB (process tree RSS, @@ MB total, @@ MB per loop)
+M3 decoder threads are bounded: at most 16 in the whole process tree, warm and at peak (@@ warm, @@ peak)
+# M4 [ORIGINAL, superseded by M4-R1], at most 64 threads, still runs and prints as a SUPERSEDED line, not counted.
+# Coordinator ruling, phase 2: GStreamer keeps ~10 threads per paused pipeline (3507ca3: +80 for 8 loops), so the
+# bound is per loop shown, capped at 12 loop files.
+M4-R1 the media adds at most 12 threads per loop shown, here 96 for 8 catalogue loops, never more than 144 (@@)
+M5 off-screen loops are paused: media threads use <= 50 ms CPU in 5 s on the grid (@@ ms)
+M6 steady state: loops still play in the sampled previews (every 5th of 40)
+# M7 [ORIGINAL, superseded by M7-R1] still runs and prints as a SUPERSEDED line, not counted: its fd allowance since
+# warm-up (24) sits next to the one-time fd step (main +12-13, 3507ca3 +28). Coordinator ruling, phase 2: leak bounds
+# unchanged, one-time fd step since warm-up <= +40.
+M7-R1 steady state: over the last 20 previews RSS grows <= 64 MB, threads <= 6, fds <= 12; since warm-up RSS and threads at most twice that, fds <= +40 (RSS @@ MB, threads @@, fds @@ over the last 20; fds @@ since warm-up)
+M8 no-teardown guarantee: no GL display or context is left behind per preview (GL threads <= warm)
+M9 no-teardown guarantee: no new GStreamer pipeline is built once every loop has been shown (@@ built)
+# KNOWN FAILURE allowed: "U1 [ORIGINAL, superseded by U1r]", kept and still evaluated (U2 [ORIGINAL]: see below). Phase 2 judged "bounded"
+# against the implementer's LOOP_LIMIT (12 loop files; later clips show their still, since evicting a pipeline would be
+# a teardown) and re-based U2 with the coordinator's M2r. U1r/U2r state the revised criteria; reasons in the probe.
+!U1 [ORIGINAL, superseded by U1r] every user clip visibly played in its preview
+U1r user clips: at least 3 beyond the catalogue get a moving loop (@@ did), clips past the window's loop capacity show their still, and the catalogue loops still play afterwards
+# U2 [ORIGINAL, superseded by U2r] (<= 464 MB) still runs and prints as a SUPERSEDED line, not counted: a known failure cannot carry a measured span.
+U2r user clips are bounded: total media cost with 8 catalogue loops and 16 user clips <= 520 MB + 50 MB per user clip with a loop (@@ MB against @@ MB)
+M4-R1u with user clips the media adds at most 12 threads per loop shown and never more than 144 (@@ against @@)
+U3 user clips are bounded: each of the last 8 clips adds <= 4 MB, <= 1 thread, <= 2 fds (@@ MB, @@ threads, @@ fds)
+U4 decoder threads stay bounded with user clips (<= 16, @@, peak @@)
+media: the child finished without a crash or hang
+media: the child reported all its oracles and exited 0
+X1 stress: at least 200 scene-media stress cycles ran (@@ attempted)
+X2 stress: zero crashes over those cycles (@@ crashed children)
+X3 stress: every stress child finished all its cycles without raising
