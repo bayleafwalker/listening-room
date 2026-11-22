@@ -235,8 +235,14 @@ with env:
     check('3r ambience mode at 360 px fits: toolbar, Cancel and search all inside', window.toolbar.measure(Gtk.Orientation.HORIZONTAL, -1)[0] <= 360
           and all(inside(bounds(b, window), window) for b in buttons(listen.widget, 'Cancel') + [listen.search]),
           window.toolbar.measure(Gtk.Orientation.HORIZONTAL, -1)[0])
+    title_box = bounds(window.mode_title, window)
+    check('3s at 360 px the mode title is readable (wide enough for "Choose ambience") beside the Back arrow',
+          title_box and title_box[2] >= 80 and window.mode_title.get_label() == 'Choose ambience' and not window.mode_title.get_layout().is_ellipsized() and window.mode_back.get_mapped(),
+          (title_box, window.mode_title.get_label()))
+    shot(window, 'o10l-03-ambience-header-360px')
     listen.end_ambience()
     pump(.4)
+    check('3t ending the mode brings the header buttons back', window.menu_button.get_visible())
     scopes = [bounds(t, window) for t in env.widgets(listen.scopes) if isinstance(t, Gtk.ToggleButton) and t.get_mapped()]
     check('3m Listen at 360 px: the scope chips keep their full words (they scroll, not ellipsize)',
           all(not any(isinstance(x, Gtk.Label) and x.get_layout().is_ellipsized() for x in env.widgets(t))

@@ -94,6 +94,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.browse_narrow = False     # Browse rooms was chosen in the narrow (mini) layout
         self.listen_first = False      # the active room began with Tune in, not with a room
         self.toast_margin = self.toast_key = self.pending_key = None
+        self.mode_buttons_hidden = False
         self.action_toasts = 0         # toasts with an action (Undo, Details) on screen or queued
         self.room_key = self.cards_key = self.sources_key = None
         self.volume_timer = self.idle_timer = None
@@ -711,6 +712,7 @@ class NextWindow(Adw.ApplicationWindow):
         (self.add_css_class if mini else self.remove_css_class)('in-mini')
         for button in (self.timer_button, self.output_button, self.menu_button):
             button.set_visible(shown not in ('loading', 'mini'))
+        self.sync_mode_header()
         if not in_now:
             self.sheet.set_open(False)
         self.kick_idle()
@@ -745,6 +747,7 @@ class NextWindow(Adw.ApplicationWindow):
 
     def set_mode_title(self, title):
         """Listen's mode header: the words, or None when Listen is back to music."""
+        self.mode_words = title or ''
         self.mode_title.set_label(title or '')
         self.mode_title.update_property([Gtk.AccessibleProperty.LABEL], [title or 'Choose ambience'])
         self.sync_mode_header()
@@ -758,10 +761,22 @@ class NextWindow(Adw.ApplicationWindow):
         showing = (listen is not None and listen.mode == 'ambience' and browse
                    and self.browse.get_visible_child_name() == 'listen')
         self.mode_back.set_visible(showing)
+        # Narrow: the mode word alone (the page below still names the room), at a size that fits beside Back.
+        words = getattr(self, 'mode_words', '')
+        self.mode_title.set_label(words.split(' · ')[0] if self.mini_layout else words)
+        (self.mode_title.add_css_class if self.mini_layout else self.mode_title.remove_css_class)('mode-narrow')
         wanted = self.mode_title if showing else self.switcher
         if self.header.get_title_widget() is not wanted:
             self.header.set_title_widget(wanted)
         self.switcher.set_visible(browse and not self.mini_layout and not showing)
+        if showing and self.mini_layout:
+            # Below 560 px the header's own buttons leave the mode title room to be read.
+            for button in (self.timer_button, self.output_button, self.menu_button):
+                button.set_visible(False)
+        elif self.mode_buttons_hidden:
+            for button in (self.timer_button, self.output_button, self.menu_button):
+                button.set_visible(self.pages.get_visible_child_name() not in ('loading', 'mini'))
+        self.mode_buttons_hidden = bool(showing and self.mini_layout)
         self.switcher_bar.set_reveal(browse and self.mini_layout and not showing)
 
     def show_now(self):

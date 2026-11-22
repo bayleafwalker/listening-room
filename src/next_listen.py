@@ -49,6 +49,7 @@ STATION_CARD_WIDTH = 300
 
 LISTEN_CSS = '''
 .next .ambience-banner { background: rgba(255,255,255,.07); border-radius: 12px; padding: 10px 14px; }
+.next .mode-narrow { font-size: 14px; }
 .next .listen-title { font-size: 17px; font-weight: 600; color: #ffffff; }
 .next .listen-heading { font-size: 22px; font-weight: 600; color: #ffffff; }
 .next .section-note { font-size: 13px; color: rgba(255,255,255,.68); }
