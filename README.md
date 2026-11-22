@@ -242,4 +242,7 @@ it off without changing stations. Configure loopback OpenAI-compatible endpoints
 Preferences → Connections: `presenter_llm` serves `/v1/chat/completions` and
 `presenter_voice` serves `/v1/audio/speech`. Entries in `connections.json` accept an
 `endpoint` and optional private `token_file`. If either endpoint is unavailable, the
-station continues with music only.
+station continues with music only. Voice is prepared off the interface before its
+budgeted slot, played from a short-lived runtime file on its own Mix layer, and removed
+when that slot ends. The slot is fixed to the chosen maximum even when Presenter is
+muted, so muting speech never changes the music programme clock.

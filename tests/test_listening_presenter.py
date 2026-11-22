@@ -33,9 +33,18 @@ class PresenterTests(unittest.TestCase):
             self.assertIsNone(value.prepare(self.STATION, self.TRACK))
         self.assertIn('offline', value.snapshot()['status'])
 
+    def test_language_failure_is_a_quiet_drop(self):
+        value = presenter.Presenter()
+        with patch.object(value, '_chat', side_effect=ValueError('offline')):
+            self.assertIsNone(value.prepare(self.STATION, self.TRACK))
+        snapshot = value.snapshot()
+        self.assertEqual(snapshot['segments'][0]['reason'], 'language unavailable')
+        self.assertIn('offline', snapshot['status'])
+
     def test_segment_has_metadata_receipts_and_does_not_repeat(self):
         value = presenter.Presenter()
-        with patch.object(value, '_chat', return_value='A short link.'), patch.object(value, '_speech'):
+        with patch.dict('os.environ', {'XDG_RUNTIME_DIR': '/tmp'}, clear=False), \
+                patch.object(value, '_chat', return_value='A short link.'), patch.object(value, '_speech', return_value=b'audio'):
             self.assertEqual(value.prepare(self.STATION, self.TRACK)['outcome'], 'played')
             self.assertIsNone(value.prepare(self.STATION, self.TRACK))
         segment = value.snapshot()['segments'][0]

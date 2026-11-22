@@ -22,6 +22,11 @@ class PresenterRow(Gtk.Box):
         self.less.connect('clicked', lambda *_: send('presenter.feedback', {'action': 'less'})); self.append(self.less)
         self.music_only = Gtk.Button(label='Music only')
         self.music_only.connect('clicked', lambda *_: send('presenter.feedback', {'action': 'music_only'})); self.append(self.music_only)
+        self.level = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.level.set_size_request(160, -1)
+        name_it(self.level, 'Presenter level', None)
+        self.level.connect('value-changed', lambda w: None if self.updating else send('presenter.configure', {'level': round(w.get_value(), 1)}))
+        self.append(self.level)
         self.mute = Gtk.ToggleButton(label='Mute')
         self.mute.connect('toggled', lambda b: None if self.updating else send('presenter.configure', {'muted': b.get_active()}))
         self.append(self.mute)
@@ -30,6 +35,7 @@ class PresenterRow(Gtk.Box):
         self.updating = True
         self.status.set_text(value.get('status') or ('On' if value.get('enabled') else 'Off'))
         self.mute.set_active(bool(value.get('muted')))
+        self.level.set_value(float(value.get('level', 50)))
         self.updating = False
 
 

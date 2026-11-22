@@ -460,6 +460,18 @@ class Backend:
     def atmosphere_control(self, action, value=None):
         return audio_layers.control(action, value)
 
+    def start_presenter(self, segment, level_value, muted):
+        import presenter_audio
+        return presenter_audio.play(segment['_audio_path'], level_value, muted, segment['_max_seconds'])
+
+    def stop_presenter(self, unit):
+        import presenter_audio
+        presenter_audio.stop(unit)
+
+    def presenter_control(self, unit, action, value):
+        import presenter_audio
+        presenter_audio.control(unit, action, value)
+
     def start_picture(self, settings, cancel=None):
         if cancel is not None and cancel.is_set():
             raise SessionError('Picture opening cancelled')
@@ -550,6 +562,7 @@ class Controller:
         self.clock = clock
         self.lock = threading.RLock()
         self.worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='room-session')
+        self.presenter_worker = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='room-presenter')
         stored = hub.load_json(self.directory / 'session.json', {})
         self.last_session = stored.get('last_session') if isinstance(stored, dict) else None
         # The scene opens where you are ("here"). Workspace 9 stays only when it was chosen explicitly:
@@ -602,6 +615,10 @@ class Controller:
         self.atmosphere_pending = False
         self.program = None
         self.presenter = presenter.Presenter(clock=clock)
+        self.presenter_prepared = None
+        self.presenter_prepare_pending = False
+        self.presenter_slot_pending = False
+        self.presenter_unit = None
         self.strict_pending = None
         self.verified_audio = None
         self.verified_record = None
@@ -1101,7 +1118,7 @@ class Controller:
                         and not self.transition and not self.resume_offer and not self.auto_advance_pending):
                     self.auto_advance_pending = True
                     self.eof_attempted = eof_identity
-                    self.queue_step(1, automatic=True)
+                    self._presenter_then_next(observed_generation)
         except (OSError, ValueError, hub.HubError) as error:
             with self.lock:
                 self.errors['refresh'] = str(error)
@@ -1208,6 +1225,11 @@ class Controller:
                 self.lighting_timer = None
             self.timer_ends.clear()
             self.transition = None
+            if self.presenter_prepared:
+                self.presenter.discard(self.presenter_prepared)
+            self.presenter_prepared = None
+            self.presenter_prepare_pending = False
+            self.presenter_slot_pending = False
             return self.generation, self.cancel
 
     def enter(self, args):
@@ -1446,6 +1468,8 @@ class Controller:
                 self.last_entered_at = self.clock()
                 self.recent = [recipe['id']] + [r for r in self.recent if r != recipe['id']][:19]
                 self._persist()
+                if station and recipe['music'].get('reference'):
+                    self._schedule_presenter(station, recipe['music']['reference'], generation, cancel)
             # Picture and atmosphere failures do not roll back working music.
             for layer, launch, selection in (
                     ('atmosphere', self.backend.start_atmosphere, recipe['atmosphere']),
@@ -2099,6 +2123,75 @@ class Controller:
             result = self.enter({'recipe': recipe, '_automatic': automatic, '_request_generation': expected_generation})
             return result
 
+    def _prepare_presenter(self, station, item, generation, cancel):
+        """Provider work stays on the controller worker, outside the session lock."""
+        try:
+            segment = self.presenter.prepare(station, item,
+                primary_speech=station.get('preferences', {}).get('speech') == 'Speech welcome')
+            with self.lock:
+                if generation != self.generation or cancel.is_set() or self.closed:
+                    self.presenter.discard(segment)
+                else:
+                    self.presenter_prepared = segment
+        finally:
+            with self.lock:
+                if generation == self.generation:
+                    self.presenter_prepare_pending = False
+            self._changed()
+
+    def _schedule_presenter(self, station, item, generation, cancel):
+        setting = presenter.preferences(station.get('presenter'))
+        if not setting['enabled'] or not item:
+            return
+        with self.lock:
+            if self.presenter_prepare_pending or self.presenter_prepared:
+                return
+            self.presenter_prepare_pending = True
+        self.presenter_worker.submit(self._prepare_presenter, _copy(station), _copy(item), generation, cancel)
+
+    def _presenter_then_next(self, generation):
+        """Use only prepared slots; late work is dropped and music continues at once."""
+        station = self.program.station if self.program else ((self.active or {}).get('music', {}).get('station') or {})
+        tracks = len((self.station_history[0].get('tracks') if self.station_history else []) or [])
+        setting = presenter.preferences(station.get('presenter'))
+        segment = self.presenter_prepared
+        self.presenter_prepared = None
+        due = setting['enabled'] and tracks and tracks % setting['budget']['every_tracks'] == 0
+        if not due:
+            # Keep the already prepared receipt for its later budgeted slot.
+            self.presenter_prepared = segment
+            self.queue_step(1, automatic=True)
+            return
+        if not segment:
+            self.presenter.record_drop('late')
+            self.queue_step(1, automatic=True)
+            return
+        self.presenter_slot_pending = True
+        maximum, level_value, muted = segment['_max_seconds'], self.presenter.level, self.presenter.muted
+        def play_slot():
+            unit = None
+            try:
+                unit = self.backend.start_presenter(segment, level_value, muted)
+                with self.lock:
+                    if generation == self.generation:
+                        self.presenter_unit = unit
+                # This fixed slot is independent of mute; audio is additionally
+                # hard-limited by the player's --length option.
+                self.cancel.wait(maximum)
+            except (OSError, ValueError, hub.HubError, AttributeError):
+                self.presenter.record_drop('audio unavailable', segment.get('sources', ()))
+            finally:
+                try: self.backend.stop_presenter(unit)
+                except (OSError, ValueError, hub.HubError, AttributeError): pass
+                self.presenter.discard(segment)
+                with self.lock:
+                    self.presenter_unit = None
+                    self.presenter_slot_pending = False
+                    if generation == self.generation and not self.cancel.is_set():
+                        self.queue_step(1, automatic=True)
+                self._changed()
+        self.presenter_worker.submit(play_slot)
+
     def _route_preferred(self):
         if not self.settings.get('preferred_output'):
             return
@@ -2423,8 +2516,12 @@ class Controller:
                 raise SessionError('Choose a saved station first')
             if 'muted' in args:
                 self.presenter.muted = args['muted']
+                if self.presenter_unit:
+                    self.backend.presenter_control(self.presenter_unit, 'muted', args['muted'])
             if 'level' in args:
                 self.presenter.level = level(args['level'])
+                if self.presenter_unit:
+                    self.backend.presenter_control(self.presenter_unit, 'level', self.presenter.level)
             setting = presenter.preferences(dict(current.get('presenter') or {}, **{key: args[key] for key in ('enabled', 'budget') if key in args}))
             saved = dict(current, presenter=setting)
             hub.save_json(self.directory / 'stations.json', [s for s in self.stations() if s['id'] != target] + [saved])
@@ -2665,6 +2762,11 @@ class Controller:
         return self.open_link(args)
 
     def close(self):
+        try:
+            self.backend.stop_presenter(self.presenter_unit)
+        except (OSError, ValueError, hub.HubError, AttributeError):
+            pass
+        self.presenter.discard(self.presenter_prepared)
         if self.verified_audio:
             self.verified_audio.close()
             self.verified_audio = None
@@ -2673,6 +2775,7 @@ class Controller:
         if self.lighting_timer:
             self.lighting_timer.cancel()
         self.worker.shutdown(wait=False, cancel_futures=True)
+        self.presenter_worker.shutdown(wait=False, cancel_futures=True)
         with self.lock:
             for job in self.metadata_jobs.values():
                 job['_cancel'].set()
