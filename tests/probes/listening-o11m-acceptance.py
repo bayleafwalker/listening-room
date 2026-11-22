@@ -37,7 +37,8 @@ Parts (each child is a subprocess, so a segfault is a result):
               (GST_DEBUG element creation), and no Gtk.MediaFile with an open file is cleared, re-opened
               or finalized (Python hooks on Gtk.MediaFile: the calls that tear GstPlay down).
   stress  criterion 2: tests/probes/listening-scene-media-stress.py, 10 children x 30 cycles = 300 cycles,
-          3 at a time, at the host's own load (it must be above 15 for part of the run); every signal is a crash.
+          3 at a time; host load above 15 for part of the run (nice-19 helpers for at most its first 60 s, up to
+          load 16, then stopped); every signal is a crash.
   notes   the CHANGELOG records the change (a source-text check: documentation has no behaviour).
 
   --inject teardown   DIAGNOSTIC ONLY, never in acceptance: on every leave, the probe itself clears the
@@ -211,6 +212,13 @@ class Load:
             len(self.procs), os.getloadavg()[0], time.monotonic() - started, target))
         return os.getloadavg()[0]
 
+    def start(self, target):
+        """Start enough helpers to settle a little above `target` without waiting (at most 32)."""
+        for _ in range(max(0, min(int(target + 4 - os.getloadavg()[0]), 32 - len(self.procs)))):
+            self.procs.append(subprocess.Popen([sys.executable, '-c', 'while True: pass'], preexec_fn=die_with_parent))
+        self.info('load helpers: %d started for the stress run (load 1m %.1f, target %.0f)' % (
+            len(self.procs), os.getloadavg()[0], target))
+
     def stop(self):
         for proc in self.procs:
             proc.kill()
@@ -326,6 +334,10 @@ def run_parent(args):
             runs, loads, active = [], [], []
             seeds = list(range(args.stress_runs))
             started = time.monotonic()
+            # Coordinator ruling (phase 1, X3): nice-19 helpers for a bounded part of the stress run only: until the
+            # 1-minute load reaches 16 or for at most 60 s, whichever comes first; then they stop.
+            STRESS_HELP_S = 60
+            load.start(STRESS_LOAD + 1)
 
             def launch(seed):
                 log = open(stress_out / ('stress-%d.log' % seed), 'w')
@@ -343,6 +355,10 @@ def run_parent(args):
                     active.append(launch(seeds.pop(0)))
                 time.sleep(1)
                 loads.append(os.getloadavg()[0])
+                if load.procs and (loads[-1] >= STRESS_LOAD + 1 or time.monotonic() - started > STRESS_HELP_S):
+                    load.stop()
+                    info('load helpers stopped after %.0f s of the stress run (load 1m %.1f)' % (
+                        time.monotonic() - started, loads[-1]))
                 for item in list(active):
                     code = item['proc'].poll()
                     if code is None and time.monotonic() - item['start'] > 600:
