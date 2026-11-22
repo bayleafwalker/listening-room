@@ -399,11 +399,17 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
         presenter_box.add_css_class('mood-card')
         presenter_box.append(label('Presenter', ['listen-title']))
         self.presenter_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
-        name_it(self.presenter_switch, 'Presenter', 'Add brief links between tracks')
+        name_it(self.presenter_switch, 'Presenter', 'Presenter · add brief links between tracks')
         self.presenter_switch.connect('notify::active', lambda *_: self.presenter_changed())
         presenter_box.append(self.presenter_switch)
         self.presenter_budget = label('', ['section-note'])
         presenter_box.append(self.presenter_budget)
+        self.presenter_less = Gtk.Button(label='Less talking')
+        self.presenter_less.connect('clicked', lambda *_: self.presenter_feedback('less'))
+        presenter_box.append(self.presenter_less)
+        self.presenter_music_only = Gtk.Button(label='Music only')
+        self.presenter_music_only.connect('clicked', lambda *_: self.presenter_feedback('music_only'))
+        presenter_box.append(self.presenter_music_only)
         right.append(presenter_box)
 
         fallbacks = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -2060,6 +2066,21 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
         present['enabled'] = self.presenter_switch.get_active()
         self.save_station(dict(self.station, presenter=present),
                           toast='Presenter on' if present['enabled'] else 'Music only')
+
+    def presenter_feedback(self, action):
+        if getattr(self, 'syncing', False) or not self.station:
+            return
+        present = dict(self.station.get('presenter') or {})
+        budget = dict(present.get('budget') or {'every_tracks': 4, 'max_seconds': 18})
+        if action == 'music_only':
+            present['enabled'] = False
+        elif budget.get('every_tracks', 4) < 20:
+            budget['every_tracks'] = min(20, budget.get('every_tracks', 4) + 2)
+        elif budget.get('max_seconds', 18) > 5:
+            budget['max_seconds'] -= 1
+        present['budget'] = budget
+        self.save_station(dict(self.station, presenter=present),
+                          toast='Music only' if action == 'music_only' else 'Less talking')
 
     def save_station(self, station, toast=None, undo=None):
         """Show the change now and save it. Saves go through one worker, so the last choice lands last."""
