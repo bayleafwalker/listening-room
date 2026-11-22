@@ -1,6 +1,7 @@
 # Listening Room: a programme across devices
 
-Proposed 2026-11-22; not yet accepted. Source: an external design review that
+Proposed 2026-11-22; not yet accepted. Revised the same day so that the MCP server
+is deployed rather than local (decision 5). Source: an external design review that
 proposed "a listening room with a continuing programme, optional audio layers, and
 a presence across devices", assessed against 2.5.0 (`70db15e`). This plan keeps the
 review's direction and narrows its first scope to one listener on several devices.
@@ -23,7 +24,10 @@ station streams (below) add a composed mix that leaves the desktop.
   redistributable.
 - **Music Assistant is an optional adapter** (browse, play on a Music Assistant player,
   move a queue between players). It is not configured on the workstation, and no
-  deployment of it was found in gitops-nixos or datacluster.
+  deployment of it was found in gitops-nixos, datacluster or appservice.
+- **The library lives on appservice.** Jellyfin and AudioMuse run in its `media`
+  namespace. The internet reaches that cluster only through cloudflared, and people
+  reach it over WireGuard.
 - **The phone is a remote**, through KDE Connect commands. It does not play anything.
 - **Nothing is reachable off the machine.** The session socket is local, and the
   stream relay binds to 127.0.0.1.
@@ -54,10 +58,20 @@ station streams (below) add a composed mix that leaves the desktop.
    licensed offline sounds are allowed on the owner's devices. YouTube and Twitch stay
    local layers. Whether a source can technically be played and whether it may be
    used are separate checks.
-5. **MCP starts local.** A stdio server sits over the session socket, with read,
-   compose, perform and configure grants enforced by the service. A remote connector
-   for claude.ai or ChatGPT needs an authenticated endpoint reachable from the
-   internet, so it gets its own decision.
+5. **The MCP server is deployed on appservice, beside the library.**
+   - Read and compose run there, against the library and saved stations. Perform on
+     a station stream (P2) also happens in the cluster.
+   - Perform on the desktop session goes over a connection that the desktop session
+     opens to the service. Nothing new listens on the workstation, and a workstation
+     that is off shows as unavailable.
+   - The service checks the read, compose, perform and configure grants on every
+     request.
+   - vuoro-cloud is the design to copy, not the host. Its gateway already serves
+     claude.ai and ChatGPT over OAuth 2.1 with pre-registered clients. It re-checks
+     the grant on every request and maps each tool to a scope, denying any tool
+     without one (vuoro-cloud D-046). But its `/mcp` only proxies the Vuoro runtime,
+     and hosting other apps is a listed non-goal. Its scope also rules out exposing
+     the operator's home network, which fronting a home service would need.
 
 ## Acceptance
 
@@ -86,9 +100,10 @@ station streams (below) add a composed mix that leaves the desktop.
 
 ### P2: station streams
 
-- An explicit action starts a station headless. It publishes a mixed stream in two
-  variants, full and music only, to the owner's authenticated devices. No listener
-  without authentication is accepted on any interface.
+- An explicit action starts a station headless on appservice, beside Jellyfin. It
+  publishes a mixed stream in two variants, full and music only, to the owner's
+  authenticated devices over the LAN and WireGuard. Station streams never get a
+  public route, and no listener without authentication is accepted on any interface.
 - A listener joins at the current position. Pausing stops only that listener's
   output, and resuming rejoins live. In music only, the presenter's slots are filled
   with music bed or ambience, so the programme clock does not move.
@@ -110,9 +125,24 @@ station streams (below) add a composed mix that leaves the desktop.
 
 ### P4: MCP
 
-- Local stdio server. Read and compose grants create stations and rooms and return a
-  Play here link without starting sound. Perform acts only on the granted session.
-  Tests show that a session without a grant, and other rooms, stay untouched.
+- **On the LAN first.** The service runs on appservice and is reachable over the LAN
+  and WireGuard, with a token for each client. Claude Code and Claude Desktop connect
+  to it.
+  - Read and compose create stations and rooms and return a Play here link without
+    starting sound.
+  - Perform acts only on the granted session or station stream.
+  - Tests show that a session without a grant, and other rooms, stay untouched. A
+    desktop session that is off or has not connected reports unavailable.
+- **Then a public route for claude.ai and ChatGPT.** A first-level `kotona.app` name
+  through cloudflared, with an OAuth 2.1 authorization server and pre-registered
+  clients.
+  - It is a protected appservice change: the public exposure allowlist, the
+    cloudflared egress policy and the identity class.
+  - Revoking a grant takes effect on the next request.
+  - Authentik is the first choice for the authorization server. Its current OAuth
+    provider serves a ChatGPT GPT Action, so serving MCP clients is unproven. If it
+    cannot, the service carries its own authorization server, modelled on
+    vuoro-cloud's.
 - History marks each play as chosen, played by a station, or chosen by someone else.
   Inferred preferences can be inspected and corrected. "From what I chose" uses
   chosen plays only.
@@ -123,13 +153,12 @@ station streams (below) add a composed mix that leaves the desktop.
   playback across devices: wait for a second listener (decision 1).
 - **Twitch speech in a mix, and rebroadcasting a room:** the documented embed gives no
   reusable speech feed (decision 4).
-- **Remote MCP connector:** needs an endpoint exposed to the internet (decision 5).
+- **Fronting the MCP server through vuoro-cloud:** needs a change to vuoro-cloud's
+  scope first (decision 5).
 - **Listening Post as a room type:** the review cites an earlier design that is not in
   this repository. It needs its source document first.
 
 ## Open questions
 
-- **Where P2 runs.** The station stream needs a host that stays up while you drive.
-  The workstation qualifies only if it does not suspend; otherwise a cluster host.
 - **Text-to-speech engine for P1.** It must run locally and not block preparation.
   The model choice belongs to the implementer, within that constraint.
