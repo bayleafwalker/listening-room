@@ -76,7 +76,9 @@ def descriptor(value):
 def destinations(preview):
     """Only the destinations this link supports, in listener words."""
     actions = (preview or {}).get('actions') or []
-    return [(key, text) for key, text in DESTINATIONS if key in actions]
+    # Live sources are tuned in to, as in the rows; on-demand ones are played.
+    live = (preview or {}).get('kind') == 'twitch'
+    return [(key, 'Tune in' if key == 'music' and live else text) for key, text in DESTINATIONS if key in actions]
 
 
 # A YouTube video's sheet, in the same order and words as its Listen row: Play, Watch (with

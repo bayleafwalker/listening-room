@@ -648,6 +648,47 @@ def notify(message):
 COUNTRY_CODES = frozenset('AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'.split())
 
 
+def _count(value):
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _words(value):
+    return re.findall(r"[^\W_]+", str(value).casefold())
+
+
+def _match_tier(row, words):
+    """0 when every query word is a whole word of the name (or a whole tag), 1 when each starts a word,
+    2 for anything else the directory matched inside a longer word (the substring noise)."""
+    if not words:
+        return 0
+    name = _words(row.get('name', ''))
+    tags = {tag.casefold() for tag in row.get('tags') or []}
+    if all(word in name or word in tags for word in words):
+        return 0
+    if all(any(part.startswith(word) for part in name) or word in tags for word in words):
+        return 1
+    return 2
+
+
+def rank_radio(rows, query):
+    """Order search results by how well they match ``query``: whole-word and tag matches first, then word
+    beginnings, then substrings; within each group the most clicked (then most voted) first. Stable, so
+    results with no counts keep the directory's own order. A field search (country:FI) keeps that order."""
+    query = str(query or '').strip()
+    if ':' in query and query.partition(':')[0].strip().lower() in ('country', 'tag', 'language'):
+        return list(rows)
+    words = _words(query)
+    def counted(row, key):
+        try:
+            return -int(row.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+    return sorted(rows, key=lambda row: (_match_tier(row, words), counted(row, 'clickcount'), counted(row, 'votes')))
+
+
 def search_radio(query, *, country=None, language=None, tag=None, cache=True):
     def term(value, label):
         if value is None:
@@ -714,9 +755,10 @@ def search_radio(query, *, country=None, language=None, tag=None, cache=True):
             continue
         website = row.get('homepage', '')
         tags = row.get('tags', '')
-        result.append({'id': 'browser-' + clean(row.get('stationuuid')), 'name': clean(row.get('name')) or 'Unnamed station', 'group': 'Search results', 'kind': 'radio', 'url': row['url_resolved'], 'country': clean(row.get('country')), 'countrycode': clean(row.get('countrycode')), 'language': clean(row.get('language')), 'tags': [clean(tag) for tag in tags.split(',') if clean(tag)] if isinstance(tags, str) else [], 'website': website if valid_url(website) else ''})
-        if len(result) >= 50:
-            break
+        result.append({'id': 'browser-' + clean(row.get('stationuuid')), 'name': clean(row.get('name')) or 'Unnamed station', 'group': 'Search results', 'kind': 'radio', 'url': row['url_resolved'], 'country': clean(row.get('country')), 'countrycode': clean(row.get('countrycode')), 'language': clean(row.get('language')), 'tags': [clean(tag) for tag in tags.split(',') if clean(tag)] if isinstance(tags, str) else [], 'website': website if valid_url(website) else '',
+                       'clickcount': _count(row.get('clickcount')), 'votes': _count(row.get('votes'))})
+    # The directory matches inside words too: put whole-word and tag matches first.
+    result = rank_radio(result, query)[:50]
     if cache:
         save_json(STATE / 'search-cache.json', result)
     return result

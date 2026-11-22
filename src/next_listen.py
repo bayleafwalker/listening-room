@@ -28,6 +28,7 @@ import session_client
 import youtube_search
 from next_listen_more import MORE_SCOPES, ServicesMixin
 from next_listen_sources import SourcesMixin
+from next_listen_twitch import TwitchShelfMixin
 from next_actions import when_finished
 from next_async import error_text, pool, run_async
 from next_widgets import FocalPicture, show_texture, icon_button, install_css, label, name_it
@@ -44,9 +45,11 @@ SHELF_LIMIT = 6
 FULL_LIMIT = 20
 REVIEW_PAGES = 50
 FAVORITES_REFRESH_S = 3.
+STATION_CARD_WIDTH = 300
 
 LISTEN_CSS = '''
 .next .ambience-banner { background: rgba(255,255,255,.07); border-radius: 12px; padding: 10px 14px; }
+.next .mode-narrow { font-size: 14px; }
 .next .listen-title { font-size: 17px; font-weight: 600; color: #ffffff; }
 .next .listen-heading { font-size: 22px; font-weight: 600; color: #ffffff; }
 .next .section-note { font-size: 13px; color: rgba(255,255,255,.68); }
@@ -102,7 +105,7 @@ def _looks_like_url(value):
     return isinstance(value, str) and value.strip().lower().startswith(('http://', 'https://'))
 
 
-class ListenPage(ServicesMixin, SourcesMixin):
+class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
     """Search first, then shelves; station detail and history are pushed pages."""
 
     def __init__(self, window):
@@ -128,8 +131,10 @@ class ListenPage(ServicesMixin, SourcesMixin):
         self.mode = 'music'            # 'ambience' while a source is being chosen for the Mix
         self.mode_origin = 'now'
         self.scope_list = SCOPES
+        self.chips_fitted = None
         self.remote = {}
         self.init_services()
+        self.init_twitch_shelf()
         self.searching = False
         self.request_id = 0
         self.cancel_event = None
@@ -200,11 +205,18 @@ class ListenPage(ServicesMixin, SourcesMixin):
             pass
         self.fill_scopes()
         self.scopes.connect('notify::active', self.scope_changed)
-        wrap = Adw.WrapBox(child_spacing=8, line_spacing=8)
-        wrap.append(self.scopes)
-        wrap.append(self.build_more_scopes())
-        column.append(wrap)
+        # One line of chips that scrolls sideways when the window is narrower than they are (a wrapping or
+        # shrinking group would cut their words: "Your stat…", "Live cha…").
+        chips = Gtk.Box(spacing=8)
+        chips.append(self.scopes)
+        chips.append(self.build_more_scopes())
+        chip_scroller = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.NEVER,
+                                           propagate_natural_height=True)
+        chip_scroller.set_child(chips)
+        chip_scroller.add_css_class('scope-scroller')
+        column.append(chip_scroller)
         column.append(self.build_scope_controls())
+        column.append(self.build_channel_controls())
         self.index_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=20)
         column.append(self.index_body)
         clamp.set_child(column)
@@ -407,15 +419,42 @@ class ListenPage(ServicesMixin, SourcesMixin):
 
         self.station_breakpoints = None
         self.station_holder.append(self.station_main)
+        # Built stacked, so the page's minimum width is the narrow one before the first frame says how wide it is.
         self.station_compact = None
+        self.set_station_orientation(Gtk.Orientation.VERTICAL)
 
     def adapt_geometry(self, widget, _clock):
         """Stack the station page's two columns and its mood rows below 1000 px."""
+        self.fit_scope_chips()
+        self.fit_bar()
         compact = widget.get_width() < 1000
         if compact == self.station_compact:
             return GLib.SOURCE_CONTINUE
         self.station_compact = compact
-        orientation = Gtk.Orientation.VERTICAL if compact else Gtk.Orientation.HORIZONTAL
+        self.set_station_orientation(Gtk.Orientation.VERTICAL if compact else Gtk.Orientation.HORIZONTAL)
+        return GLib.SOURCE_CONTINUE
+
+    def fit_bar(self):
+        """The now-playing bar's volume slider is for windows wider than the mini layout; without it the bar
+        fits 360 px."""
+        narrow = self.window.mini_layout
+        if self.bar_volume_box.get_visible() == narrow:
+            self.bar_volume_box.set_visible(not narrow)
+
+    def fit_scope_chips(self):
+        """Give each chip group its natural width once it is on screen, so a narrow window scrolls the chips
+        sideways instead of squeezing their words into "Your stat…" (a toggle group's own minimum ellipsizes)."""
+        groups = (self.scopes, getattr(self, 'more_scopes', None))
+        key = (self.mode, self.scope_list)
+        if key == self.chips_fitted or not self.scopes.get_mapped():
+            return
+        self.chips_fitted = key
+        for group in groups:
+            if group is not None:
+                group.set_size_request(-1, -1)
+                group.set_size_request(group.measure(Gtk.Orientation.HORIZONTAL, -1)[1], -1)
+
+    def set_station_orientation(self, orientation):
         self.station_main.set_orientation(orientation)
         for row in self.mood_rows.values():
             row.set_orientation(orientation)
@@ -483,7 +522,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         name_it(self.bar_play, 'Pause the room')
         self.bar_play.connect('clicked', lambda *_: self.window.toggle_room())
         bar.append(self.bar_play)
-        volume = Gtk.Box(spacing=8)
+        volume = self.bar_volume_box = Gtk.Box(spacing=8)
         volume.set_valign(Gtk.Align.CENTER)
         volume.append(Gtk.Image(icon_name='audio-volume-high-symbolic'))
         self.bar_volume = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
@@ -935,7 +974,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         return (self.scope, self.query, self.mode, self.searching, youtube_search.available(),
                 snapshot.get('stations'), snapshot.get('station_recent'),
                 self.window.radio, sorted(self.favorites), self.library_state, self.library,
-                self.channels, self.twitch['state'], self.sounds, self.world_cache,
+                self.channels, self.twitch['state'], self.channel_key(), self.sounds, self.world_cache,
                 self.services_signature(), self.remote, self.youtube_signature() if self.scope == 'youtube' else None)
 
     def shelf_parts(self):
@@ -951,7 +990,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
             ('recent', (history, minute), self.recent_shelf),
             ('radio', (radio, favorites), self.radio_shelf),
             ('library', (self.library, self.library_state, play_next, self.services_signature()), self.library_shelf),
-            ('channels', (self.channels, self.twitch['state'], self.twitch.get('message')), self.channels_shelf),
+            ('channels', (self.channels, self.twitch['state'], self.twitch.get('message'), self.thumbs_version), self.channels_shelf),
             ('elsewhere', (radio,), self.elsewhere_shelf),
         ]
 
@@ -1006,7 +1045,14 @@ class ListenPage(ServicesMixin, SourcesMixin):
         history = next_station.history_rows(snapshot.get('station_recent') or [], snapshot.get('now') or time.time())
         if not history:
             return None
-        return self.section('Recently played', [self.history_entry(row) for row in history[:4]],
+        # One row per station (the most recent play): the History page keeps every play.
+        seen, latest = set(), []
+        for row in history:
+            key = row.get('station_id') or row.get('name')
+            if key not in seen:
+                seen.add(key)
+                latest.append(row)
+        return self.section('Recently played', [self.history_entry(row) for row in latest[:4]],
                             trailing=self.link_button('History', self.show_history))
 
     def radio_shelf(self):
@@ -1022,7 +1068,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
                                   'empty': 'No albums in the library yet.'}.get(self.library_state))
 
     def channels_shelf(self):
-        channels = self.channel_rows()
+        channels = self.channel_rows(shelf=True)
         return self.section('Live channels', channels[:SHELF_LIMIT], note=self.twitch_footnote()) if channels else None
 
     def elsewhere_shelf(self):
@@ -1063,9 +1109,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         elif scope == 'youtube':
             self.render_youtube_home()
         elif scope == 'channels':
-            rows = self.channel_rows()
-            self.index_body.append(self.section('Live channels', rows, note=(
-                self.twitch_footnote() or ('No live channels yet.' if not rows else None))))
+            self.render_channels_scope()
         elif scope == 'world':
             rows = self.recent_world()
             self.index_body.append(self.section('World radio', rows, note=(
@@ -1197,7 +1241,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
         head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         head.append(self.section_title('Your stations'))
         box.append(head)
-        grid = Gtk.FlowBox(min_children_per_line=2, max_children_per_line=4, homogeneous=True,
+        grid = Gtk.FlowBox(min_children_per_line=1, max_children_per_line=4, homogeneous=True,
                            column_spacing=14, row_spacing=14, selection_mode=Gtk.SelectionMode.NONE)
         for station in stations:
             if isinstance(station, dict):
@@ -1212,7 +1256,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
     def station_card(self, station):
         card = Gtk.Box(spacing=12)
         card.add_css_class('station-card')
-        card.set_size_request(240, -1)
+        card.set_size_request(STATION_CARD_WIDTH, -1)   # wide enough for a name and Tune in; one per line below two of them
         open_button = Gtk.Button()
         open_button.add_css_class('flat')
         open_button.set_hexpand(True)
@@ -1286,14 +1330,18 @@ class ListenPage(ServicesMixin, SourcesMixin):
     def row(self, entry):
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=14)
         box.add_css_class('listen-row')
-        box.append(self.tile(entry.get('name'), 'row-tile'))
+        box.append(self.art_slot(entry.get('art')) if entry.get('slot') else self.tile(entry.get('name'), 'row-tile'))
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         text.set_hexpand(True)
         text.set_valign(Gtk.Align.CENTER)
         title = label(entry.get('name') or 'Untitled', ['row-name'], ellipsize=True)
         detail = label(entry.get('detail') or '', ['row-detail'], ellipsize=True)
         text.append(title)
+        if entry.get('subtitle'):
+            text.append(label(entry['subtitle'], ['row-detail'], ellipsize=True))
         text.append(detail)
+        if entry.get('dim'):
+            box.set_opacity(.6)
         box.append(text)
         action = entry.get('action')
         menu = entry.get('menu')
@@ -1414,7 +1462,7 @@ class ListenPage(ServicesMixin, SourcesMixin):
                             'detail': self.library_kind(item) + ' · Jellyfin',
                             'keywords': ' '.join([str(item.get('artist') or '')] + [str(x) for x in item.get('genres') or []]),
                             'item': item,
-                            'action': ('Tune in', lambda item=item: self.tune_library(item)), 'menu': menu,
+                            'action': ('Play', lambda item=item: self.tune_library(item)), 'menu': menu,
                             'ambience': lambda item=item: self.play_ambience(item)})
         return entries
 
@@ -1440,10 +1488,11 @@ class ListenPage(ServicesMixin, SourcesMixin):
         preview = self.preview(url)
         if preview and any(key == 'picture' for key, _text in next_links.destinations(preview)):
             menu.append(('Show as scene', lambda url=url: self.show_as_scene(url)))
+        menu.extend(self.channel_menu(item))
         menu.append(('Open elsewhere', lambda url=url: self.open_external(url)))
-        detail = 'Live channel · Twitch' + (' · live' if item.get('live') else '')
         return {'kind': 'channel', 'name': item.get('name') or item.get('login') or 'Channel',
-                'detail': detail, 'keywords': item.get('title') or '',
+                'detail': channel_browse.channel_detail(item), 'keywords': item.get('title') or '',
+                'subtitle': item.get('title') or '', 'slot': True, 'art': self.channel_art(item), 'dim': item.get('live') is False,
                 'action': ('Tune in', lambda item=item: self.tune_channel(item)), 'menu': menu,
                 'ambience': lambda item=item: self.play_ambience(item)}
 
