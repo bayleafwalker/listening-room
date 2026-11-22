@@ -584,7 +584,7 @@ with env:
             check('H16 at %d px the header still names the mode, with a way out, inside the window' % width,
                   bool(texts) and bool(out) and bool(fit) and all(
                       0 <= (bounds(b, window) or (-9, 0, 0, 0))[0] and (bounds(b, window) or (0, 0, 0, 0))[0]
-                      + (bounds(b, window) or (0, 0, 0, 0))[2] <= width + 1 for b in out), (texts, [text_of(b) for b in out], width))
+                      + (bounds(b, window) or (0, 0, 0, 0))[2] <= width + 1 for b in out), (texts, [(text_of(b), bounds(b, window)) for b in out], [(l.get_width(), bounds(l, window), l.get_layout().is_ellipsized()) for l in labels], width))
             header_clashes = [c for c in clashes(window) if (c[2][1] < band_limit(window)) or (c[5][1] < band_limit(window))]
             check('H17 at %d px the header controls (mode, way out, tabs, window controls) do not overlap' % width,
                   not header_clashes, header_clashes[:4])
