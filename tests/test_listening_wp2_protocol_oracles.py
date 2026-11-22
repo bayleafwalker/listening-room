@@ -58,7 +58,13 @@ READ_ONLY = re.compile(r'^(inspect|get|subscribe|unsubscribe|ping|hello|version|
 
 
 def baseline_status(snapshot):
-    """roomctl.status on main (25cda4a), frozen: the Waybar line format old setups parse."""
+    """[ORIGINAL, superseded by status_line_problem (O11-CONTROL criterion 2, 2026-11-22)]
+    roomctl.status on main (25cda4a), frozen: the Waybar line format old setups parse.
+
+    The original oracle required `roomctl status` to equal this function for every snapshot. O11-CONTROL
+    criterion 2 requires partial pause to be reported ("Music paused · Rain on glass" with a paused class),
+    which this frozen text cannot say, and the O11 outcome requires a watched video to be visible. The
+    function is kept unchanged as the reference for every other state; see status_line_problem."""
     import html
     active = snapshot.get('active') or {}
     layers = snapshot.get('layers') or {}
@@ -71,6 +77,37 @@ def baseline_status(snapshot):
     caption = name + (' · ' + ' + '.join(playing) if playing else '')
     return {'text': html.escape(caption), 'tooltip': html.escape(caption + '\nClick for room controls; right-click to browse'),
             'class': 'playing' if playing else 'paused' if active else 'stopped', 'alt': 'room'}
+
+
+def _partial_or_video(snapshot):
+    layers = snapshot.get('layers') or {}
+    statuses = {(layers.get(name) or {}).get('status') for name in ('music', 'atmosphere')}
+    return ('Paused' in statuses and 'Playing' in statuses) or bool(snapshot.get('video'))
+
+
+def status_line_problem(line, snapshot):
+    """[REVISED, O11-CONTROL criterion 2] What is wrong with a `roomctl status` line, or None.
+
+    Same intent as the original (the status stays accurate and parseable by the Waybar setups that parse
+    it today): the line is one JSON object with string `text` and `tooltip` (HTML-escaped, Waybar markup),
+    `class` and `alt` == "room". For every state the original covered it must still equal baseline_status
+    exactly. Only while some layers are paused and others play, or a video is watched, may the text and
+    class differ; what they must say then is judged by the O11-CONTROL acceptance probe (o11c P*/V*)."""
+    if not isinstance(line, dict):
+        return 'not a JSON object: %r' % (line,)
+    if not {'text', 'tooltip', 'class', 'alt'} <= set(line):
+        return 'missing keys: %r' % sorted({'text', 'tooltip', 'class', 'alt'} - set(line))
+    if not isinstance(line['text'], str) or not isinstance(line['tooltip'], str) or line['alt'] != 'room':
+        return 'text/tooltip are not strings or alt is not "room": %r' % (line,)
+    if not isinstance(line['class'], str) and not (isinstance(line['class'], list)
+                                                   and all(isinstance(c, str) for c in line['class'])):
+        return 'class is neither a string nor a list of strings: %r' % (line['class'],)
+    if re.search(r'<|&(?!amp;|lt;|gt;|quot;|#x27;|#39;)', line['text'] + line['tooltip']):
+        return 'text or tooltip is not HTML-escaped: %r' % (line,)
+    if not _partial_or_video(snapshot) and line != baseline_status(snapshot):
+        return 'differs from the 2.x line for a state without partial pause or video: %r != %r' % (
+            line, baseline_status(snapshot))
+    return None
 
 
 def old_exchange(path, action, args=None, timeout=2):
@@ -827,7 +864,8 @@ class RoomctlOracles(Base):
         process = self.roomctl('status')
         out, err = process.communicate(timeout=10)
         self.assertEqual(process.returncode, 0, err)
-        self.assertEqual(json.loads(out.decode().strip()), baseline_status({}))
+        # [ORIGINAL, superseded by status_line_problem (O11-CONTROL C2)]: self.assertEqual(json.loads(out.decode().strip()), baseline_status({}))
+        self.assertIsNone(status_line_problem(json.loads(out.decode().strip()), {}))
         rig = self.rig()
         rig.backend.state['music'] = {'status': 'Playing', 'name': 'Probe radio', 'source_id': 'x', 'volume': 30}
         rig.controller.refresh()
@@ -835,7 +873,8 @@ class RoomctlOracles(Base):
         out, err = process.communicate(timeout=10)
         self.assertEqual(process.returncode, 0, err)
         self.assertEqual(out.decode().count('\n'), 1)
-        self.assertEqual(json.loads(out), baseline_status(rig.controller.snapshot()))
+        # [ORIGINAL, superseded by status_line_problem (O11-CONTROL C2)]: self.assertEqual(json.loads(out), baseline_status(rig.controller.snapshot()))
+        self.assertIsNone(status_line_problem(json.loads(out), rig.controller.snapshot()))
         self.assertEqual(rig.action_names() - {'inspect', 'get'}, set())
 
     def test_follow_prints_waybar_lines_on_change_without_polling(self):
@@ -847,14 +886,16 @@ class RoomctlOracles(Base):
             alive = process.poll() is None
             self.fail('no initial Waybar line (stdout not flushed?); exited=%s stderr=%r'
                       % (not alive, b'' if alive else process.stderr.read(400)))
-        self.assertEqual(waybar(line), baseline_status(rig.controller.snapshot()))
+        # [ORIGINAL, superseded by status_line_problem (O11-CONTROL C2)]: self.assertEqual(waybar(line), baseline_status(rig.controller.snapshot()))
+        self.assertIsNone(status_line_problem(waybar(line), rig.controller.snapshot()))
         rig.backend.state['music'] = {'status': 'Playing', 'name': 'Probe radio', 'source_id': 'x', 'volume': 30}
         started = time.monotonic()
         rig.controller.refresh()
         t, line = reader.wait(lambda l: (waybar(l) or {}).get('class') == 'playing', 2)
         self.assertIsNotNone(line, 'follow did not print the change')
         self.assertLess(t - started, .5)
-        self.assertEqual(waybar(line), baseline_status(rig.controller.snapshot()))
+        # [ORIGINAL, superseded by status_line_problem (O11-CONTROL C2)]: self.assertEqual(waybar(line), baseline_status(rig.controller.snapshot()))
+        self.assertIsNone(status_line_problem(waybar(line), rig.controller.snapshot()))
         inspects_before = sum(1 for _, name in rig.actions if name in ('inspect', 'get'))
         time.sleep(2.5)
         inspects = sum(1 for _, name in rig.actions if name in ('inspect', 'get')) - inspects_before
@@ -894,7 +935,8 @@ class RoomctlOracles(Base):
         """Interpretation: Waybar shows what `status` shows today when no controller runs."""
         process, reader = self.follow()
         t, line = reader.wait(lambda l: waybar(l) is not None, 5)
-        self.assertEqual(waybar(line) if line else None, baseline_status({}))
+        # [ORIGINAL, superseded by status_line_problem (O11-CONTROL C2)]: self.assertEqual(waybar(line) if line else None, baseline_status({}))
+        self.assertIsNone(status_line_problem(waybar(line) if line else None, {}))
         time.sleep(1)
         self.assertIsNone(process.poll(), 'follow exited without a controller')
 
