@@ -3,18 +3,28 @@ P0 existing saved stations are Presenter-off by default and their detail visibly
 P0b an existing room stays silent between tracks: no presenter object is enabled before opt-in
 P0c an untouched saved station contains references/preferences only, never audio, prepared stream or token
 P1 station detail exposes a Presenter switch and a visible adjustable budget
-P1b Less talking is station feedback: it lowers/persists the budget without changing station
+# P1b [ORIGINAL, superseded by P1b-R1] still prints as a SUPERSEDED line, not counted: persistence alone did not prove a lower budget.
+P1b-R1 Less talking leaves Presenter enabled and persists a strictly sparser budget
 P1c Music only is station feedback: it turns Presenter off without changing station
 P2 the Mix exposes a Presenter row with its own level and Mute
-P2b muting Presenter during a segment never advances, pauses, or delays music
+# P2b [ORIGINAL, superseded by P2b-R1] still prints as a SUPERSEDED line, not counted: whole layer equality hid a moving clock.
+P2b-R1 muting Presenter while it is playing keeps music identity and advancing clock
 P3 listening-roomctl inspect reports presenter enabled, budget, quiet status and recent sourced outcomes
 P3b MPRIS remains music playback while an optional presenter layer is enabled
-P4 LLM timeout drops the slot quietly, records a reason, and leaves music playing without an error card
-P4 malformed LLM output drops the slot quietly, records a reason, and leaves music playing without an error card
-P4 missing speech endpoint drops the slot quietly, records a reason, and leaves music playing without an error card
-P4 failing speech endpoint drops the slot quietly, records a reason, and leaves music playing without an error card
-P5 prepared eligible segments use loopback LLM and speech connections and retain text plus captured sources
-P5b a segment not ready at its slot is dropped rather than creating a gap
-P6 a primary speech station suppresses presenter segments while it plays
-P7 an item with no metadata gets no factual presenter segment
-P8 a segment does not repeat within the station history window
+# P4 [ORIGINAL, superseded by P4-R1] still prints as SUPERSEDED lines, not counted: snapshot-only failures could leave a visible error card.
+P4-R1 LLM timeout drops quietly with no window error card
+P4-R1 malformed LLM output drops quietly with no window error card
+P4-R1 missing speech endpoint drops quietly with no window error card
+P4-R1 failing speech endpoint drops quietly with no window error card
+# P5 [ORIGINAL, superseded by P5-R1] still prints as a SUPERSEDED line, not counted: requests and an empty list passed vacuously.
+P5-R1 the captured-metadata positive control plays one sourced fake segment
+# P5b [ORIGINAL, superseded by P5b-R1] still prints as a SUPERSEDED line, not counted: a status alone did not prove a missed slot.
+P5b-R1 a slow slot drops, with music continuously playing and no played segment for that slot
+# P6 [ORIGINAL, superseded by P6-R1] still prints as a SUPERSEDED line, not counted: no presenter implementation passed it.
+P6-R1 primary speech suppresses slots after the positive control proved a slot can play
+# P7 [ORIGINAL, superseded by P7-R1] still prints as a SUPERSEDED line, not counted: no segments passed it.
+P7-R1 no captured provenance suppresses factual segments after the positive control
+# P8 [ORIGINAL, superseded by P8-R1] still prints as a SUPERSEDED line, not counted: zero/one slots passed it.
+P8-R1 identical text in two eligible slots plays exactly once within the history window
+P1d-R1 an over-budget fake segment is dropped or publicly trimmed to the budget maximum
+P9-R1 prerecorded clips use the slot scheduler, preserve source/placement, and honour expiry
