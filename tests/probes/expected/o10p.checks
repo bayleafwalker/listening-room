@@ -44,9 +44,9 @@ M1 every catalogue loop visibly played in its preview before its cost was measur
 # on 3507ca3 it lands either side of 400 MB. The coordinator re-based it in phase 2 (M2r). Backlog: further cuts.
 M2r media cost with all 8 catalogue loops shown is <= 520 MB and each loop after the first adds <= 50 MB (process tree RSS, @@ MB total, @@ MB per loop)
 M3 decoder threads are bounded: at most 16 in the whole process tree, warm and at peak (@@)
-# KNOWN FAILURE allowed: "M4 [ORIGINAL]", superseded by M4-R1 (coordinator ruling, phase 2): GStreamer keeps ~10
-# threads per paused pipeline (3507ca3: +80 for 8 loops), so the bound is per loop shown, capped at 12 loop files.
-!M4 the media adds at most 64 threads once every loop was shown (@@)
+# M4 [ORIGINAL, superseded by M4-R1], at most 64 threads, still runs and prints as a SUPERSEDED line, not counted.
+# Coordinator ruling, phase 2: GStreamer keeps ~10 threads per paused pipeline (3507ca3: +80 for 8 loops), so the
+# bound is per loop shown, capped at 12 loop files.
 M4-R1 the media adds at most 12 threads per loop shown, here 96 for 8 catalogue loops, never more than 144 (@@)
 M5 off-screen loops are paused: media threads use <= 50 ms CPU in 5 s on the grid (@@ ms)
 M6 steady state: loops still play in the sampled previews (every 5th of 40)

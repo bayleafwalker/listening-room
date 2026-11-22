@@ -906,7 +906,9 @@ def s7_switching_toast():
     window = launch(1200, 800)
     pump(1.5)
     goto(window, 'rooms'); pump(.8)
-    mouse(card(window, 'Night drive'), 2)
+    # R1 harness fix (phase 2): double-click to enter through the full gesture chain, as in s6; mouse() skipped
+    # the Rooms stack's capture gesture, and at load its double-click turned into a preview (7d/7e at load 25-30).
+    pointer(window, card(window, 'Night drive'), 2)
     settle(1.5)
     toast = [t for t in texts(window) if 'Back to ' in t]
     check('7d previous saved room named in the toast', toast == ['Back to Evening reading'], repr(toast))
@@ -922,7 +924,9 @@ def s7_switching_toast():
     reset_state()
     window = launch(1200, 800)
     pump(1.2)
-    mouse(card(window, 'Night drive'), 2)
+    # R1 harness fix (phase 2): double-click to enter through the full gesture chain, as in s6; mouse() skipped
+    # the Rooms stack's capture gesture, and at load its double-click turned into a preview (7d/7e at load 25-30).
+    pointer(window, card(window, 'Night drive'), 2)
     settle(1.5)
     check('7f entering from nothing offers no Back toast', not [t for t in texts(window) if 'Back to ' in t], repr(texts(window)))
     leave_all()
@@ -1174,7 +1178,9 @@ def s11_legacy_scenes():
     choose_chip(window, 'Yours')
     check('11d Yours chip lists the legacy scene', card_names(window) == ['Rainy desk'], repr(card_names(window)))
     mark = len(COMMANDS)
-    mouse(card(window, 'Rainy desk'), 2)
+    # R1 harness fix (phase 2): double-click to enter through the full gesture chain, as in s6; mouse() skipped
+    # the Rooms stack's capture gesture, and at load its double-click turned into a preview (7d/7e at load 25-30).
+    pointer(window, card(window, 'Rainy desk'), 2)
     settle(1.5)
     got = starts(mark)
     check('11e entering a legacy scene is one explicit enter and the room plays that station',
