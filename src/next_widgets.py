@@ -367,9 +367,21 @@ def _gst_known():
 # decodes a 24 fps scene loop in real time, so every libav video decoder the process creates is capped
 # (bound_decoders). What remains per loop, paused or playing, is its reference frames and GTK's GL video
 # sink: about 40 MB with software GL.
+#
+# A loop that no Scene has wanted for RELEASE_MS is stopped as well (GstPlay's own gst_play_stop: the
+# pipeline goes to READY). That ends its streaming threads (source, typefind, demuxer, queues, decoder)
+# and frees the decoder with its frames, and the heap is trimmed after. The GstPlay, its thread and the
+# GL sink stay: nothing is unreffed, cleared or finalized, so this is not a teardown. Wanted again, the
+# loop prerolls from the start on its own threads while the picture keeps the last frame it showed.
+# Each stop leaves the old file source referenced (not by this code), so its file is closed (_sweep).
 DECODER_THREADS = 1
 LOOP_LIMIT = 12           # loop files that may hold a pipeline: the catalogue's, plus a few of your own
+RELEASE_MS = 1000         # an unwanted loop waits this long before it stops (leaving a preview to enter keeps it)
+TRIM_MS = 500             # after a release: close old sources' files and trim the heap (looked at again until done)
+SWEEP_TRIES = 20          # ... at most this many times (10 s)
 _LOOPS = {}               # loop path -> _Loop
+GST_MEDIA_FILE_FIELDS = 5  # GtkGstMediaFile's own fields after its parent (GTK 4.24), the GstPlay first
+_PLAY = {}                # GstPlay/GStreamer calls through ctypes (_load_play) and the release sweep's work, or 'off'
 
 
 def bound_decoders(Gst):
@@ -446,18 +458,41 @@ class _Loop:
         self.media.set_muted(True)
         self.wanted = set()   # ids of the Scenes that want it playing now
         self.seam = 0         # the end-of-stream watch, connected while the loop plays
+        self.player = gst_player(self.media)   # its GstPlay (borrowed, never reffed), or None: never released
+        self.releasing = 0    # the timeout that stops it once nobody wants it
+        self.released = False
 
     def want(self, scene, playing):
         (self.wanted.add if playing else self.wanted.discard)(id(scene))
         if self.wanted:
+            if self.releasing:
+                GLib.source_remove(self.releasing)
+                self.releasing = 0
             if not self.seam:
                 self.seam = self.media.connect('notify::timestamp', _Loop._restart_at_end)
+            self.released = False
             self.media.play()
         else:
             self.media.pause()
             if self.seam:
                 self.media.disconnect(self.seam)
                 self.seam = 0
+            if self.player and not self.released and not self.releasing:
+                self.releasing = GLib.timeout_add(RELEASE_MS, _Loop._release, self)
+
+    @staticmethod
+    def _release(loop):
+        """Nobody wanted the loop for RELEASE_MS: stop its pipeline, keeping the player and the MediaFile."""
+        loop.releasing = 0
+        if not loop.wanted and not loop.released:
+            loop.released = True
+            source = _PLAY['source'](loop.player)
+            _PLAY['stop'](loop.player)
+            _PLAY['stopping'].append(loop)
+            if source:
+                _PLAY['sources'].append(source)
+            _after_release()
+        return False
 
     @staticmethod
     def _restart_at_end(media, _spec):
@@ -467,6 +502,159 @@ class _Loop:
         duration = media.get_duration()
         if duration > 0 and media.get_timestamp() >= duration and not media.is_seeking():
             media.seek(0)
+
+
+def gst_player(media):
+    """The GstPlay behind a GStreamer Gtk.MediaFile, or None when it cannot be found safely.
+
+    GTK does not expose it. In GTK 4.24 GtkGstMediaFile's instance is its GtkMediaFile parent followed by
+    the GstPlay and four more pointer-sized fields, so the pointer is read there only when the instance
+    has exactly that size (another layout: None, and the loops stay paused as before), and used only when
+    GObject confirms it is a GstPlay. The pointer is borrowed: the MediaFile holds the only reference for
+    the life of the process (it is never cleared)."""
+    if _PLAY.get('off'):
+        return None
+    import ctypes
+    if 'stop' not in _PLAY:
+        try:
+            _load_play(ctypes)
+        except (OSError, AttributeError):
+            _PLAY['off'] = True      # loops then stay paused, never stopped, as before
+            return None
+    from gi.repository import GObject
+    try:
+        offset = GObject.type_query(Gtk.MediaFile.__gtype__).instance_size
+        own = GObject.type_query(type(media).__gtype__)
+        if (not own.type_name.startswith('GtkGstMediaFile') or
+                own.instance_size != offset + GST_MEDIA_FILE_FIELDS * ctypes.sizeof(ctypes.c_void_p)):
+            return None
+        player = ctypes.c_void_p.from_address(_PLAY['address'](media.__gpointer__, None) + offset).value
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return player if player and _PLAY['is_a'](player, _PLAY['type']) else None
+
+
+def _load_play(ctypes):
+    """GstPlay, GStreamer and GIO calls through ctypes (PyGObject does not wrap the pointers involved)."""
+    gobject = ctypes.CDLL('libgobject-2.0.so.0')
+    gst = ctypes.CDLL('libgstreamer-1.0.so.0')
+    gio = ctypes.CDLL('libgio-2.0.so.0')
+    play = ctypes.CDLL('libgstplay-1.0.so.0')
+    pointer, pointers = ctypes.c_void_p, [ctypes.c_void_p]
+    play.gst_play_get_type.restype = ctypes.c_size_t
+    play.gst_play_stop.argtypes = pointers
+    play.gst_play_get_pipeline.argtypes, play.gst_play_get_pipeline.restype = pointers, pointer
+    gobject.g_type_check_instance_is_a.argtypes = [pointer, ctypes.c_size_t]
+    gobject.g_value_get_object.argtypes, gobject.g_value_get_object.restype = pointers, pointer
+    gobject.g_value_reset.argtypes = gobject.g_value_unset.argtypes = pointers
+    gobject.g_object_unref.argtypes = pointers
+    gobject.g_type_name_from_instance.argtypes, gobject.g_type_name_from_instance.restype = pointers, ctypes.c_char_p
+    gst.gst_bin_iterate_recurse.argtypes, gst.gst_bin_iterate_recurse.restype = pointers, pointer
+    gst.gst_iterator_next.argtypes = [pointer, pointer]
+    gst.gst_iterator_free.argtypes = pointers
+    gst.gst_object_ref.argtypes, gst.gst_object_ref.restype = pointers, pointer
+    gst.gst_object_unref.argtypes = pointers
+    gst.gst_object_get_parent.argtypes, gst.gst_object_get_parent.restype = pointers, pointer
+    gst.gst_element_get_state.argtypes = [pointer, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int),
+                                          ctypes.c_uint64]
+    gio.g_input_stream_close.argtypes = [pointer, pointer, pointer]
+    address = ctypes.pythonapi.PyCapsule_GetPointer
+    address.restype, address.argtypes = pointer, [ctypes.py_object, ctypes.c_char_p]
+
+    def source(player):
+        """The stream source GTK gave this player's pipeline and the stream it reads, both reffed, or None."""
+        pipeline = play.gst_play_get_pipeline(player)
+        if not pipeline:
+            return None
+        found, value = None, (ctypes.c_uint64 * 3)()      # a GValue
+        elements = gst.gst_bin_iterate_recurse(pipeline)
+        while found is None and gst.gst_iterator_next(elements, value) == 1:      # GST_ITERATOR_OK
+            element = gobject.g_value_get_object(value)
+            if element and gobject.g_type_name_from_instance(element) == b'GstGioStreamSrc':
+                stream = ctypes.c_void_p()
+                gobject.g_object_get(ctypes.c_void_p(element), b'stream', ctypes.byref(stream), None)
+                found = (player, gst.gst_object_ref(element), stream.value) if stream.value else None
+            gobject.g_value_reset(value)
+        gobject.g_value_unset(value)
+        gst.gst_iterator_free(elements)
+        gst.gst_object_unref(pipeline)
+        return found
+
+    def close(held, give_up=False):
+        """Close a stopped pipeline's old source's stream once that source is at NULL and no longer inside
+        the player's pipeline (then nothing can read it); True when done with it. Giving up lets go of it
+        unclosed."""
+        player, element, stream = held
+        state, pending = ctypes.c_int(), ctypes.c_int()
+        gst.gst_element_get_state(element, ctypes.byref(state), ctypes.byref(pending), 0)
+        root = gst.gst_object_ref(element)
+        while True:                                # the outermost bin it is still inside, reffed
+            parent = gst.gst_object_get_parent(root)
+            if not parent:
+                break
+            gst.gst_object_unref(root)
+            root = parent
+        pipeline = play.gst_play_get_pipeline(player)
+        dead = state.value == 1 and root != pipeline     # GST_STATE_NULL, and dropped from the pipeline
+        gst.gst_object_unref(root)
+        if pipeline:
+            gst.gst_object_unref(pipeline)
+        if dead:
+            gio.g_input_stream_close(stream, None, None)
+        elif not give_up:
+            return False
+        gobject.g_object_unref(stream)
+        gst.gst_object_unref(element)
+        return True
+
+    def stopped(player):
+        """Whether the player's pipeline has reached READY (or below): its decoder and frames are freed."""
+        pipeline = play.gst_play_get_pipeline(player)
+        if not pipeline:
+            return True
+        state, pending = ctypes.c_int(), ctypes.c_int()
+        gst.gst_element_get_state(pipeline, ctypes.byref(state), ctypes.byref(pending), 0)
+        gst.gst_object_unref(pipeline)
+        return state.value <= 2 and pending.value == 0       # GST_STATE_READY, GST_STATE_VOID_PENDING
+
+    _PLAY.update(stop=play.gst_play_stop, type=play.gst_play_get_type(), is_a=gobject.g_type_check_instance_is_a,
+                 address=address, source=source, close=close, stopped=stopped, sources=[], stopping=[], tries=0)
+
+
+def _after_release():
+    if not _PLAY.get('sweep'):
+        _PLAY['sweep'] = GLib.timeout_add(TRIM_MS, _sweep)
+
+
+def _sweep():
+    """After releases: close the files the old sources still hold, then trim the heap.
+
+    GTK 4.24 (or GStreamer 1.28) keeps a reference to a stopped pipeline's GTK stream source after the
+    pipeline drops it, and with it the open loop file: one file per resume. Each one is closed once it is
+    out of its pipeline at NULL; a source still in use (the loop resumed first) is let go unclosed.
+    A stopped pipeline frees its decoder into the C heap on GstPlay's thread, and glibc keeps freed memory
+    unless asked: once every stopped pipeline is at READY (or playing again), malloc_trim runs on a worker
+    (it takes the heap locks), not on the GTK thread. Under load GstPlay's thread may be late, so this
+    looks again, up to SWEEP_TRIES times."""
+    _PLAY['sweep'] = 0
+    _PLAY['sources'] = [source for source in _PLAY['sources'] if not _PLAY['close'](source)]
+    _PLAY['stopping'] = [loop for loop in _PLAY['stopping'] if loop.released and not _PLAY['stopped'](loop.player)]
+    if _PLAY['sources'] or _PLAY['stopping']:
+        _PLAY['tries'] += 1
+        if _PLAY['tries'] < SWEEP_TRIES:
+            _after_release()
+            return False
+        for source in _PLAY['sources']:          # in use after all (resumed first): keep it open, drop our refs
+            _PLAY['close'](source, give_up=True)
+        _PLAY['sources'], _PLAY['stopping'] = [], []
+    _PLAY['tries'] = 0
+    try:
+        import ctypes
+        trim = ctypes.CDLL(None).malloc_trim
+    except (OSError, AttributeError):
+        return False
+    threading.Thread(target=trim, args=(0,), name='heap-trim', daemon=True).start()
+    return False
 
 
 def shared_loop(path):

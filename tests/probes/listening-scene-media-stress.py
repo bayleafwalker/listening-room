@@ -25,12 +25,20 @@ sample is bounded by the loop limit instead).
                  user's own clips would be) in one scene, then samples again ("clips"): the loops
                  beyond next_widgets.LOOP_LIMIT must show their still and add nothing.
 
+--resume         after the cycles, waits until every loop has been released (stopped while nobody wants
+                 it), then previews each room again: the loop must move again, the picture must never be
+                 left with nothing to draw (the scene's paintable always has an image), and the GTK thread
+                 must not be held over 100 ms while it resumes.
+
+--release-ms MS  release unwanted loops after MS instead of next_widgets.RELEASE_MS: a short delay stops
+                 and restarts pipelines between nearly every action, prerolls included.
+
 --seam           after the cycles, enters a room and watches its scene past the end of the loop:
                  the timestamp must wrap back to the start (Gtk.MediaFile's own looping stops at the
                  end here), on the same MediaFile, with no GTK-thread gap over 100 ms around it.
 
     listening-scene-media-stress.py --output DIR [--cycles N] [--seed S] [--mode M] [--flat]
-                                    [--budget-mb B] [--extra-clips N] [--seam]
+                                    [--budget-mb B] [--extra-clips N] [--seam] [--resume] [--release-ms MS]
 """
 import gc
 import os
@@ -46,7 +54,11 @@ ENV = o6_env.Env(__doc__, default_output='/tmp/listening-scene-media-stress',
                  extra_args={'--cycles': dict(type=int, default=60), '--seed': dict(type=int, default=None),
                              '--mode': dict(default='random', choices=['random', 'preview']),
                              '--flat': dict(action='store_true'), '--budget-mb': dict(type=int, default=0),
-                             '--extra-clips': dict(type=int, default=0), '--seam': dict(action='store_true')})
+                             '--extra-clips': dict(type=int, default=0), '--seam': dict(action='store_true'),
+                             '--resume': dict(action='store_true'), '--release-ms': dict(type=int, default=0)})
+
+
+RELEASES = [0]
 
 
 def main():
@@ -54,6 +66,14 @@ def main():
     rng = random.Random(ENV.args.seed)
     with ENV as env:
         import next_widgets
+        if ENV.args.release_ms:
+            next_widgets.RELEASE_MS = ENV.args.release_ms
+        stop = next_widgets._Loop._release
+
+        def counted(loop):
+            RELEASES[0] += not loop.wanted and not loop.released
+            return stop(loop)
+        next_widgets._Loop._release = staticmethod(counted)
         window = env.launch(page='rooms')
         rooms = window.rooms
         cards = list(rooms.card_for.values())
@@ -94,6 +114,8 @@ def main():
         rooms.close_preview(animate=False)
         env.pump(3)
         samples['settled'] = sample(env, 'settled')
+        if ENV.args.resume:
+            samples['released'] = resume(env, window, rooms, cards)
         if ENV.args.seam:
             seam(env, window, rooms, cards)
         if ENV.args.extra_clips:
@@ -101,8 +123,8 @@ def main():
         window.close()
         env.pump(.5)
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
-    print('scene media stress: %d cycles %r, %d previews with a loop, survived, peak RSS %d MB'
-          % (ENV.args.cycles, counts, motion, peak), flush=True)
+    print('scene media stress: %d cycles %r, %d previews with a loop, %d loop releases, survived, peak RSS %d MB'
+          % (ENV.args.cycles, counts, motion, RELEASES[0], peak), flush=True)
     if ENV.args.budget_mb:
         over = {label: values['rss_mb'] - samples['base']['rss_mb'] for label, values in samples.items()
                 if label != 'clips' and values['rss_mb'] - samples['base']['rss_mb'] > ENV.args.budget_mb}
@@ -150,6 +172,44 @@ def seam(env, window, rooms, cards):
     assert gap < 100, 'the GTK thread stalled %.0f ms around the seam' % gap
     window.leave_room()
     env.pump(1)
+
+
+def resume(env, window, rooms, cards):
+    """Every loop released, then each room previewed again: motion returns, never a blank picture, no stall."""
+    import time
+    window.show_rooms()
+    loops = next_widgets._LOOPS.values()
+    deadline = time.monotonic() + 10
+    while not all(loop.released for loop in loops) and time.monotonic() < deadline:
+        env.pump(.2)
+    env.pump(2)
+    released = sample(env, 'released')
+    print('resume: %d of %d loops released' % (sum(loop.released for loop in loops), len(loops)), flush=True)
+    assert loops and all(loop.released for loop in loops), 'loops still hold their pipelines off screen'
+    worst_gap, blanks, starts = 0, 0, []
+    for card in cards:
+        rooms.open_preview(card)
+        scene = rooms.preview_widgets['scene']
+        start = last = time.monotonic()
+        moving = None
+        while time.monotonic() - start < 3:
+            env.context.iteration(False)
+            now = time.monotonic()
+            worst_gap, last = max(worst_gap, now - last), now
+            paintable = scene.picture.paintable
+            blanks += paintable is not None and not paintable.get_intrinsic_width()
+            if moving is None and scene.media is not None and scene.playing_motion and scene.media.get_timestamp() > 0:
+                moving = now - start
+            time.sleep(.002)
+        starts.append(moving)
+        rooms.close_preview(animate=False)
+        env.pump(.3)
+    print('resume: motion after %s s, %d blank picture iterations, worst GTK-thread gap %.0f ms'
+          % ([None if m is None else round(m, 2) for m in starts], blanks, worst_gap * 1000), flush=True)
+    assert all(m is not None for m in starts), 'a released loop did not move again'
+    assert blanks == 0, 'the scene had nothing to draw while its loop resumed'
+    assert worst_gap < .1, 'the GTK thread stalled %.0f ms while a loop resumed' % (worst_gap * 1000)
+    return released
 
 
 def extra_clips(env, count):

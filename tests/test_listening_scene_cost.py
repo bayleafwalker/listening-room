@@ -263,6 +263,132 @@ class LoopsRestartAtTheEnd(unittest.TestCase):
         self.assertEqual(self.created[0].handlers, {})
 
 
+class PausedLoopsRelease(unittest.TestCase):
+    """A loop nobody wants for RELEASE_MS is stopped through its GstPlay (threads and decoder go) and the
+    heap is trimmed; the MediaFile is never cleared or replaced, and wanting it again plays it again."""
+    def setUp(self):
+        self.created, self.stopped, self.trims = [], [], []
+
+        def new(path):
+            self.created.append(FakeMedia(path))
+            return self.created[-1]
+
+        for item in [mock.patch.object(next_widgets.Gtk.MediaFile, 'new_for_filename', side_effect=new),
+                     mock.patch.object(next_widgets, 'gst_ready', return_value=True),
+                     mock.patch.object(next_widgets, 'texture_for', side_effect=lambda path: 'still:%s' % path),
+                     mock.patch.object(next_widgets, 'gst_player', side_effect=lambda media: 'player:%s' % media.path),
+                     mock.patch.object(next_widgets, 'RELEASE_MS', 30),
+                     mock.patch.object(next_widgets, 'TRIM_MS', 10),
+                     mock.patch.object(next_widgets, '_sweep', side_effect=self.trim),
+                     mock.patch.dict(next_widgets._PLAY, {'stop': self.stopped.append, 'sources': [], 'stopping': [],
+                                                          'source': lambda player: ('source', player)}, clear=True),
+                     mock.patch.dict(next_widgets._LOOPS, clear=True)]:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def trim(self):
+        self.trims.append(time.monotonic())
+        next_widgets._PLAY['sweep'] = 0
+        return False
+
+    def test_an_unwanted_loop_is_stopped_after_the_delay_and_plays_again_when_wanted(self):
+        scene = LoopPoolLimit.scene(self)
+        scene.show_room({'still': 'drive.jpg', 'loop': 'drive.mp4'}, True)
+        loop, media = next_widgets._LOOPS['drive.mp4'], self.created[0]
+        scene.close()
+        self.assertEqual(self.stopped, [], 'not at once: leaving a preview to enter its room keeps the loop')
+        self.assertTrue(pump(lambda: self.stopped and self.trims, 2))
+        self.assertEqual(self.stopped, ['player:drive.mp4'])
+        self.assertEqual(next_widgets._PLAY['sources'], [('source', 'player:drive.mp4')], 'its file is closed after')
+        self.assertTrue(loop.released)
+        scene = LoopPoolLimit.scene(self)               # the next preview of the room
+        scene.show_room({'still': 'drive.jpg', 'loop': 'drive.mp4'}, True)
+        self.assertTrue(scene.playing_motion)
+        self.assertFalse(loop.released)
+        self.assertEqual(len(self.created), 1, 'the same MediaFile plays again')
+        self.assertNotIn('clear', media.calls)
+
+    def test_wanted_again_within_the_delay_it_is_never_stopped(self):
+        preview = LoopPoolLimit.scene(self)
+        preview.show_room({'still': 'drive.jpg', 'loop': 'drive.mp4'}, True)
+        preview.close()
+        now = LoopPoolLimit.scene(self)               # Enter: the room's scene takes the loop over
+        now.show_room({'still': 'drive.jpg', 'loop': 'drive.mp4'}, True)
+        pump(lambda: False, .15)
+        self.assertEqual(self.stopped, [])
+        self.assertFalse(next_widgets._LOOPS['drive.mp4'].releasing)
+
+    def test_a_released_loop_is_stopped_once(self):
+        scene = LoopPoolLimit.scene(self)
+        scene.show_room({'still': 'drive.jpg', 'loop': 'drive.mp4'}, True)
+        scene._visibility(mapped=False)
+        self.assertTrue(pump(lambda: self.stopped, 2))
+        scene._visibility(minimized=True)
+        scene.close()
+        pump(lambda: False, .15)
+        self.assertEqual(self.stopped, ['player:drive.mp4'])
+
+    def test_without_its_player_a_loop_only_pauses(self):
+        next_widgets.gst_player.side_effect = lambda media: None
+        scene = LoopPoolLimit.scene(self)
+        scene.show_room({'still': 'drive.jpg', 'loop': 'drive.mp4'}, True)
+        scene.close()
+        self.assertFalse(next_widgets._LOOPS['drive.mp4'].releasing)
+        self.assertEqual(self.created[0].calls[-1], 'pause')
+
+
+class OldSourcesAreClosed(unittest.TestCase):
+    """A stopped pipeline's old source keeps its file open (GTK 4.24 / GStreamer 1.28 hold it): the sweep
+    after a release closes each one once it is out of its pipeline, retries while it is not, and lets go
+    of it unclosed after a bounded number of tries; then it trims the heap."""
+    def setUp(self):
+        self.closed, self.dead, self.trims = [], set(), []
+
+        def close(source, give_up=False):
+            if source in self.dead or give_up:
+                self.closed.append((source, source in self.dead))
+                return True
+            return False
+
+        self.ready = set()
+        for item in [mock.patch.dict(next_widgets._PLAY, {'close': close, 'sources': [], 'tries': 0, 'stopping': [],
+                                                          'stopped': lambda player: player in self.ready}, clear=True),
+                     mock.patch.object(next_widgets, 'TRIM_MS', 5),
+                     mock.patch.object(next_widgets.threading, 'Thread',
+                                       side_effect=lambda **kw: mock.Mock(start=lambda: self.trims.append(kw)))]:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def test_dead_sources_close_at_once_and_live_ones_are_retried_then_dropped(self):
+        self.dead.add('old')
+        next_widgets._PLAY['sources'] = ['old', 'busy']
+        next_widgets._sweep()
+        self.assertEqual(self.closed, [('old', True)])
+        self.assertEqual(next_widgets._PLAY['sources'], ['busy'])
+        self.assertEqual(self.trims, [], 'trimmed once the sweep is done')
+        self.assertTrue(pump(lambda: self.trims, 3))
+        self.assertEqual(self.closed, [('old', True), ('busy', False)], 'let go of, never closed')
+        self.assertEqual(next_widgets._PLAY['sources'], [])
+
+    def test_the_heap_is_trimmed_once_every_stopped_pipeline_is_at_ready(self):
+        drive, lake, park = (mock.Mock(player=name, released=True) for name in ('drive', 'lake', 'park'))
+        park.released = False                      # wanted again before it stopped
+        next_widgets._PLAY['stopping'] = [drive, lake, park]
+        self.ready.add('drive')
+        next_widgets._sweep()
+        self.assertEqual((next_widgets._PLAY['stopping'], self.trims), ([lake], []))
+        self.ready.add('lake')
+        self.assertTrue(pump(lambda: self.trims, 1))
+        self.assertEqual(next_widgets._PLAY['stopping'], [])
+
+
+class GStreamerPlayer(unittest.TestCase):
+    """The GstPlay is only ever read from a GStreamer MediaFile of the known layout."""
+    def test_anything_else_has_no_player(self):
+        self.assertIsNone(next_widgets.gst_player(FakeMedia('drive.mp4')))
+        self.assertIsNone(next_widgets.gst_player(next_widgets.Gtk.StringObject.new('drive.mp4')))   # a GObject, not a MediaFile
+
+
 class GStreamerLoadsOffTheGtkThread(unittest.TestCase):
     """A fresh registry scan takes seconds: the GTK thread never waits for it. A scene asked for motion
     meanwhile shows its still, then its loop once GStreamer is known."""
