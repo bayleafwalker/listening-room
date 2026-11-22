@@ -25,6 +25,7 @@ P6-R1 primary speech suppresses slots after the positive control proved a slot c
 # P7 [ORIGINAL, superseded by P7-R1] still prints as a SUPERSEDED line, not counted: no segments passed it.
 P7-R1 no captured provenance suppresses factual segments after the positive control
 # P8 [ORIGINAL, superseded by P8-R1] still prints as a SUPERSEDED line, not counted: zero/one slots passed it.
-P8-R1 identical text in two eligible slots plays exactly once within the history window
+# P8-R1 [SUPERSEDED by P8-R2] required endpoint requests although repeat suppression may happen before speech.
+P8-R2 identical text in two eligible slots plays exactly once within the history window
 P1d-R1 an over-budget fake segment is dropped or publicly trimmed to the budget maximum
 P9-R1 prerecorded clips use the slot scheduler, preserve source/placement, and honour expiry

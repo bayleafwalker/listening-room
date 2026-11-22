@@ -23,16 +23,22 @@ Readings for coordinator ruling:
 * P2b/P5b need the existing inspect music-layer identity and monotonic playback position as public observations.
   The probe accepts ``item``/``id``/``name`` and ``position``/``elapsed``/``clock`` spellings, but needs one of each.
 * Narrow clip reading for coordinator ruling: a fixture registers clips as ``preferences.presenter_clips`` entries
-  (``source``, ``allowed_placement``, ``expires_at``).  The corresponding public segment record exposes ``source``
-  and ``placement``.  If clips instead have a labelled public editor, this setup should migrate to it.
+  (``source``, ``audio``, ``allowed_placement``, ``expires_at``). ``audio`` is a short local WAV written under the
+  isolated test directory. The corresponding public segment record exposes ``source`` and ``placement``. If clips
+  instead have a labelled public editor, this setup should migrate to it.
 * Maximum length reading: a result over the budget maximum may be dropped with a reason or recorded as played only
-  when its public duration is no greater than that maximum.  The fake advertises its overlong duration in its speech
-  response, so this is not a wall-clock guess.
+  when its public duration is no greater than that maximum. The fake supplies a valid WAV longer than the fixture
+  budget, and this check reads the record's public ``duration``, never wall-clock time.
+* Slot timing reading for coordinator ruling: the collection fixture has o6_env's two-track queue. P8 obtains its
+  two eligible slots by starting the same station first with a good voice response and then with a slow voice
+  response. This reads the first slot as occurring when a station is tuned; if that is not the scheduler contract,
+  the coordinator must rule a different public way to force the minimum ``every_tracks`` budget in a fixture.
 
 Run: scripts/listening-dev.sh acceptance OUTDIR o12pr
 """
 import copy
 import concurrent.futures
+import io
 import json
 import os
 from pathlib import Path
@@ -41,6 +47,7 @@ import sys
 import threading
 import time
 import traceback
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import o6_env
@@ -186,6 +193,9 @@ class FakeEndpoints:
     def __init__(self):
         self.mode = 'good'
         self.requests = []
+        self.good_wav = wav_bytes(1)
+        # Deliberately exceed any normal presenter maximum without using a synthetic metadata format.
+        self.overlong_wav = wav_bytes(600)
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -213,9 +223,8 @@ class FakeEndpoints:
                     payload = ('{not json' if outer.mode == 'malformed' else json.dumps(
                         {'choices': [{'message': {'content': 'Nocturne in C by Someone.'}}]})).encode()
                 else:
-                    self.send_header('Content-Type', 'audio/mpeg')
-                    # A deterministic duration declaration lets the public segment record be checked without audio decoding.
-                    payload = (b'ID3DURATION=9999;' if outer.mode == 'overlong-voice' else b'ID3DURATION=1;') + b'\0' * 64
+                    self.send_header('Content-Type', 'audio/wav')
+                    payload = outer.overlong_wav if outer.mode == 'overlong-voice' else outer.good_wav
                 self.send_header('Content-Length', str(len(payload)))
                 self.end_headers(); self.wfile.write(payload)
 
@@ -238,6 +247,23 @@ def configure(endpoints, voice=True):
     if voice:
         values['presenter_voice'] = {'endpoint': endpoints.endpoint}
     path.write_text(json.dumps(values))
+    return path
+
+
+def wav_bytes(seconds):
+    """A valid PCM WAV fixture; its duration is conveyed by the standard WAV header."""
+    output = io.BytesIO()
+    with wave.open(output, 'wb') as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(8000)
+        audio.writeframes(b'\0\0' * int(8000 * seconds))
+    return output.getvalue()
+
+
+def write_clip_wav():
+    path = Path(os.environ['XDG_RUNTIME_DIR']) / 'o12pr-clip.wav'
+    path.write_bytes(wav_bytes(1))
     return path
 
 
@@ -357,7 +383,8 @@ def run():
                 ('P5b a segment not ready at its slot is dropped rather than creating a gap', 'P5b-R1'),
                 ('P6 a primary speech station suppresses presenter segments while it plays', 'P6-R1'),
                 ('P7 an item with no metadata gets no factual presenter segment', 'P7-R1'),
-                ('P8 a segment does not repeat within the station history window', 'P8-R1')):
+                ('P8 a segment does not repeat within the station history window', 'P8-R1'),
+                ('P8-R1 identical text in two eligible slots plays exactly once within the history window', 'P8-R2')):
                 superseded(original, revision, False, 'Presenter is absent from the station detail on this branch')
             for name in [
                 'P1 station detail exposes a Presenter switch and a visible adjustable budget',
@@ -375,7 +402,7 @@ def run():
                 'P5b-R1 a slow slot drops, with music continuously playing and no played segment for that slot',
                 'P6-R1 primary speech suppresses slots after the positive control proved a slot can play',
                 'P7-R1 no captured provenance suppresses factual segments after the positive control',
-                'P8-R1 identical text in two eligible slots plays exactly once within the history window',
+                'P8-R2 identical text in two eligible slots plays exactly once within the history window',
                 'P1d-R1 an over-budget fake segment is dropped or publicly trimmed to the budget maximum',
                 'P9-R1 prerecorded clips use the slot scheduler, preserve source/placement, and honour expiry',
             ]:
@@ -470,6 +497,20 @@ def run():
               and any(s.get('outcome') == 'dropped' and s.get('reason') for s in slow)
               and not any(s.get('outcome') == 'played' for s in slow[-1:]), slow)
 
+        # The preceding good slot and this later slow slot are two eligible slots for the same station. A correct
+        # implementation may reject the repeated text before it requests speech, so request count is not an oracle.
+        repeated = [s for s in slow if s.get('text') == 'Nocturne in C by Someone.']
+        played = [s for s in repeated if s.get('outcome') == 'played']
+        first_played = next((index for index, segment in enumerate(repeated) if segment.get('outcome') == 'played'), None)
+        later_drop = (first_played is not None and any(segment.get('outcome') == 'dropped' and segment.get('reason')
+                      for segment in repeated[first_played + 1:]))
+        superseded('P8 a segment does not repeat within the station history window', 'P8-R1',
+                    len({s.get('text') for s in played}) == len(played), repeated)
+        superseded('P8-R1 identical text in two eligible slots plays exactly once within the history window', 'P8-R2',
+                    len(played) == 1 and later_drop, repeated)
+        check('P8-R2 identical text in two eligible slots plays exactly once within the history window',
+              len(repeated) >= 2 and len(played) == 1 and later_drop, repeated)
+
         fake.mode = 'good'; fake.requests.clear(); speech = save('Primary speech fixture', speech=True); tune(speech); env.pump(1.)
         speech_p = snapshot().get('presenter') or {}
         superseded('P6 a primary speech station suppresses presenter segments while it plays', 'P6-R1',
@@ -486,13 +527,6 @@ def run():
         check('P7-R1 no captured provenance suppresses factual segments after the positive control',
               bool(positive) and not any(s.get('outcome') == 'played' for s in bare_segments), bare_segments)
 
-        fake.mode = 'good'; fake.requests.clear(); tune(station(item['name'])); wait(lambda: len(fake.requests) >= 4, 6.)
-        repeats = segment_list(); played = [s for s in repeats if s.get('outcome') == 'played' and s.get('text') == 'Nocturne in C by Someone.']
-        superseded('P8 a segment does not repeat within the station history window', 'P8-R1', len({s.get('text') for s in played}) == len(played), repeats)
-        check('P8-R1 identical text in two eligible slots plays exactly once within the history window',
-              len(fake.requests) >= 4 and len(played) == 1 and len(repeats) >= 2
-              and any(s.get('outcome') == 'dropped' and s.get('reason') for s in repeats), repeats)
-
         fake.mode = 'overlong-voice'; tune(station(item['name'])); env.pump(1.)
         overlong = segment_list(); budget = presenter_data().get('budget') or {}
         maximum = next((v for key, v in budget.items() if isinstance(v, (int, float)) and 'max' in key.casefold()), None) if isinstance(budget, dict) else None
@@ -501,8 +535,9 @@ def run():
               or any(s.get('outcome') == 'played' and isinstance(s.get('duration'), (int, float)) and s['duration'] <= maximum for s in overlong)), (budget, overlong))
 
         now = time.time()
-        clips = [{'source': 'fixture-clip', 'allowed_placement': 'between_tracks', 'expires_at': now + 60},
-                 {'source': 'expired-fixture-clip', 'allowed_placement': 'between_tracks', 'expires_at': now - 1}]
+        clip_audio = str(write_clip_wav())
+        clips = [{'source': 'fixture-clip', 'audio': clip_audio, 'allowed_placement': 'between_tracks', 'expires_at': now + 60},
+                 {'source': 'expired-fixture-clip', 'audio': clip_audio, 'allowed_placement': 'between_tracks', 'expires_at': now - 1}]
         clip_station = save('Clip fixture', metadata=True, clips=clips); tune(clip_station); env.pump(1.)
         clip_segments = segment_list()
         check('P9-R1 prerecorded clips use the slot scheduler, preserve source/placement, and honour expiry',
