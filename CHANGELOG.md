@@ -5,6 +5,11 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- World radio search finds the right station even when the directory's first 50 results are
+  noise: it reads a larger bounded page (and the exact tag for a one-word search), then ranks
+  whole-word and tag matches first. A search makes at most two requests.
+
 ## [2.5.0] - 2026-11-22
 
 ### Added
