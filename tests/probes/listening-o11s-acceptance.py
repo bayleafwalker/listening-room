@@ -42,7 +42,11 @@ env = o6_env.Env(__doc__, '/tmp/listening-o11s-acceptance', extra_args={'--repo'
 checks = []
 ONLY = set(filter(None, os.environ.get('O11S_SECTIONS', '').split(',')))
 
-FINGERPRINT_LIMIT = 14          # SELF-CHOSEN (see the module docstring)
+# SELF-CHOSEN, then calibrated (coordinator ruling, phase 1): across the catalogue art a poster and its .card.jpg differ
+# by at most 0.08, a room's poster and its still by at most 0.33, and two different rooms by at least 13.24
+# (moonlit-lake vs room-midnight-library, both dark). [ORIGINAL, superseded by this calibration] 14, which sat above
+# that closest distinct pair, so two dark rooms could have counted as the same art.
+FINGERPRINT_LIMIT = 3
 NOT_WORSE_TOLERANCE = 0.01      # SELF-CHOSEN: one percentage point of the window area
 # Rooms content share of the window area on main 70db15e (2.5.0), first run, measured by this probe's
 # content_share(); the evidence directory keeps the run and the screenshots. Width -> share (height 800).
@@ -306,13 +310,22 @@ with env:
                 pump(.4)
                 focus = window.get_focus()
                 landed = on_first_target(window, focus)
-                # Literal criterion: after the first press focus is on the first card or the hero's primary action.
-                # (A launch focus already on the first card that the first press then moves away from fails; the
-                # detail says so, for a ruling.)
-                check('A2 at %dx%d the first %s press lands on the first room card or the hero\'s primary action, '
-                      'not in the header' % (width, height, name), landed and not inside(focus, window.header),
-                      ('launch: ' + describe_focus(window, launched), 'after: ' + describe_focus(window, focus),
-                       'launch already on target' if already else ''))
+                detail = ('launch: ' + describe_focus(window, launched), 'after: ' + describe_focus(window, focus),
+                          'launch already on target' if already else '')
+                # [ORIGINAL, superseded by A2-R1] Literal reading: after the first press focus is on the first card or
+                # the hero's primary action. Its result depends on the design (a launch focus on the first card that
+                # the press moves away from fails it), so it is printed, uncounted, instead of being a check.
+                original = landed and not inside(focus, window.header)
+                print('SUPERSEDED %s A2 [ORIGINAL, superseded by A2-R1] at %dx%d the first %s press lands on the first '
+                      'room card or the hero\'s primary action, not in the header  %r'
+                      % ('pass' if original else 'fail', width, height, name, detail), flush=True)
+                # A2-R1 (coordinator ruling, phase 1, 2026-11-22): ready for the keyboard means the first card (or a
+                # hero's primary action) has focus at launch, OR the first press lands there. Header focus, at launch
+                # or after the press, always fails.
+                header = (launched is not None and inside(launched, window.header)) or inside(focus, window.header)
+                check('A2-R1 at %dx%d the first card or the hero\'s primary action has focus at launch or after the first '
+                      '%s press, and the header never has it' % (width, height, name),
+                      (already or landed) and not header, detail)
                 if name == 'Tab':
                     check('A3 at %dx%d moving focus onto a card is inert: no command, no preview, nothing starts'
                           % (width, height), not commands(mark) and window.rooms.opened is None and not env.controller.active,

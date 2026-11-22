@@ -4,17 +4,20 @@
 # Rooms covers 27% of a 1440x900 window on first run, Change… is a text list without the unavailable scene, Now with
 # no room keeps the previous room's loop, and no CHANGELOG entry. G1-G3 (N13 Listen chips and station card) and B4
 # already pass on main: O10 fixed the chip and card ellipsizing, and B4's baselines are main's own measurements.
+# Revision A2-R1 (coordinator ruling, phase 1): the six A2 checks are superseded by A2-R1 (focus on the first card or a
+# hero's primary action at launch OR after the first press; the header never). The A2 ORIGINALS still run and print as
+# uncounted SUPERSEDED lines, because their result depends on the design rather than on the outcome.
 A0 precondition: no room and no history (a first run)
 A1 at 1200x800 the first run opens on Rooms with nothing focused in the header
-A2 at 1200x800 the first Tab press lands on the first room card or the hero's primary action, not in the header
+A2-R1 at 1200x800 the first card or the hero's primary action has focus at launch or after the first Tab press, and the header never has it
 A3 at 1200x800 moving focus onto a card is inert: no command, no preview, nothing starts
-A2 at 1200x800 the first Down press lands on the first room card or the hero's primary action, not in the header
-A2 at 1200x800 the first Right press lands on the first room card or the hero's primary action, not in the header
+A2-R1 at 1200x800 the first card or the hero's primary action has focus at launch or after the first Down press, and the header never has it
+A2-R1 at 1200x800 the first card or the hero's primary action has focus at launch or after the first Right press, and the header never has it
 A1 at 1440x900 the first run opens on Rooms with nothing focused in the header
-A2 at 1440x900 the first Tab press lands on the first room card or the hero's primary action, not in the header
+A2-R1 at 1440x900 the first card or the hero's primary action has focus at launch or after the first Tab press, and the header never has it
 A3 at 1440x900 moving focus onto a card is inert: no command, no preview, nothing starts
-A2 at 1440x900 the first Down press lands on the first room card or the hero's primary action, not in the header
-A2 at 1440x900 the first Right press lands on the first room card or the hero's primary action, not in the header
+A2-R1 at 1440x900 the first card or the hero's primary action has focus at launch or after the first Down press, and the header never has it
+A2-R1 at 1440x900 the first card or the hero's primary action has focus at launch or after the first Right press, and the header never has it
 B1 at 1440x900 on first run the Rooms content fills at least 45% of the window (share @@)
 B2 at 1440x900 no card is cut off at the sides and no room name is ellipsized
 B3 at 360 px the cards show whole across, with their names not ellipsized
