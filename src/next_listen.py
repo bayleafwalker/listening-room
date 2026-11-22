@@ -395,6 +395,17 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
         self.end_row = end_row
         right.append(moods)
 
+        presenter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        presenter_box.add_css_class('mood-card')
+        presenter_box.append(label('Presenter', ['listen-title']))
+        self.presenter_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        name_it(self.presenter_switch, 'Presenter', 'Add brief links between tracks')
+        self.presenter_switch.connect('notify::active', lambda *_: self.presenter_changed())
+        presenter_box.append(self.presenter_switch)
+        self.presenter_budget = label('', ['section-note'])
+        presenter_box.append(self.presenter_budget)
+        right.append(presenter_box)
+
         fallbacks = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         fallbacks.add_css_class('mood-card')
         fallbacks.append(label('If it can’t play, try', ['listen-title']))
@@ -1763,6 +1774,11 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
                 self.hold_switch.set_tooltip_text('Hold this mood')
                 if self.hold_switch.get_active() != held:
                     self.hold_switch.set_active(held)
+            presenter_value = station.get('presenter') or {}
+            self.presenter_switch.set_active(bool(presenter_value.get('enabled')))
+            budget = presenter_value.get('budget') or {}
+            self.presenter_budget.set_text('At most every %s tracks · up to %s seconds' %
+                                           (budget.get('every_tracks', 4), budget.get('max_seconds', 18)))
         finally:
             self.syncing = False
         self.render_learned(station)
@@ -2036,6 +2052,14 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
         held = self.hold_switch.get_active()
         self.window.command('station.hold', {'hold': held},
                             done=lambda _result: self.window.toast(next_station.toast_text('hold', held)))
+
+    def presenter_changed(self):
+        if getattr(self, 'syncing', False) or not self.station:
+            return
+        present = dict(self.station.get('presenter') or {})
+        present['enabled'] = self.presenter_switch.get_active()
+        self.save_station(dict(self.station, presenter=present),
+                          toast='Presenter on' if present['enabled'] else 'Music only')
 
     def save_station(self, station, toast=None, undo=None):
         """Show the change now and save it. Saves go through one worker, so the last choice lands last."""

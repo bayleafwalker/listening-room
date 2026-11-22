@@ -45,6 +45,8 @@ SERVICES = {
                   'capabilities': ['server_health', 'sonic_mix', 'generated_jellyfin_playlists']},
     'listenbrainz': {'name': 'ListenBrainz', 'endpoint': 'https://api.listenbrainz.org',
                     'env': 'LISTENBRAINZ_TOKEN', 'capabilities': ['history', 'recommendations', 'submit_listen']},
+    'presenter_llm': {'name': 'Presenter writing', 'endpoint': '', 'env': 'PRESENTER_LLM_TOKEN', 'capabilities': ['presenter']},
+    'presenter_voice': {'name': 'Presenter voice', 'endpoint': '', 'env': 'PRESENTER_VOICE_TOKEN', 'capabilities': ['presenter']},
 }
 _lock = threading.RLock()
 _lighting_lock = threading.RLock()

@@ -67,9 +67,9 @@ def assert_vocabulary(case, value):
 
 
 class ConnectionRows(unittest.TestCase):
-    def test_the_six_connections_in_the_agreed_order(self):
+    def test_connections_include_the_presenter_endpoints_in_the_agreed_order(self):
         self.assertEqual(list(rows()), ['jellyfin', 'twitch', 'music_assistant', 'audiomuse',
-                                        'listenbrainz', 'home_assistant'])
+                                        'listenbrainz', 'home_assistant', 'presenter_llm', 'presenter_voice'])
 
     def test_only_a_successful_check_is_connected(self):
         table = rows()

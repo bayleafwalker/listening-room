@@ -31,25 +31,27 @@ import provider_auth
 import session_client
 import twitch_channels
 
-ORDER = ('jellyfin', 'twitch', 'music_assistant', 'audiomuse', 'listenbrainz', 'home_assistant')
+ORDER = ('jellyfin', 'twitch', 'music_assistant', 'audiomuse', 'listenbrainz', 'home_assistant', 'presenter_llm', 'presenter_voice')
 NAMES = {'jellyfin': 'Jellyfin', 'twitch': 'Twitch', 'music_assistant': 'Music Assistant',
-         'audiomuse': 'AudioMuse', 'listenbrainz': 'ListenBrainz', 'home_assistant': 'Home Assistant'}
+         'audiomuse': 'AudioMuse', 'listenbrainz': 'ListenBrainz', 'home_assistant': 'Home Assistant',
+         'presenter_llm': 'Presenter writing', 'presenter_voice': 'Presenter voice'}
 INITIALS = {'jellyfin': 'JF', 'twitch': 'TW', 'music_assistant': 'MA', 'audiomuse': 'AM',
-            'listenbrainz': 'LB', 'home_assistant': 'HA'}
+            'listenbrainz': 'LB', 'home_assistant': 'HA', 'presenter_llm': 'PW', 'presenter_voice': 'PV'}
 # What each connection can actually do, in the listener's words.
 CHIPS = {'jellyfin': ('Browse', 'Plays here', 'Open elsewhere'),
          'twitch': ('Browse', 'Plays here', 'Open elsewhere'),
          'music_assistant': ('Browse', 'Plays on speakers'),
          'audiomuse': ('Station mixes',),
          'listenbrainz': ('History',),
-         'home_assistant': ('Room lighting',)}
+         'home_assistant': ('Room lighting',), 'presenter_llm': ('Presenter',), 'presenter_voice': ('Presenter',)}
 # A successful check is the only way to say "connected"; these are its words.
 WORKING = {'jellyfin': 'Signed in · library ready',
            'twitch': 'Signed in · renews on its own',
            'music_assistant': 'Speakers answer · playback not tested',
            'audiomuse': 'Web service answers · analysis not confirmed',
            'listenbrainz': 'Account access verified',
-           'home_assistant': 'Scenes available · lighting not tested'}
+           'home_assistant': 'Scenes available · lighting not tested',
+           'presenter_llm': 'Presenter writing ready', 'presenter_voice': 'Presenter voice ready'}
 NOT_SET = 'Not set up'
 ADDED = 'Added · not checked yet'
 SAVED_SIGN_IN = 'Saved sign-in · not checked yet'
@@ -60,6 +62,8 @@ SERVICE_NOTES = {
     'audiomuse': 'Optional sonic programming from a library track. The check reads the web service only; worker and analysis readiness are separate.',
     'listenbrainz': 'Read your listening history and recommendations on request. Automatic scrobbling stays off.',
     'home_assistant': 'Link a lighting scene to a room. A scene without reported entities cannot be linked.',
+    'presenter_llm': 'Optional local OpenAI-compatible writing service. It prepares a brief link before a slot; music continues if unavailable.',
+    'presenter_voice': 'Optional local OpenAI-compatible speech service. It is used only for prepared presenter links.',
 }
 RECORDINGS_NOTE = ('Note: reports and estimates are observations, not a review of the audio. Only a human review of the '
                    'exact recording is evidence, and it stays bound to the audio version it was made on.')

@@ -25,6 +25,7 @@ import mpv_ipc
 import room_catalogue
 import station_engine
 import metadata_store
+import presenter
 
 
 class _CombinedCancel:
@@ -600,6 +601,7 @@ class Controller:
         self.atmosphere_eof_attempted = None
         self.atmosphere_pending = False
         self.program = None
+        self.presenter = presenter.Presenter(clock=clock)
         self.strict_pending = None
         self.verified_audio = None
         self.verified_record = None
@@ -979,6 +981,7 @@ class Controller:
 
     def snapshot(self):
         with self.lock:
+            active_station = (self.program.station if self.program else ((self.active or {}).get('music', {}).get('station') or {}))
             return _copy({'active': self.active, 'last_session': self.last_session,
                           'variants': self._cached_file('room-variants.json', self.variants), 'layers': self.live, 'settings': self.settings,
                           'recent': self.recent, 'resume_offer': self.resume_offer, 'entry': self.entry, 'video': self.video,
@@ -992,6 +995,7 @@ class Controller:
                           'station_recent': self.station_history,
                           'station_learned': {key: bool(value.get('liked_artists') or value.get('disliked'))
                                               for key, value in self.station_memory.items() if isinstance(value, dict)},
+                          'presenter': self.presenter.snapshot(active_station),
                           'config_generation': _config_generation(),
                           'station': ({'definition': self.program.station, 'upcoming': ([self.program.override] if self.program.override else []) + self.program.queue,
                                        'recent': self.program.recent,
@@ -2409,6 +2413,32 @@ class Controller:
                     self.last_session = _copy(self.active)
                     self._persist()
             return {'message': 'Station saved', 'station': station}
+
+    @action('presenter.configure', args={'enabled': 'bool', 'budget': 'object', 'muted': 'bool', 'level': 'number'})
+    def _act_presenter_configure(self, args):
+        with self.lock:
+            target = args.get('id') or ((self.program.station if self.program else ((self.active or {}).get('music', {}).get('station') or {})).get('id'))
+            current = next((item for item in self.stations() if item['id'] == target), None)
+            if not current:
+                raise SessionError('Choose a saved station first')
+            if 'muted' in args:
+                self.presenter.muted = args['muted']
+            if 'level' in args:
+                self.presenter.level = level(args['level'])
+            setting = presenter.preferences(dict(current.get('presenter') or {}, **{key: args[key] for key in ('enabled', 'budget') if key in args}))
+            saved = dict(current, presenter=setting)
+            hub.save_json(self.directory / 'stations.json', [s for s in self.stations() if s['id'] != target] + [saved])
+            if self.program and self.program.station['id'] == target:
+                self.program.station = saved
+            return {'message': 'Music only' if not setting['enabled'] else 'Presenter updated', 'presenter': self.presenter.snapshot(saved)}
+
+    @action('presenter.feedback')
+    def _act_presenter_feedback(self, args):
+        target = args.get('id') or ((self.program.station if self.program else ((self.active or {}).get('music', {}).get('station') or {})).get('id'))
+        station = next((item for item in self.stations() if item['id'] == target), {})
+        current = presenter.preferences(station.get('presenter'))
+        return self._act_presenter_configure({'id': target, 'enabled': False if args.get('action') == 'music_only' else current['enabled'],
+                                               'budget': dict(current['budget'], every_tracks=min(20, current['budget']['every_tracks'] + 2))})
 
     @action('station.play_next')
     def _act_station_play_next(self, args):

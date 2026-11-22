@@ -68,6 +68,9 @@ def normalize(value):
             if not isinstance(val, str) or val not in PREFERENCE_VALUES[key]:
                 raise ValueError('Invalid station preference')
             clean_prefs[key] = val
+    # Presenter preferences stay with the station's intent, never with prepared audio.
+    import presenter
+    presenter_settings = presenter.preferences(value.get('presenter'))
     policy = value.get('end_policy', 'stop')
     if policy not in ('stop', 'repeat'):
         raise ValueError('Choose stop or repeat for the station end')
@@ -82,7 +85,8 @@ def normalize(value):
         raise ValueError('Choose a supported station generator')
     return {'id': identity, 'name': name, 'sources': [_source(s) for s in sources],
             'fallbacks': [_source(s) for s in fallbacks], 'preferences': clean_prefs,
-            'end_policy': policy, 'arc': arc, 'generation': {'kind': generation['kind']}}
+            'end_policy': policy, 'arc': arc, 'generation': {'kind': generation['kind']},
+            'presenter': presenter_settings}
 
 
 def identity(item):

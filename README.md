@@ -234,3 +234,12 @@ The code is GPL-3.0-or-later ([LICENSE](LICENSE)). The room art and scene
 inputs (`src/artwork/`, `src/scene_tuning/`) are CC0-1.0, AI-generated. The
 optional MTG model weights fetched at build time are CC BY-NC-SA 4.0 and
 separately attributed in [`src/models/README.md`](src/models/README.md).
+# Presenter (optional)
+
+Saved stations can enable **Presenter** in their detail view. Its visible budget limits
+brief links between tracks; “Less talking” reduces that budget and “Music only” switches
+it off without changing stations. Configure loopback OpenAI-compatible endpoints in
+Preferences → Connections: `presenter_llm` serves `/v1/chat/completions` and
+`presenter_voice` serves `/v1/audio/speech`. Entries in `connections.json` accept an
+`endpoint` and optional private `token_file`. If either endpoint is unavailable, the
+station continues with music only.

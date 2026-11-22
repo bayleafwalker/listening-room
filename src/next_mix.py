@@ -11,6 +11,28 @@ ICONS = {'music': 'audio-x-generic-symbolic', 'atmosphere': 'weather-showers-sym
          'picture': 'image-x-generic-symbolic'}
 
 
+class PresenterRow(Gtk.Box):
+    """Speech has controls of its own; it never borrows music transport."""
+    def __init__(self, send):
+        super().__init__(spacing=12, margin_top=12)
+        self.send, self.updating = send, False
+        self.append(label('Presenter', ['layer-title']))
+        self.status = label('', ['dim-label']); self.status.set_hexpand(True); self.append(self.status)
+        self.less = Gtk.Button(label='Less talking')
+        self.less.connect('clicked', lambda *_: send('presenter.feedback', {'action': 'less'})); self.append(self.less)
+        self.music_only = Gtk.Button(label='Music only')
+        self.music_only.connect('clicked', lambda *_: send('presenter.feedback', {'action': 'music_only'})); self.append(self.music_only)
+        self.mute = Gtk.ToggleButton(label='Mute')
+        self.mute.connect('toggled', lambda b: None if self.updating else send('presenter.configure', {'muted': b.get_active()}))
+        self.append(self.mute)
+
+    def update(self, value):
+        self.updating = True
+        self.status.set_text(value.get('status') or ('On' if value.get('enabled') else 'Off'))
+        self.mute.set_active(bool(value.get('muted')))
+        self.updating = False
+
+
 class LayerRow(Gtk.Box):
     """One layer: tile, source and state, then its contextual controls.
 
@@ -232,8 +254,11 @@ class MixSheet(Gtk.Box):
         self.rows = {name: LayerRow(name, send, choose_other, options) for name in next_model.LAYER_ORDER}
         for row in self.rows.values():
             self.append(row)
+        self.presenter = PresenterRow(send)
+        self.append(self.presenter)
 
     def update(self, snapshot):
         self.room.set_text((snapshot.get('active') or {}).get('name', ''))
         for row in next_model.mix_rows(snapshot):
             self.rows[row['layer']].update(row)
+        self.presenter.update(snapshot.get('presenter') or {})
