@@ -1,7 +1,8 @@
 # O11-MEDIA acceptance (tests/probes/listening-o11m-acceptance.py), written by the independent acceptance author.
-# This is the TARGET: every check passes. On main 70db15e (2.5.0) it fails H1 (41 MB per
-# loop), P1-P3 (paused loops keep +66-80 threads, 56 streaming threads, ~41 MB each), R0, R1 (the first return to a loop
-# holds the GTK thread ~200 ms) and N1. Evidence and readings: the O11m acceptance phase-1 report.
+# This is the TARGET: every check passes. On main 70db15e (2.5.0) it fails H1 (41-49 MB per loop), P1-P3 (paused loops
+# keep +66 threads, 56 streaming threads, 41-49 MB each), R0 and N1; H2 lands either side of 400 MB (373-412). R1 failed
+# on main at load 20+ (first return 193-297 ms) and passed at load ~10 (41 ms). X3 depends on the host's own load during
+# the stress run (no helpers there, coordinator ruling). Evidence and readings: the O11m acceptance phase-1 report.
 # Author-set limits P1 <= 24, P2 <= 7, P3 <= 10 MB, F9 <= 0.1 and the 15 s let-go wait were accepted by the coordinator (phase 1).
 # Entries with @@ declare the measured part of the name; everything else must match exactly.
 S1 the dev shell provides GStreamer playbin3 to the window (scene loops can play)

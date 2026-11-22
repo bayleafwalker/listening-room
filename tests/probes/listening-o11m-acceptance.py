@@ -513,7 +513,7 @@ def pages(env, step, check, info):
         # F8 [ORIGINAL] still runs and prints as a SUPERSEDED line, not counted (Listen lands either side of 14.4 ms).
         print('SUPERSEDED %s F8 [ORIGINAL, superseded by F8r] %s %s costs at most %.1f ms GTK-thread CPU (median of 10, '
               '%s ms)' % ('PASS' if median is not None and median <= PAGE_CPU_MS[page] else 'FAIL', action, page,
-                          PAGE_CPU_MS[page], median), flush=True)
+                          PAGE_CPU_MS[page], 'none' if median is None else '%.1f' % median), flush=True)
     return {'page_cpu_ms': dict(cost), 'medians': medians, 'load1': load, 'uptime': uptime()}
 
 
