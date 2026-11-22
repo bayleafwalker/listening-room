@@ -1170,10 +1170,10 @@ def media(env, step, check, info, clips):
           '(process tree RSS, @@ MB total, @@ MB per loop)' % (MEDIA_TOTAL_R_MB, MEDIA_PER_LOOP_R_MB),
           all_played and cost <= MEDIA_TOTAL_R_MB and per_loop <= MEDIA_PER_LOOP_R_MB,
           (cold_point['rss_mb'], first['rss_mb'], warm['rss_mb']), measured=(round(cost), float(round(per_loop, 1))))
-    check('M3 decoder threads are bounded: at most %d in the whole process tree, warm and at peak (@@)'
+    check('M3 decoder threads are bounded: at most %d in the whole process tree, warm and at peak (@@ warm, @@ peak)'
           % DECODER_THREADS_MAX, all_played and max(warm['decoder_threads'], peak['decoder_threads']) <= DECODER_THREADS_MAX,
           (warm['decoder_threads'], peak['decoder_threads']),
-          measured='%d warm, %d peak' % (warm['decoder_threads'], peak['decoder_threads']))
+          measured=(warm['decoder_threads'], peak['decoder_threads']))
     # M4 [ORIGINAL] still runs and prints as a SUPERSEDED line, not counted (3507ca3: +80, 10 threads per paused
     # pipeline): a known failure cannot carry a measured span, and the exact count is not part of the intent.
     added = warm['threads'] - cold_point['threads']
@@ -1229,12 +1229,11 @@ def media(env, step, check, info, clips):
               'PASS' if leak_ok and end['fds'] <= warm['fds'] + 2 * STEADY_FDS else 'FAIL', last_n, STEADY_RSS_MB,
               STEADY_THREADS, STEADY_FDS, end['fds'] - warm['fds']), flush=True)
     check('M7-R1 steady state: over the last %d previews RSS grows <= %d MB, threads <= %d, fds <= %d; since warm-up '
-          'RSS and threads at most twice that, fds <= +%d (@@)' % (last_n, STEADY_RSS_MB, STEADY_THREADS, STEADY_FDS,
-                                                                   STEADY_FDS_STEP_R),
+          'RSS and threads at most twice that, fds <= +%d (RSS @@ MB, threads @@, fds @@ over the last %d; fds @@ since warm-up)' % (last_n, STEADY_RSS_MB, STEADY_THREADS, STEADY_FDS,
+                                                                   STEADY_FDS_STEP_R, last_n),
           leak_ok and end['fds'] <= warm['fds'] + STEADY_FDS_STEP_R, (warm, half, end),
-          measured='RSS %+.0f MB, threads %+d, fds %+d over the last %d; fds %+d since warm-up' % (
-              end['rss_mb'] - half['rss_mb'], end['threads'] - half['threads'], end['fds'] - half['fds'], last_n,
-              end['fds'] - warm['fds']))
+          measured=tuple('%+d' % round(v) for v in (end['rss_mb'] - half['rss_mb'], end['threads'] - half['threads'],
+                                                     end['fds'] - half['fds'], end['fds'] - warm['fds'])))
     check('M8 no-teardown guarantee: no GL display or context is left behind per preview (GL threads <= warm)',
           all_played and end['gl_threads'] <= warm['gl_threads'], (warm['gl_threads'], end['gl_threads']))
     check('M9 no-teardown guarantee: no new GStreamer pipeline is built once every loop has been shown (@@ built)',
@@ -1307,15 +1306,16 @@ def media(env, step, check, info, clips):
               users_ok and added_u <= MEDIA_THREADS_PER_LOOP * loops_shown,
               (cold_point['threads'], points[1]['threads'], loops_shown),
               measured=('+%d' % added_u, MEDIA_THREADS_PER_LOOP * loops_shown))
-        check('U3 user clips are bounded: each of the last %d clips adds <= %d MB, <= %d thread, <= %d fds (@@)'
+        check('U3 user clips are bounded: each of the last %d clips adds <= %d MB, <= %d thread, <= %d fds '
+              '(@@ MB, @@ threads, @@ fds)'
               % (last, EXTRA_PER_CLIP_MB, EXTRA_PER_CLIP_THREADS, EXTRA_PER_CLIP_FDS),
               users_ok and per('rss_mb') <= EXTRA_PER_CLIP_MB and per('threads') <= EXTRA_PER_CLIP_THREADS
               and per('fds') <= EXTRA_PER_CLIP_FDS, (points[0], points[1]),
-              measured='%.1f MB, %.1f threads, %.1f fds' % (per('rss_mb'), per('threads'), per('fds')))
-        check('U4 decoder threads stay bounded with user clips (<= %d, @@)' % DECODER_THREADS_MAX,
+              measured=(round(per('rss_mb'), 1), round(per('threads'), 1), round(per('fds'), 1)))
+        check('U4 decoder threads stay bounded with user clips (<= %d, @@, peak @@)' % DECODER_THREADS_MAX,
               users_ok and max(points[1]['decoder_threads'], peak['decoder_threads']) <= DECODER_THREADS_MAX,
               (points[1]['decoder_threads'], peak['decoder_threads']),
-              measured='%d, peak %d' % (points[1]['decoder_threads'], peak['decoder_threads']))
+              measured=(points[1]['decoder_threads'], peak['decoder_threads']))
     for clip in clips:
         try:
             os.unlink(clip)
