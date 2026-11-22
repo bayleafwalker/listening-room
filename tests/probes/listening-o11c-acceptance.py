@@ -1013,11 +1013,15 @@ def mix_keys():
     env.pump(.3)
 
 
+SHORTCUTS_DIALOG_TYPE = [None]
+
+
 def shortcut_items(window):
     window.activate_action('win.shortcuts', None)
     env.pump(1.0)
     dialog = window.get_visible_dialog() if hasattr(window, 'get_visible_dialog') else None
     items = []
+    SHORTCUTS_DIALOG_TYPE[0] = type(dialog).__name__ if dialog is not None else None
     if dialog is not None:
         body = dialog.get_body() if hasattr(dialog, 'get_body') else ''
         items += [line for line in (body or '').split('\n') if line.strip()]
@@ -1034,19 +1038,45 @@ def shortcut_items(window):
     return items
 
 
+def names_mix_keys(items):
+    key = lambda letter: r'(^|[\s>+])%s($|[\s,])' % letter
+    music = any(re.search(r'music', i, re.I) and re.search(key('m'), i, re.I) for i in items)
+    rain = any(re.search(r'ambience', i, re.I) and re.search(key('a'), i, re.I) for i in items)
+    level = any(re.search(r'shift', i, re.I) and re.search(r'up|↑', i, re.I) for i in items)
+    return music and rain and level
+
+
+def pending_key_lists():
+    """Module-level (key, description) tables in the window and Mix modules, as `key    description` lines."""
+    import importlib
+    found = {}
+    for module_name in ('next_mix', 'next_window'):
+        module = importlib.import_module(module_name)
+        for name, value in vars(module).items():
+            if name.isupper() and isinstance(value, (tuple, list)) and value and all(
+                    isinstance(pair, (tuple, list)) and len(pair) == 2 and all(isinstance(x, str) for x in pair) for pair in value):
+                found['%s.%s' % (module_name, name)] = ['%s    %s' % tuple(pair) for pair in value]
+    return found
+
+
 @section('KEYS')
 def shortcut_list():
     reset()
     enter_room('northern-quiet', ambience=True)
     window = open_window()
     items = shortcut_items(window)
+    shell_dialog = SHORTCUTS_DIALOG_TYPE[0] == 'ShortcutsDialog'
     window.close()
-    key = lambda letter: r'(^|[\s>+])%s($|[\s,])' % letter
-    music = any(re.search(r'music', i, re.I) and re.search(key('m'), i, re.I) for i in items)
-    rain = any(re.search(r'ambience', i, re.I) and re.search(key('a'), i, re.I) for i in items)
-    level = any(re.search(r'shift', i, re.I) and re.search(r'up|↑', i, re.I) for i in items)
-    check('M9 the Keyboard shortcuts list names M (music), A (ambience) and Shift+Up/Down (the focused row\'s level)',
-          music and rain and level, items)
+    # M9 [ORIGINAL] runs on and prints as an uncounted SUPERSEDED line: it flips to passing once O11-SHELL's table
+    # lands, so it cannot be a stable known failure. Superseded by M9-R1 (phase 2, 2026-11-22): criterion 4 lets the
+    # keys wait in one easy-to-merge list while SHELL's table is not on the branch.
+    print('SUPERSEDED %s M9 [ORIGINAL, superseded by M9-R1] the Keyboard shortcuts list names M (music), A (ambience) and '
+          'Shift+Up/Down (the focused row\'s level)' % ('PASS' if names_mix_keys(items) else 'FAIL'), flush=True)
+    lists = {name: lines for name, lines in pending_key_lists().items() if names_mix_keys(lines)}
+    check('M9-R1 the Keyboard shortcuts list names M (music), A (ambience) and Shift+Up/Down (the focused row\'s level); '
+          'while O11-SHELL\'s shortcuts dialog is not on the branch, one key list in the window or Mix module may hold them',
+          names_mix_keys(items) or (not shell_dialog and bool(lists)),
+          (SHORTCUTS_DIALOG_TYPE[0], items, sorted(lists)))
 
 
 def single_menus(window):

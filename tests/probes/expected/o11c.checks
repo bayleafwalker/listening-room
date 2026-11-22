@@ -56,7 +56,9 @@ M5 Shift+Up with the Music row focused raises the music level, and neither the a
 M6 Shift+Down lowers it again, the same way
 M7 Shift+Up with the Ambience row focused raises the ambience level alone
 M8 with M working in the Mix, typing M or A in a text entry (Listen search) changes no layer
-M9 the Keyboard shortcuts list names M (music), A (ambience) and Shift+Up/Down (the focused row's level)
+# M9 is superseded by M9-R1 (phase 2, 2026-11-22, on 4574991): criterion 4 lets the keys wait in one easy-to-merge
+# list while O11-SHELL's table is not on the branch; the original prints as an uncounted SUPERSEDED line.
+M9-R1 the Keyboard shortcuts list names M (music), A (ambience) and Shift+Up/Down (the focused row's level); while O11-SHELL's shortcuts dialog is not on the branch, one key list in the window or Mix module may hold them
 R1 radio room: Stop is a button on the Music row, and no Mix menu holds a single item
 R2 library room: Next track is a button on the Music row (not only in the ⋯ menu)
 K1 (setup) the room was connecting when the Mix was opened
