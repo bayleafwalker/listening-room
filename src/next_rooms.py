@@ -60,6 +60,8 @@ WIDE_PREVIEW = 740
 SAVE_WAIT_S = 8
 DETAILS_WIDTH = 380
 CARD_WIDTH = 224  # four cards fit from about 1000 px, three from about 740, two below that
+WIDE_WINDOW = 1280        # from here Rooms shows three larger cards to a line, so the page fills a wide window
+CLAMP_NORMAL, CLAMP_WIDE = 1180, 1600
 
 
 class RoomsPage:
@@ -76,6 +78,7 @@ class RoomsPage:
         self.activated = (None, 0.)
         self.opened_from = None
         self.card_for = {}
+        self.launch_card = None    # the card focused at a first launch, until the first key press or other focus
         self.serial = 0
         self.pending_save = None
         install_css(Gdk.Display.get_default(), CSS)
@@ -95,7 +98,8 @@ class RoomsPage:
 
     def build_grid(self):
         page = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        clamp = Adw.Clamp(maximum_size=1180, tightening_threshold=900, margin_start=16, margin_end=16, margin_bottom=24)
+        self.clamp = clamp = Adw.Clamp(maximum_size=CLAMP_NORMAL, tightening_threshold=900, margin_start=16, margin_end=16,
+                                       margin_bottom=24)
         column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
         self.first_run = label('Pick a room to begin', ['first-run-title'], wrap=True)
         self.first_run.set_margin_top(18)
@@ -174,9 +178,15 @@ class RoomsPage:
     def shape_cards(self, grid, _clock):
         """Keep every card 16:9 at the width the grid actually gives it (a homogeneous grid measures at the minimum)."""
         # Two to a line keeps cards from stretching, except in a window narrower than two cards: one per line.
-        narrow = 0 < self.window.get_width() < 560
+        width = self.window.get_width()
+        narrow = 0 < width < 560
         if grid.get_min_children_per_line() != (1 if narrow else 2):
             grid.set_min_children_per_line(1 if narrow else 2)
+        wide = width >= WIDE_WINDOW
+        if (grid.get_max_children_per_line() == 3) != wide:
+            grid.set_max_children_per_line(3 if wide else 4)
+            self.clamp.set_maximum_size(CLAMP_WIDE if wide else CLAMP_NORMAL)
+            self.clamp.set_tightening_threshold(CLAMP_WIDE if wide else 900)
         first = grid.get_first_child()
         width = first.get_width() if first is not None else 0
         height = round(width * 9 / 16)
@@ -189,6 +199,25 @@ class RoomsPage:
                     art.set_size_request(CARD_WIDTH, height)
                 child = child.get_next_sibling()
         return GLib.SOURCE_CONTINUE
+
+    def focus_first_card(self):
+        """First run: the keyboard starts on the first room card, so the first Tab or arrow lands there and not in
+        the header (card_key keeps that first press from moving on). False when there is no card to take it."""
+        child = self.cards.get_first_child()
+        if child is None or not child.get_mapped() or not child.grab_focus():
+            return False
+        self.launch_card = child
+        return True
+
+    def focus_first_card_soon(self, tries=20):
+        """focus_first_card once the cards are on screen (the page maps a moment after the first snapshot)."""
+        def attempt():
+            nonlocal tries
+            if self.window.closed or self.window.get_focus() not in (None, self.launch_card):
+                return GLib.SOURCE_REMOVE        # something else already has the focus
+            tries -= 1
+            return GLib.SOURCE_REMOVE if self.focus_first_card() or tries <= 0 else GLib.SOURCE_CONTINUE
+        GLib.timeout_add(50, attempt)
 
     def chose(self, mood):
         if mood != self.mood:
@@ -383,6 +412,12 @@ class RoomsPage:
     def card_key(self, _controller, keyval, _code, state):
         """Space previews the focused card (Enter enters, by the grid's own activation); Menu opens its options."""
         child = self.cards.get_focus_child()
+        launch, self.launch_card = self.launch_card, None
+        if (launch is not None and child is launch and self.window.get_focus() is launch and not state & (
+                Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK)
+                and keyval in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab, Gdk.KEY_Left, Gdk.KEY_Right, Gdk.KEY_Up, Gdk.KEY_Down)):
+            self.window.set_focus_visible(True)     # the first press lands on the first card: show where it is
+            return True
         entry = self.card_for.get(child)
         if isinstance(self.window.get_focus(), Gtk.MenuButton):
             return False  # Space belongs to the options button when it has focus

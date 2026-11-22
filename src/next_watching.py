@@ -86,6 +86,9 @@ class Watching:
         window.room_name.set_text(video.get('name') or 'YouTube video')
         window.now_line.set_text('Playing with sound in its own window. No room is playing.')
         window.now_detail.set_visible(False)
+        # Nothing of the last room stays behind the video's chip: no scene art, no room accent.
+        window.scene.show_room({'still': None, 'poster': None, 'loop': None}, False)
+        window.apply_accent(None)
 
     def stopped(self, snapshot):
         """The video stopped (window closed, video ended or Stop watching): offer Resume, never resume."""

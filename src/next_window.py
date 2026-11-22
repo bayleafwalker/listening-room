@@ -44,12 +44,33 @@ CARD_GAP = 16                   # at least this much between the start card and 
 MINI_CONTROLS_CLEARANCE = 96    # the mini layout's control row
 TOAST_ROOM = 120                # window height kept free for a toast above the open Mix
 MUSIC_STARTS = ('music', 'online', 'link', 'station.start', 'station.replay')  # starts that replace a room's music
-SHORTCUTS = (('Space', 'Pause or play the room'), ('Ctrl+1', 'Rooms'), ('Ctrl+2', 'Listen'), ('Ctrl+3', 'Now'),
-             ('Ctrl+F', 'Search Listen'), ('Ctrl+L', 'Add a link'), ('Ctrl+V', 'Add a link from the clipboard, outside text fields'),
-             ('Ctrl+M', 'Mini player'), ('Ctrl+,', 'Preferences'),
-             ('Esc', 'Close Mix or a dialog, then go back to where you were'),
-             ('Up / Down', 'Room volume, in Now and the mini player'),
-             ('Ctrl+?', 'Keyboard shortcuts'))
+# The one shortcut table: the Keyboard shortcuts dialog and SHORTCUTS are both built from it, so a key added
+# here appears in both. Each item is (GTK accelerator the dialog draws, the key as plain text, what it does).
+# Installing a key is separate (install_actions, ListenPage.install_shortcuts, key_captured): list it here too.
+SHORTCUT_PAGES = (
+    ('General', (
+        ('<Control>1', 'Ctrl+1', 'Rooms'),
+        ('<Control>2', 'Ctrl+2', 'Listen'),
+        ('<Control>3', 'Ctrl+3', 'Now'),
+        ('<Control>m', 'Ctrl+M', 'Mini player'),
+        ('<Control>comma', 'Ctrl+,', 'Preferences'),
+        ('<Control>question', 'Ctrl+?', 'Keyboard shortcuts'),
+        ('Escape', 'Esc', 'Close Mix or a dialog, then go back to where you were'),
+    )),
+    ('Room', (
+        ('space', 'Space', 'Pause or play the room'),
+        ('Up Down', 'Up / Down', 'Room volume, in Now and the mini player'),
+        # Reserved for the O11-CONTROL lane (Mix keys); the coordinator adds them here when that lane lands:
+        #   ('m', 'M', 'Open or close Mix'), ('a', 'A', 'Choose an ambience'),
+        #   ('<Shift>Up <Shift>Down', 'Shift+Up / Shift+Down', 'Ambience level')
+    )),
+    ('Listen', (
+        ('<Control>f', 'Ctrl+F', 'Search Listen'),
+        ('<Control>l', 'Ctrl+L', 'Add a link'),
+        ('<Control>v', 'Ctrl+V', 'Add a link from the clipboard, outside text fields'),
+    )),
+)
+SHORTCUTS = tuple((key, text) for _page, items in SHORTCUT_PAGES for _accel, key, text in items)
 
 
 _system_animations = None
@@ -663,7 +684,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.changed_chip.set_visible(model.room_changed(snapshot, self.catalogue))
         assets = model.scene_assets(snapshot.get('active'), self.presets)
         own_scene = bool(assets.get('still') or assets.get('loop'))
-        self.choose_scene.set_visible((ad_hoc or self.listen_first or not own_scene) and bool(self.layer_options('picture')))
+        self.choose_scene.set_visible((ad_hoc or self.listen_first or not own_scene) and any(scene['available'] for scene in self.layer_options('picture')))
         self.now_line.set_text(line)
         self.now_detail.set_text('· ' + detail if detail else '')
         self.now_detail.set_visible(bool(detail))
@@ -850,9 +871,12 @@ class NextWindow(Adw.ApplicationWindow):
         self.sheet.set_open(True)
 
     def layer_options(self, layer):
-        """What Change… offers on the Scene row: offline rooms and views. Music and Ambience open Listen."""
-        return [(preset['name'], ('layer', {'layer': 'picture', 'action': 'select', 'preset_id': preset['id']}))
-                for preset in self.presets if preset.get('kind') == 'local' and preset.get('available', True)]
+        """What Change… offers on the Scene row: every offline room and view, with its picture; ones whose files
+        are missing are listed as unavailable. Music and Ambience open Listen."""
+        return [{'id': preset['id'], 'name': preset['name'].split(' · ')[0], 'poster': preset.get('poster_path'),
+                 'available': preset.get('available', True),
+                 'command': ('layer', {'layer': 'picture', 'action': 'select', 'preset_id': preset['id']})}
+                for preset in self.presets if preset.get('kind') == 'local']
 
     def choose_other(self, layer):
         """Music and Ambience are chosen in Listen (Ambience in its own mode); Scene on its Mix row."""
@@ -1028,10 +1052,12 @@ class NextWindow(Adw.ApplicationWindow):
         self.rooms.save_dialog()
 
     def shortcuts_dialog(self):
-        dialog = Adw.AlertDialog(heading='Keyboard shortcuts',
-                                 body='\n'.join('%s    %s' % pair for pair in SHORTCUTS))
-        dialog.set_follows_content_size(True)
-        dialog.add_response('close', 'Close')
+        dialog = Adw.ShortcutsDialog()
+        for page, items in SHORTCUT_PAGES:
+            section = Adw.ShortcutsSection(title=page)
+            for accel, _key, text in items:
+                section.add(Adw.ShortcutsItem(title=text, accelerator=accel))
+            dialog.add(section)
         dialog.present(self)
 
     def open_preferences(self, service=None):
@@ -1481,7 +1507,10 @@ class NextWindow(Adw.ApplicationWindow):
             self.first = False
             if model.launch_view(snapshot) == 'rooms':
                 self.show_rooms()
-                GLib.idle_add(lambda: (self.hero_button.get_mapped() and self.hero_button.grab_focus()) and False)
+                if model.hero(snapshot, self.catalogue)['kind'] == 'first-run':
+                    self.rooms.focus_first_card_soon()
+                else:
+                    GLib.idle_add(lambda: (self.hero_button.get_mapped() and self.hero_button.grab_focus()) and False)
             else:
                 self.show_page('now')
         elif self.want_now and active and not snapshot.get('transition'):

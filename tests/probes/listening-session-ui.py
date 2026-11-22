@@ -541,13 +541,12 @@ with tempfile.TemporaryDirectory(prefix='listening-session-') as folder:
         window.activate_action('win.shortcuts', None)
         pump(.6)
         dialog = window.get_visible_dialog()
-        assert isinstance(dialog, Adw.AlertDialog), dialog
-        body = dialog.get_body()
-        for key, text in next_window.SHORTCUTS:
-            assert key in body and text in body, (key, text)
+        assert isinstance(dialog, Adw.ShortcutsDialog), dialog
+        # The native dialog draws keycaps, not text: the table it is built from is what lists the keys.
+        listed = [key for _page, items in next_window.SHORTCUT_PAGES for _accel, key, _text in items]
         for key in ('Space', 'Ctrl+1', 'Ctrl+2', 'Ctrl+3', 'Ctrl+F', 'Ctrl+L', 'Ctrl+V', 'Ctrl+M', 'Ctrl+,', 'Esc', 'Up / Down', 'Ctrl+?'):
-            assert key in body, 'the shortcuts dialog is missing %s' % key
-        assert 'Ctrl+4' not in body, 'Ctrl+4/5/6 are retired'
+            assert key in listed, 'the shortcuts table is missing %s' % key
+        assert 'Ctrl+4' not in listed, 'Ctrl+4/5/6 are retired'
         dialog.force_close()
         pump(.4)
         # Keyboard-only walk: pages, search, Now, pause and volume, mini, preferences, link sheet; nothing starts anything.
