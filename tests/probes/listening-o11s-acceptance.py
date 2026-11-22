@@ -61,6 +61,12 @@ def check(name, ok, detail=''):
     print(('PASS ' if ok else 'FAIL ') + name + ('' if ok else '  ' + str(detail)[:900]), flush=True)
 
 
+def superseded(name, ok, detail=''):
+    """An ORIGINAL kept visible after a revision, printed but not counted: its result depends on the design rather
+    than on the outcome, so it can be neither a check nor a stable known failure."""
+    print('SUPERSEDED %s %s  %s' % ('pass' if ok else 'fail', name, str(detail)[:400]), flush=True)
+
+
 def section(name):
     def wrap(function):
         if ONLY and name not in ONLY:
@@ -168,6 +174,46 @@ with env:
 
     def describe(widget):
         return None if widget is None else '%s %s' % (type(widget).__name__, ' / '.join(text_of(widget))[:60])
+
+    def trigger_matches(trigger, keyval, mods):
+        if isinstance(trigger, Gtk.AlternativeTrigger):
+            return trigger_matches(trigger.get_first(), keyval, mods) or trigger_matches(trigger.get_second(), keyval, mods)
+        if isinstance(trigger, Gtk.KeyvalTrigger):
+            mask = int(Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK)
+            return (Gdk.keyval_to_lower(trigger.get_keyval()) == Gdk.keyval_to_lower(keyval)
+                    and int(trigger.get_modifiers()) & mask == mods & mask)
+        return False
+
+    def press(root, keyval, mods=0):
+        """One key press dispatched the way GTK does (revision D7-R1): capture-phase controllers from the root down
+        to the focus, then target/bubble from the focus up, each widget's key controllers and shortcut controllers
+        (its class shortcuts included, so the window's own arrow and Tab bindings run last, as in GTK). True when
+        something handled it. Needed because a focused button inside a container leaves arrows to the container's
+        own bindings, which child_focus() on the window skips."""
+        path, node = [], root.get_focus()
+        while node is not None:
+            path.append(node)
+            node = node.get_parent()
+        path = path or [root]
+
+        def handle(widget, phases):
+            model = widget.observe_controllers()
+            for index in range(model.get_n_items()):
+                controller = model.get_item(index)
+                if controller.get_propagation_phase() not in phases:
+                    continue
+                if isinstance(controller, Gtk.EventControllerKey):
+                    if controller.emit('key-pressed', keyval, 0, Gdk.ModifierType(mods)):
+                        return True
+                elif isinstance(controller, Gtk.ShortcutController):
+                    for item in range(controller.get_n_items()):
+                        shortcut = controller.get_item(item)
+                        if trigger_matches(shortcut.get_trigger(), keyval, mods) and shortcut.get_action() is not None:
+                            if shortcut.get_action().activate(Gtk.ShortcutActionFlags(0), widget, shortcut.get_arguments()):
+                                return True
+            return False
+        capture, bubble = (Gtk.PropagationPhase.CAPTURE,), (Gtk.PropagationPhase.BUBBLE, Gtk.PropagationPhase.TARGET)
+        return any(handle(w, capture) for w in reversed(path)) or any(handle(w, bubble) for w in path)
 
     def paintable_of(widget):
         getter = getattr(widget, 'get_paintable', None)
@@ -661,8 +707,28 @@ with env:
             except (tokenize.TokenError, SyntaxError):
                 continue
         reserved = [c for c in comments if re.search(r'O11-CONTROL|\bMix\b', c) and 'Shift' in c]
-        check('C11 the table reserves the O11-CONTROL Mix keys (M, A, Shift+Up/Down) with a comment (source text)',
-              bool(reserved), reserved[:3])
+        # [ORIGINAL, superseded by C11-R1] needed one comment line naming both Mix/O11-CONTROL and Shift; a reservation
+        # written as a comment block over several lines (the natural form) failed it.
+        superseded('C11 [ORIGINAL, superseded by C11-R1] the table reserves the O11-CONTROL Mix keys (M, A, Shift+Up/Down) with a '
+                   'comment (source text)', bool(reserved), reserved[:3])
+        blocks = []
+        for path in sorted(source.glob('*.py')):
+            last, block = None, []
+            try:
+                for token in tokenize.generate_tokens(io.StringIO(path.read_text()).readline):
+                    if token.type == tokenize.COMMENT:
+                        if last is not None and token.start[0] != last + 1 and block:
+                            blocks.append(' '.join(block))
+                            block = []
+                        block.append(token.string)
+                        last = token.start[0]
+            except (tokenize.TokenError, SyntaxError):
+                pass
+            if block:
+                blocks.append(' '.join(block))
+        reserved = [b for b in blocks if re.search(r'O11-CONTROL|\bMix\b', b) and 'Shift' in b]
+        check('C11-R1 a comment block reserves the O11-CONTROL Mix keys (M, A, Shift+Up/Down) (source text)',
+              bool(reserved), [b[:200] for b in reserved[:2]])
 
     # =========================================================================== D: scene choice (criterion 4)
     def enter_room(window, avoid=()):
@@ -861,11 +927,45 @@ with env:
             pump(.3)
             after = top.get_focus()
             moved = next((pid for pid, t in found.items() if after is not None and inside(after, t)), None)
-            check('D7 keyboard: a tile takes focus and Right moves it to another scene tile',
+            # [ORIGINAL, superseded by D7-R1] moved focus with child_focus() on the window, which skips a container's
+            # own arrow bindings; on a grid of buttons in a popover it did not move where a real Right press can.
+            superseded('D7 [ORIGINAL, superseded by D7-R1] keyboard: a tile takes focus and Right moves it to another scene tile',
                   start_focus is not None and inside(start_focus, first) and moved is not None and moved != order[0][2],
                   (describe(start_focus), describe(after)))
+            first.grab_focus()
+            pump(.2)
+            start_focus = top.get_focus()
+            handled = press(top, Gdk.KEY_Right)
+            pump(.3)
+            after = top.get_focus()
+            moved = next((pid for pid, t in found.items() if after is not None and inside(after, t)), None)
+            check('D7-R1 keyboard: a tile takes focus and a Right press (GTK dispatch) moves it to another scene tile',
+                  start_focus is not None and inside(start_focus, first) and moved is not None and moved != order[0][2],
+                  (describe(start_focus), describe(after), 'handled' if handled else 'not handled'))
+            # D7b: the minimum of "keyboard navigable", Tab, separately from the arrows (D7-R1).
+            first.grab_focus()
+            pump(.2)
+            press(top, Gdk.KEY_Tab)
+            pump(.3)
+            after = top.get_focus()
+            moved = next((pid for pid, t in found.items() if after is not None and inside(after, t)), None)
+            check('D7b keyboard: a Tab press (GTK dispatch) moves focus from one scene tile to another',
+                  moved is not None and moved != order[0][2], describe(after))
+            down_from = available_tiles[order[0][2]]
+            down_from.grab_focus()
+            pump(.2)
+            press(top, Gdk.KEY_Down)
+            pump(.3)
+            after = top.get_focus()
+            moved = next((pid for pid, t in found.items() if after is not None and inside(after, t)), None)
+            check('D7c keyboard: a Down press (GTK dispatch) moves focus to a scene tile in the next row',
+                  moved is not None and moved != order[0][2] and (bounds(found[moved], window) or (0, 0))[1]
+                  > (bounds(down_from, window) or (0, 0))[1], describe(after))
         else:
-            check('D7 keyboard: a tile takes focus and Right moves it to another scene tile', False, 'no tiles')
+            superseded('D7 [ORIGINAL, superseded by D7-R1] keyboard: a tile takes focus and Right moves it to another scene tile', False, 'no tiles')
+            check('D7b keyboard: a Tab press (GTK dispatch) moves focus from one scene tile to another', False, 'no tiles')
+            check('D7c keyboard: a Down press (GTK dispatch) moves focus to a scene tile in the next row', False, 'no tiles')
+            check('D7-R1 keyboard: a tile takes focus and a Right press (GTK dispatch) moves it to another scene tile', False, 'no tiles')
         # Browsing is inert: opening the grid, moving focus over every tile, nothing is sent or played.
         for tile in found.values():
             tile.grab_focus()
@@ -877,12 +977,24 @@ with env:
               not commands(mark) and len(env.backend.calls) == calls and not new_loops and not streams
               and set(getattr(next_widgets, '_LOOPS', {})) <= loop_keys,
               (commands(mark), env.backend.calls[calls:], sorted(new_loops), streams))
-        # Activating the unavailable tile does nothing.
+        # D9-R1: the unavailable tile cannot be chosen. Insensitive means no click or keyboard focus reaches it (a user
+        # cannot activate it); a sensitive one must send nothing when activated.
+        mark = len(env.log)
+        blocked = gone is not None and not gone.is_sensitive()
+        if gone is not None and not blocked:
+            gone.activate()
+            pump(.8)
+        check('D9-R1 the unavailable scene cannot be chosen (insensitive, or activating it sends nothing)',
+              gone is not None and (blocked or (not commands(mark) and current_scene() == current)),
+              ('insensitive' if blocked else 'sensitive', commands(mark), current_scene()))
+        # [ORIGINAL, superseded by D9-R1] emitted activate() on the tile. GTK's activate signal reaches even an insensitive
+        # button, which no user can click or focus, so it tested a path users do not have. It still runs (it may change
+        # the scene; D10 below picks its target and compares afterwards).
         mark = len(env.log)
         if gone is not None:
             gone.activate()
             pump(.8)
-        check('D9 activating the unavailable scene changes nothing', gone is not None and not commands(mark)
+        superseded('D9 [ORIGINAL, superseded by D9-R1] activating the unavailable scene changes nothing', gone is not None and not commands(mark)
               and current_scene() == current, (commands(mark), current_scene()))
         # Choosing another scene with Enter changes only the scene.
         target = next((pid for _y, _x, pid in order if pid != current), None)

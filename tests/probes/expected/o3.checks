@@ -178,7 +178,10 @@ B no internal vocabulary on Listen, Station, History, link sheet or menus (at 12
 C every control on every Listen surface has an accessible name (not tooltip only)
 C each segmented mood choice group is named for assistive tech (e.g. Energy), not just its segments
 C Ctrl+F focuses the search entry
-C the keyboard-shortcuts dialog lists the Listen shortcuts (Ctrl+F search, Ctrl+L add a link)
+# C-R1 (O11-SHELL acceptance author, phase 2, 2026-11-22): the native Adw.ShortcutsDialog the O11 brief asks for draws
+# keycaps, so its text never holds "Ctrl+F". The ORIGINAL C keeps running as a known failure; C-R1 reads the keycaps drawn.
+!C the keyboard-shortcuts dialog lists the Listen shortcuts (Ctrl+F search, Ctrl+L add a link)
+C-R1 the keyboard-shortcuts dialog draws the Listen shortcuts (Ctrl+F search, Ctrl+L add a link) as keycaps
 C Ctrl+F from a station page returns to the Listen index with search focused
 F8 Ctrl+F from Rooms goes to Listen with the search entry focused
 F8 setup: Now is showing

@@ -151,18 +151,33 @@ S9a <Control>v (Add a link from the clipboard) is bound to a window action or sh
 S9a <Control>m (Mini player) is bound to a window action or shortcut
 S9a <Control>comma (Preferences) is bound to a window action or shortcut
 S9a <Control>question (Shortcuts) is bound to a window action or shortcut
-S9b the shortcuts dialog lists Space
-S9b the shortcuts dialog lists Ctrl+1
-S9b the shortcuts dialog lists Ctrl+2
-S9b the shortcuts dialog lists Ctrl+3
-S9b the shortcuts dialog lists Ctrl+F
-S9b the shortcuts dialog lists Ctrl+L
-S9b the shortcuts dialog lists Ctrl+V
-S9b the shortcuts dialog lists Ctrl+M
-S9b the shortcuts dialog lists Ctrl+,
+# S9b-R1 (O11-SHELL acceptance author, phase 2, 2026-11-22): the native Adw.ShortcutsDialog the O11 brief asks for
+# draws keycaps, so its text holds no "Ctrl+F". The S9b ORIGINALS keep running; those that now fail are known
+# failures (S9b Esc still passes: the Escape keycap's own label contains "Esc"). S9b-R1 reads the keycaps drawn.
+!S9b the shortcuts dialog lists Space
+!S9b the shortcuts dialog lists Ctrl+1
+!S9b the shortcuts dialog lists Ctrl+2
+!S9b the shortcuts dialog lists Ctrl+3
+!S9b the shortcuts dialog lists Ctrl+F
+!S9b the shortcuts dialog lists Ctrl+L
+!S9b the shortcuts dialog lists Ctrl+V
+!S9b the shortcuts dialog lists Ctrl+M
+!S9b the shortcuts dialog lists Ctrl+,
 S9b the shortcuts dialog lists Esc
-S9b the shortcuts dialog lists Up / Down
-S9b the shortcuts dialog lists Ctrl+?
+!S9b the shortcuts dialog lists Up / Down
+!S9b the shortcuts dialog lists Ctrl+?
+S9b-R1 the shortcuts dialog draws Space
+S9b-R1 the shortcuts dialog draws Ctrl+1
+S9b-R1 the shortcuts dialog draws Ctrl+2
+S9b-R1 the shortcuts dialog draws Ctrl+3
+S9b-R1 the shortcuts dialog draws Ctrl+F
+S9b-R1 the shortcuts dialog draws Ctrl+L
+S9b-R1 the shortcuts dialog draws Ctrl+V
+S9b-R1 the shortcuts dialog draws Ctrl+M
+S9b-R1 the shortcuts dialog draws Ctrl+,
+S9b-R1 the shortcuts dialog draws Esc
+S9b-R1 the shortcuts dialog draws Up / Down
+S9b-R1 the shortcuts dialog draws Ctrl+?
 S9c Esc closes Mix first
 S9d a second Esc returns to browsing (Rooms)
 S9e Ctrl+F puts focus in the search entry

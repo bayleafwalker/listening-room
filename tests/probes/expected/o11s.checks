@@ -7,6 +7,10 @@
 # Revision A2-R1 (coordinator ruling, phase 1): the six A2 checks are superseded by A2-R1 (focus on the first card or a
 # hero's primary action at launch OR after the first press; the header never). The A2 ORIGINALS still run and print as
 # uncounted SUPERSEDED lines, because their result depends on the design rather than on the outcome.
+# Phase-2 revisions (acceptance author, 2026-11-22), originals printed as uncounted SUPERSEDED lines:
+# C11-R1: a reservation written as a comment block counts (C11 wanted one line naming Mix and Shift).
+# D7-R1: Right is dispatched as GTK does (container bindings first), not child_focus(); D7b Tab and D7c Down added.
+# D9-R1: an insensitive unavailable tile cannot be chosen; activate() reached it although no user can.
 A0 precondition: no room and no history (a first run)
 A1 at 1200x800 the first run opens on Rooms with nothing focused in the header
 A2-R1 at 1200x800 the first card or the hero's primary action has focus at launch or after the first Tab press, and the header never has it
@@ -38,7 +42,7 @@ C7 every row has a title
 C8 rows are grouped by page: more than one titled section, the Listen keys under a Listen section and the volume keys under a Now section
 C9 the dialog is the same when opened again and from a second window, with no duplicate rows
 C10 one shortcut table: each installed Ctrl shortcut is written in one statement of the source (source text)
-C11 the table reserves the O11-CONTROL Mix keys (M, A, Shift+Up/Down) with a comment (source text)
+C11-R1 a comment block reserves the O11-CONTROL Mix keys (M, A, Shift+Up/Down) (source text)
 D0 precondition: a room with its own scene is active, and one room scene is unavailable
 D1 Scene › Change… shows a tile for every room scene, the unavailable one included
 D2 each tile shows its own scene's card poster as a thumbnail
@@ -46,9 +50,11 @@ D3 thumbnails are card-sized (at most 640 px wide), not full posters
 D4 the thumbnails form a grid (more than one per row, more than one row)
 D5 the current scene's tile is marked: it differs from every other available tile (not by focus)
 D6 the unavailable scene's tile is visibly unavailable (insensitive, dimmed or saying so)
-D7 keyboard: a tile takes focus and Right moves it to another scene tile
+D7-R1 keyboard: a tile takes focus and a Right press (GTK dispatch) moves it to another scene tile
+D7b keyboard: a Tab press (GTK dispatch) moves focus from one scene tile to another
+D7c keyboard: a Down press (GTK dispatch) moves focus to a scene tile in the next row
 D8 browsing the grid is inert: no command, no backend call, no new loop playing, no video in a tile
-D9 activating the unavailable scene changes nothing
+D9-R1 the unavailable scene cannot be chosen (insensitive, or activating it sends nothing)
 D10 Enter on another scene's tile changes the scene to it
 D11 ... and only the scene: music and ambience are untouched and nothing starts
 D12 reopened, the mark is on the newly chosen scene
