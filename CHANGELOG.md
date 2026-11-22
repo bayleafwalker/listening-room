@@ -5,28 +5,38 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-- A station whose Familiarity was never set shows "A mix" (its neutral choice), not
-  "Familiar", the first button.
-- `tests/test_listening_station_eof.py` no longer fails now and then with
-  ConnectionRefused: the decoder creates its control socket a moment before it listens,
-  and the test now waits for the connection to be accepted, not for the file to exist.
+## [2.5.0] - 2026-11-22
 
-- A refresh failure (backend down) and audio-policy changes are now pushed to
-  subscribers; before, they only showed on the next unrelated change, and a window
-  that stops polling while the stream is up never saw them.
-- A transient snapshot failure no longer fails or silently closes a `subscribe`: it
-  serves the latest good revision (a subscribe before any snapshot waits for the
-  first; MPRIS ignores changes until then). Subscribers wait at most 10 s for the fresh snapshot instead of for as long
-  as the controller lock is held.
-- The client's protocol-version probe no longer times out after 1 s: `inspect` with
-  `fields: []` returns just the version without a snapshot or the controller lock,
-  so a loaded host or an oversize snapshot cannot make the controller look
-  disconnected. Protocol-1 controllers are still detected and never sent `subscribe`.
-- `status --follow` exits as soon as Waybar's pipe is closed, even when the status
-  does not change, instead of holding a subscriber slot.
-- Snapshot feed listeners run only on the feed thread, as documented, and may call
-  `refresh()` without deadlocking.
+### Added
+- Choosing an ambience now has its own header: the Rooms | Listen switcher gives way to a
+  back arrow ("Back to Mix") and "Choose ambience · room name" in the room's accent, until the
+  mode ends (Back, any navigation away, or choosing a sound).
+- Twitch Live channels can be filtered and paged. Chips for All, Music, ASMR, any category added
+  with "＋ Category" (searched on Twitch, saved in the Twitch preferences) and Your channels;
+  a sort menu (Most watched, Fewest watched, Your channels first); rows show the stream title,
+  category, viewers, language and the stream preview; "Show more" reads the next Twitch page.
+  The row menu adds "Add to your channels" and "Hide this channel". A signed-out status line says
+  that your channels still play.
+- Below 560 px the Rooms | Listen switcher is a bar at the bottom of the window.
+- **Watch** a YouTube video with sound, from every YouTube result, shelf row and the
+  YouTube link sheet. It opens in its own player window (not as audio plus picture),
+  pauses the room's Music and Ambience the way Pause does, and Now shows
+  "Watching · ‹title›" with Stop watching. When the video stops, a toast offers Resume;
+  the room never resumes on its own. With no room, Watch just plays.
+- **Show as scene** on YouTube rows: the video becomes the room's silent scene, only the
+  picture changes, and the room is marked Changed with Save as my room.
+- YouTube suggestions before you type, without an account: Your saved YouTube, "For
+  ‹room›" and "Live now", cached on disk (shown at once, refreshed at most hourly, kept
+  for a day) and fetched off the GTK thread. Browsing them starts nothing.
+- The session controller has a `video` action (`start` with a public YouTube `url` and
+  `name`, queued; `stop`, at once) and a `video` snapshot field (status, name, url,
+  started_at, room_paused) while the Watch window is open.
+- Each Mix row (Music, Ambience) has its own Pause/Play and Stop buttons; a row paused on
+  its own says "paused" in the accent colour. `listening-roomctl music|ambience
+  pause|play|toggle|stop|next` exposes the same layer actions.
+- A `transport` controller action (`toggle`, `pause`, `play`) is the one room Play/Pause:
+  MPRIS, the media keys and `listening-roomctl toggle|pause|play` use it.
+- `inspect` reports the latest start as `entry` (id, name, state, error, the room kept).
 
 ### Changed
 - The window opens faster: Rooms paints its cards at once and their posters arrive
@@ -48,25 +58,6 @@ All notable changes are recorded here. The format follows
   pipeline for the preview it passes.
 - The dev shell has the package's GStreamer plugins, so `scripts/listening-dev.sh test`
   and acceptance play scene loops like the installed window.
-
-### Fixed
-- Scenes loop again: a scene stopped moving at the end of its clip (about 20 s after
-  entering a room), because GTK's own looping stops at the end of the stream with
-  this GTK and GStreamer. A playing loop now starts over itself, on the same pipeline.
-
-### Added
-- Choosing an ambience now has its own header: the Rooms | Listen switcher gives way to a
-  back arrow ("Back to Mix") and "Choose ambience · room name" in the room's accent, until the
-  mode ends (Back, any navigation away, or choosing a sound).
-- Twitch Live channels can be filtered and paged. Chips for All, Music, ASMR, any category added
-  with "＋ Category" (searched on Twitch, saved in the Twitch preferences) and Your channels;
-  a sort menu (Most watched, Fewest watched, Your channels first); rows show the stream title,
-  category, viewers, language and the stream preview; "Show more" reads the next Twitch page.
-  The row menu adds "Add to your channels" and "Hide this channel". A signed-out status line says
-  that your channels still play.
-- Below 560 px the Rooms | Listen switcher is a bar at the bottom of the window.
-
-### Changed
 - Live channels no longer stop at 60 and no longer lose ASMR: each category keeps its own list
   and cursor instead of being merged and cut. The Listen shelf shows the categories taking turns.
 - World radio search puts whole-word and tag matches ahead of matches inside longer words
@@ -78,38 +69,11 @@ All notable changes are recorded here. The format follows
 - Browse rooms and Listen fit a 360 px window: room cards go one per line, the station page is
   built stacked, station cards are wider, the Listen scope chips scroll sideways instead of
   ellipsizing, and Recently played lists each station once.
-
-### Added
-- **Watch** a YouTube video with sound, from every YouTube result, shelf row and the
-  YouTube link sheet. It opens in its own player window (not as audio plus picture),
-  pauses the room's Music and Ambience the way Pause does, and Now shows
-  "Watching · ‹title›" with Stop watching. When the video stops, a toast offers Resume;
-  the room never resumes on its own. With no room, Watch just plays.
-- **Show as scene** on YouTube rows: the video becomes the room's silent scene, only the
-  picture changes, and the room is marked Changed with Save as my room.
-- YouTube suggestions before you type, without an account: Your saved YouTube, "For
-  ‹room›" and "Live now", cached on disk (shown at once, refreshed at most hourly, kept
-  for a day) and fetched off the GTK thread. Browsing them starts nothing.
-- The session controller has a `video` action (`start` with a public YouTube `url` and
-  `name`, queued; `stop`, at once) and a `video` snapshot field (status, name, url,
-  started_at, room_paused) while the Watch window is open.
-
-### Changed
 - YouTube rows say Play for videos and Tune in only for live streams. Their menu puts
   Show as scene first (it never interrupts sound), then Play as ambience, Save as station
   and Open elsewhere. The YouTube link sheet offers Play, Watch, Show as scene, Play as
   ambience and Open elsewhere, in the same order and words. While choosing an ambience,
   Play as music and Watch move into the row menu.
-
-### Added
-- Each Mix row (Music, Ambience) has its own Pause/Play and Stop buttons; a row paused on
-  its own says "paused" in the accent colour. `listening-roomctl music|ambience
-  pause|play|toggle|stop|next` exposes the same layer actions.
-- A `transport` controller action (`toggle`, `pause`, `play`) is the one room Play/Pause:
-  MPRIS, the media keys and `listening-roomctl toggle|pause|play` use it.
-- `inspect` reports the latest start as `entry` (id, name, state, error, the room kept).
-
-### Changed
 - MPRIS Play/Pause/PlayPause and the media keys pause and resume the whole room, as the
   window's Pause does, instead of the music layer alone; MPRIS Stop and the media Stop
   key leave the room. `PlaybackStatus` is the room's (Playing while any layer plays) and
@@ -121,17 +85,6 @@ All notable changes are recorded here. The format follows
 - No ⋯ menu holds a single item: Mix rows always offer Change… and Stop there (with Next
   track and Try again when they apply), and a Listen row with one extra action shows it
   as a button.
-
-### Fixed
-- Entering a room from idle whose music fails but whose ambience or scene starts enters the
-  room, with the failure and Try again on the Music layer.
-- A start where nothing can start no longer returns silently to Rooms: Now keeps the card "Couldn’t
-  start ‹room›" with Try again and Back, named after the room tried. A room that kept
-  playing does not show that failure as its own music failing.
-- Connecting no longer shows Next track or More/Less like this, a stale Mix summary, or
-  room volume 0 while the stored volume is not 0.
-
-### Changed
 - Removed 17 scene tuning `color` keys the motion engine never reads (electrical effects
   in four rooms and the second water effect in after-hours). The rendered loops are
   byte-identical. Their colours are listed for a later scene review rather than honoured.
@@ -142,6 +95,38 @@ All notable changes are recorded here. The format follows
   covers it. Non-Python children are not covered.
 - `scripts/listening-dev.sh probe` and `acceptance` run their GUI children in a low-CPU-weight
   user scope at nice 10 (`LISTENING_DEV_PRIORITY=normal` turns it off).
+
+### Fixed
+- A station whose Familiarity was never set shows "A mix" (its neutral choice), not
+  "Familiar", the first button.
+- `tests/test_listening_station_eof.py` no longer fails now and then with
+  ConnectionRefused: the decoder creates its control socket a moment before it listens,
+  and the test now waits for the connection to be accepted, not for the file to exist.
+- A refresh failure (backend down) and audio-policy changes are now pushed to
+  subscribers; before, they only showed on the next unrelated change, and a window
+  that stops polling while the stream is up never saw them.
+- A transient snapshot failure no longer fails or silently closes a `subscribe`: it
+  serves the latest good revision (a subscribe before any snapshot waits for the
+  first; MPRIS ignores changes until then). Subscribers wait at most 10 s for the fresh snapshot instead of for as long
+  as the controller lock is held.
+- The client's protocol-version probe no longer times out after 1 s: `inspect` with
+  `fields: []` returns just the version without a snapshot or the controller lock,
+  so a loaded host or an oversize snapshot cannot make the controller look
+  disconnected. Protocol-1 controllers are still detected and never sent `subscribe`.
+- `status --follow` exits as soon as Waybar's pipe is closed, even when the status
+  does not change, instead of holding a subscriber slot.
+- Snapshot feed listeners run only on the feed thread, as documented, and may call
+  `refresh()` without deadlocking.
+- Scenes loop again: a scene stopped moving at the end of its clip (about 20 s after
+  entering a room), because GTK's own looping stops at the end of the stream with
+  this GTK and GStreamer. A playing loop now starts over itself, on the same pipeline.
+- Entering a room from idle whose music fails but whose ambience or scene starts enters the
+  room, with the failure and Try again on the Music layer.
+- A start where nothing can start no longer returns silently to Rooms: Now keeps the card "Couldn’t
+  start ‹room›" with Try again and Back, named after the room tried. A room that kept
+  playing does not show that failure as its own music failing.
+- Connecting no longer shows Next track or More/Less like this, a stale Mix summary, or
+  room volume 0 while the stored volume is not 0.
 
 ## [2.4.0] - 2026-11-21
 
