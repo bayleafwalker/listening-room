@@ -1,0 +1,38 @@
+# O11-MEDIA acceptance (tests/probes/listening-o11m-acceptance.py), written by the independent acceptance author.
+# This is the TARGET: every check passes. On main 70db15e (2.5.0) it fails F8 Mix (Listen sits at its limit), H1 (41 MB per
+# loop), P1-P3 (paused loops keep +66-80 threads, 56 streaming threads, ~41 MB each), R0, R1 (the first return to a loop
+# holds the GTK thread ~200 ms) and N1. Evidence and readings: the O11m acceptance phase-1 report.
+# Limits set by the author, not the brief (P1, P2, P3, F8, F9, the 15 s release wait) are flagged for a coordinator ruling.
+# Entries with @@ declare the measured part of the name; everything else must match exactly.
+S1 the dev shell provides GStreamer playbin3 to the window (scene loops can play)
+F8 switching to Listen costs at most 14.4 ms GTK-thread CPU (median of 10, @@ ms)
+F8 switching to Now costs at most 24.0 ms GTK-thread CPU (median of 10, @@ ms)
+F8 opening Mix costs at most 11.0 ms GTK-thread CPU (median of 10, @@ ms)
+pages: the child finished without a crash or hang
+pages: the child reported all its oracles and exited 0
+M0 fixture: 8 catalogue loop rooms with 8 distinct loop files
+M1 every catalogue loop visibly played in its preview before its cost was measured
+H0 the cost was measured at load 20+ (1-minute load @@ at the first loop, @@ with all 8)
+H1 each catalogue loop after the first adds at most 40 MB, the O10 way and as a robust slope (@@ MB per loop, Theil-Sen @@ MB)
+H2 the 8 catalogue loops cost under 400 MB in total, at every sample after the first loop (@@ MB at the end, worst @@ MB)
+P1 with all 8 catalogue loops off screen the media holds at most 24 threads (2.5.0: +80; @@)
+P2 ... and at most 7 GStreamer streaming threads: one loop may stay warm (2.5.0: 56; @@)
+P3 a paused loop keeps at most 10 MB: its still and little else (2.5.0: 42-49 MB; Theil-Sen @@ MB per loop over the 8 off-screen samples)
+R0 the entered room played, and with it off screen the media also let go (@@ streaming threads)
+R1 returning to a loop that let go never holds the GTK thread over 100 ms (4 previews and Now; worst @@ ms without run-queue wait)
+R2 returning to a loop that let go shows no black or blank frame (sampled at about 30 Hz)
+R3 a loop that let go moves again when shown (4 previews and Now)
+R4 resuming previews is inert: no controller command, no process, no audio sink
+L1 a resumed scene keeps looping past its 20 s clip, with no black or blank frame at the seam
+L2 reduced motion: returning to a loop shows its still and acquires nothing (no new streaming thread, no player built)
+F9 Python GObject wrappers stay flat across previews: at most 0.1 more per preview over 20 (@@ per preview)
+D1 no player is disposed while the window lives: no GstPlay thread went away (@@ lost of @@ seen)
+D2 no player pipeline is built twice for a loop file, after every loop was shown, let go and shown again (@@ built for 8 loop files)
+D3 no Gtk.MediaFile with an open file is cleared, re-opened or finalized while the window lives
+media: the child finished without a crash or hang
+media: the child reported all its oracles and exited 0
+X1 stress: at least 300 scene-media stress cycles ran with scene loops (@@ attempted, @@ completed)
+X2 stress: zero crashes over those cycles (@@ crashed children)
+X3 stress: the host load was above 15 for part of the run (peak @@)
+X4 stress: every stress child finished all its cycles without raising
+N1 the CHANGELOG records the change: the section above 2.5.0 says what happens to loops off screen
