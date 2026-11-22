@@ -1,0 +1,20 @@
+# O12-PRESENTER acceptance. These checks are independently derived from the O12 brief and P1.
+P0 existing saved stations are Presenter-off by default and their detail visibly says Presenter
+P0b an existing room stays silent between tracks: no presenter object is enabled before opt-in
+P0c an untouched saved station contains references/preferences only, never audio, prepared stream or token
+P1 station detail exposes a Presenter switch and a visible adjustable budget
+P1b Less talking is station feedback: it lowers/persists the budget without changing station
+P1c Music only is station feedback: it turns Presenter off without changing station
+P2 the Mix exposes a Presenter row with its own level and Mute
+P2b muting Presenter during a segment never advances, pauses, or delays music
+P3 listening-roomctl inspect reports presenter enabled, budget, quiet status and recent sourced outcomes
+P3b MPRIS remains music playback while an optional presenter layer is enabled
+P4 LLM timeout drops the slot quietly, records a reason, and leaves music playing without an error card
+P4 malformed LLM output drops the slot quietly, records a reason, and leaves music playing without an error card
+P4 missing speech endpoint drops the slot quietly, records a reason, and leaves music playing without an error card
+P4 failing speech endpoint drops the slot quietly, records a reason, and leaves music playing without an error card
+P5 prepared eligible segments use loopback LLM and speech connections and retain text plus captured sources
+P5b a segment not ready at its slot is dropped rather than creating a gap
+P6 a primary speech station suppresses presenter segments while it plays
+P7 an item with no metadata gets no factual presenter segment
+P8 a segment does not repeat within the station history window
