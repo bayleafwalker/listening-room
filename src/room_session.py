@@ -622,6 +622,7 @@ class Controller:
         self.presenter_unit = None
         self._music_position_item = None
         self._music_position = 0.
+        self._music_position_at = self.clock()
         self.strict_pending = None
         self.verified_audio = None
         self.verified_record = None
@@ -1089,12 +1090,15 @@ class Controller:
                     music_layer['item'] = item_identity
                     music_layer['id'] = reference.get('id')
                     music_layer['name'] = reference.get('name') or music_layer.get('name')
+                item_identity = reference.get('id') or reference.get('name') or music_layer.get('source_id')
+                if item_identity != self._music_position_item:
+                    self._music_position_item, self._music_position = item_identity, 0.
+                    self._music_position_at = self.clock()
                 if isinstance(details.get('position'), (int, float)):
-                    item_identity = reference.get('id') or reference.get('name') or music_layer.get('source_id')
-                    if item_identity != self._music_position_item:
-                        self._music_position_item, self._music_position = item_identity, 0.
                     self._music_position = max(self._music_position, float(details['position']))
-                    music_layer['position'] = self._music_position
+                elif music_layer.get('status') == 'Playing':
+                    self._music_position = max(self._music_position, self.clock() - self._music_position_at)
+                music_layer['position'] = self._music_position
             atmosphere = (self.active or {}).get('atmosphere') or {}
             atmosphere_queue = atmosphere.get('queue') or []
             atmosphere_index = atmosphere.get('queue_index', 0)
@@ -2164,7 +2168,7 @@ class Controller:
         used = {segment.get('source') for segment in self.presenter.segments
                 if segment.get('outcome') == 'played' and segment.get('source')
                 and segment.get('_station_id') == station.get('id')}
-        for clip in station.get('presenter_clips') or []:
+        for clip in (station.get('preferences') or {}).get('presenter_clips') or []:
             if (clip.get('allowed_placement') == 'between_tracks'
                     and clip.get('expires_at', float('inf')) >= self.clock()
                     and clip.get('source') not in used):

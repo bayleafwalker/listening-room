@@ -71,7 +71,7 @@ def normalize(value):
     # Presenter preferences stay with the station's intent, never with prepared audio.
     import presenter
     presenter_settings = presenter.preferences(value.get('presenter'))
-    clips = value.get('presenter_clips') or []
+    clips = prefs.get('presenter_clips', value.get('presenter_clips')) or []
     if not isinstance(clips, list) or len(clips) > 20:
         raise ValueError('Presenter clips must be a list')
     clean_clips = []
@@ -84,6 +84,8 @@ def normalize(value):
             raise ValueError('Choose a valid presenter clip')
         clean_clips.append({key: copy.deepcopy(clip[key]) for key in
                             ('source', 'audio', 'allowed_placement', 'expires_at', 'text') if key in clip})
+    if clean_clips:
+        clean_prefs['presenter_clips'] = clean_clips
     primary_speech = value.get('speech', False)
     if not isinstance(primary_speech, bool):
         raise ValueError('Station speech marker must be on or off')
@@ -102,8 +104,7 @@ def normalize(value):
     return {'id': identity, 'name': name, 'sources': [_source(s) for s in sources],
             'fallbacks': [_source(s) for s in fallbacks], 'preferences': clean_prefs,
             'end_policy': policy, 'arc': arc, 'generation': {'kind': generation['kind']},
-            'presenter': presenter_settings, 'presenter_clips': clean_clips,
-            'speech': primary_speech}
+            'presenter': presenter_settings, 'speech': primary_speech}
 
 
 def identity(item):

@@ -29,12 +29,12 @@ class PresenterTests(unittest.TestCase):
         with patch.object(value, '_chat') as chat:
             self.assertIsNone(value.prepare(self.STATION, {}))
         self.assertFalse(chat.called)
-        self.assertEqual(value.snapshot()['segments'][0]['reason'], 'no captured metadata')
+        self.assertEqual(value.snapshot()['segments'][-1]['reason'], 'no captured metadata')
 
     def test_primary_speech_suppresses_a_slot(self):
         value = presenter.Presenter()
         self.assertIsNone(value.prepare(self.STATION, self.TRACK, self.RECORD, primary_speech=True))
-        self.assertEqual(value.snapshot()['segments'][0]['reason'], 'primary speech source')
+        self.assertEqual(value.snapshot()['segments'][-1]['reason'], 'primary speech source')
 
     def test_malformed_and_voice_failure_leave_a_receipt_not_a_gap(self):
         value = presenter.Presenter()
@@ -60,7 +60,7 @@ class PresenterTests(unittest.TestCase):
                 patch.object(value, '_chat', return_value='A short link.'), patch.object(value, '_speech', return_value=self.wav()):
             self.assertEqual(value.prepare(self.STATION, self.TRACK, self.RECORD)['outcome'], 'played')
             self.assertIsNone(value.prepare(self.STATION, self.TRACK, self.RECORD))
-        segment = value.snapshot()['segments'][0]
+        segment = value.snapshot()['segments'][-1]
         self.assertEqual(segment['reason'], 'repeated segment')
         self.assertEqual(segment['sources'][0]['source'], 'track-1')
 
@@ -78,7 +78,7 @@ class PresenterTests(unittest.TestCase):
     def test_expired_clip_is_dropped(self):
         value = presenter.Presenter(clock=lambda: 10)
         self.assertIsNone(value.prepare(self.STATION, self.TRACK, clip={'text': 'Old', 'expires_at': 9}))
-        self.assertEqual(value.snapshot()['segments'][0]['reason'], 'clip expired')
+        self.assertEqual(value.snapshot()['segments'][-1]['reason'], 'clip expired')
 
 
 if __name__ == '__main__':

@@ -69,8 +69,8 @@ class Presenter:
 
     def record_drop(self, reason, sources=()):
         with self._lock:
-            self.segments.insert(0, {'text': '', 'sources': list(sources), 'outcome': 'dropped', 'reason': reason})
-            del self.segments[self.history:]
+            self.segments.append({'text': '', 'sources': list(sources), 'outcome': 'dropped', 'reason': reason})
+            del self.segments[:-self.history]
 
     def prepare(self, station, item, metadata_record=None, primary_speech=False, clip=None, timeout=3, cancel=None):
         setting = preferences((station or {}).get('presenter'))
@@ -123,8 +123,8 @@ class Presenter:
             segment.update(source=clip['source'], placement=clip['allowed_placement'])
         with self._lock:
             self.status = ''
-            self.segments.insert(0, segment); self._texts.insert(0, text)
-            del self.segments[self.history:]; del self._texts[self.history:]
+            self.segments.append(segment); self._texts.append(text)
+            del self.segments[:-self.history]; del self._texts[:-self.history]
         return segment
 
     def discard(self, segment, remove=False):

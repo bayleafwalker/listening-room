@@ -47,7 +47,10 @@ class StationTests(unittest.TestCase):
     def presenter_station(self, **extra):
         value = station()
         value['presenter'] = {'enabled': True, 'budget': {'every_tracks': 2, 'max_seconds': 5}}
+        clips = extra.pop('presenter_clips', None)
         value.update(extra)
+        if clips is not None:
+            value.setdefault('preferences', {})['presenter_clips'] = clips
         return value
 
     def start_presenter_station(self, controller, definition=None):
@@ -132,7 +135,7 @@ class StationTests(unittest.TestCase):
         with mock.patch.object(other.presenter, '_chat') as chat:
             self.start_presenter_station(other, self.presenter_station(speech=True))
         self.assertFalse(chat.called)
-        self.assertEqual(other.snapshot()['presenter']['segments'][0]['reason'], 'primary speech source')
+        self.assertEqual(other.snapshot()['presenter']['segments'][-1]['reason'], 'primary speech source')
 
     def test_bounded_queue_excludes_recent_and_stops(self):
         program = station_engine.Program(station(), [track(n) for n in range(20)], seed=1)

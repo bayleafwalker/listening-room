@@ -248,5 +248,5 @@ when that slot ends. A slot lasts the WAV's actual duration (never beyond the ch
 maximum), even when Presenter is muted, so muting speech never changes the music
 programme clock. The first slot is the first natural track end, then the configured
 number of naturally ended tracks apart; skips do not create slots. Eligible unexpired
-`presenter_clips` use the same slots before generated links (local `audio`, provenance
+`preferences.presenter_clips` use the same slots before generated links (local `audio`, provenance
 `source`, `allowed_placement: "between_tracks"`, and optional Unix `expires_at`).
