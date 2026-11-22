@@ -94,6 +94,7 @@
 9o Test sound plays a test sound and sends no playback command to the room
 9p Output popover has a system volume control
 9q system volume slider changes the system volume
+10a loop plays muted while visible and pauses while the window is hidden
 10b reduced motion: no playing video/media stream anywhere
 10c reduced motion: no video widget or media paintable in the tree
 10d reduced motion: still art is shown behind Now (non-flat pixels above the scrim; stdev 23.7 >= 8)
