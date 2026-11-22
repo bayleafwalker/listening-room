@@ -2175,10 +2175,29 @@ class Controller:
                 return clip
         return None
 
+    def _presenter_metadata(self, station, item):
+        record = self._metadata_cached(item)
+        if record or not isinstance(item, dict) or not item.get('id'):
+            return record
+        # A saved station source may name the opaque library origin used by the
+        # captured metadata store.  The reference still selects the exact item;
+        # display fields never become facts.
+        for source in station.get('sources') or []:
+            origin = source.get('source_id') if isinstance(source, dict) else None
+            if not isinstance(origin, str):
+                continue
+            try:
+                record = self.metadata_store.current(origin, item['id'])
+            except (ValueError, OSError):
+                continue
+            if record:
+                return record
+        return None
+
     def _prepare_presenter(self, station, item, generation, cancel):
         """Provider work stays on the controller worker, outside the session lock."""
         try:
-            record = self._metadata_cached(item)
+            record = self._presenter_metadata(station, item)
             segment = self.presenter.prepare(station, item, metadata_record=record,
                 primary_speech=self._primary_speech(station, self.active), clip=self._presenter_clip(station),
                 cancel=cancel)

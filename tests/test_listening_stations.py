@@ -81,6 +81,7 @@ class StationTests(unittest.TestCase):
             controller.presenter_play_worker.submit(lambda: None).result(timeout=2)
             controller.worker.submit(lambda: None).result(timeout=2)
             self.assertNotEqual(controller.active['music']['reference']['id'], first)
+            controller.presenter_worker.submit(lambda: None).result(timeout=2)
 
     def test_station_change_stops_generation_bound_presenter_immediately(self):
         backend = FakeBackend()
