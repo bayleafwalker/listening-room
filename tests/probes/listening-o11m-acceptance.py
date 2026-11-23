@@ -227,7 +227,7 @@ class Load:
         """Start enough helpers to settle a little above `target` without waiting (at most 32)."""
         for _ in range(max(0, min(int(target + 4 - os.getloadavg()[0]), 32 - len(self.procs)))):
             self.procs.append(subprocess.Popen([sys.executable, '-c', 'while True: pass'], preexec_fn=die_with_parent))
-        self.info('load helpers: %d started for the stress run (load 1m %.1f, target %.0f)' % (
+        self.info('load helpers: %d started (load 1m %.1f, target %.0f)' % (
             len(self.procs), os.getloadavg()[0], target))
 
     def stop(self):
