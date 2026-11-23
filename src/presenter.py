@@ -59,8 +59,9 @@ def metadata_sources(record, item=None):
 
 
 class Presenter:
-    def __init__(self, clock=time.time, history=12):
-        self.clock, self.history = clock, history
+    def __init__(self, clock=time.time, history=12, records=60):
+        # history: spoken texts remembered per station; records: outcomes the snapshot lists.
+        self.clock, self.history, self.records = clock, history, records
         self.segments, self.status, self._texts = [], '', {}  # _texts: recent spoken text per station
         self.level, self.muted = 50., False
         self._lock = threading.RLock()
@@ -77,7 +78,7 @@ class Presenter:
         with self._lock:
             record = {'text': '', 'sources': list(sources), 'outcome': 'dropped', 'reason': reason}
             self.segments.append(record)
-            del self.segments[:-self.history]
+            del self.segments[:-self.records]
 
     def prepare(self, *args, **kwargs):
         """Prepare a segment and record its drop, if any (the session records drops per slot)."""
@@ -141,7 +142,7 @@ class Presenter:
             self.segments.append(segment)
             recent = self._texts.setdefault(station.get('id'), [])
             recent.append(text)
-            del self.segments[:-self.history]; del recent[:-self.history]
+            del self.segments[:-self.records]; del recent[:-self.history]
         return segment, None
 
     def discard(self, segment, remove=False):
