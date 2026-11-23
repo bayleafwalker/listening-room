@@ -21,10 +21,10 @@ SCENE_THUMB = (148, 83)   # a card poster at 16:9; the build's pre-scaled card f
 
 ICONS = {'music': 'audio-x-generic-symbolic', 'atmosphere': 'weather-showers-symbolic',
          'picture': 'image-x-generic-symbolic'}
-# The Mix's own keys (O11-CONTROL), one list for the window's shortcut table to merge: (keys, what they do).
-MIX_SHORTCUTS = (('M', 'Pause or play music, in the Mix'),
-                 ('A', 'Pause or play the ambience, in the Mix'),
-                 ('Shift+Up / Down', 'The focused row’s level, in the Mix'))
+# The Mix's own keys, the Mix page of the window's shortcut table: (GTK accelerator, keys, what they do).
+MIX_SHORTCUTS = (('m', 'M', 'Pause or play music, in the Mix'),
+                 ('a', 'A', 'Pause or play the ambience, in the Mix'),
+                 ('<Shift>Up <Shift>Down', 'Shift+Up / Down', 'The focused row’s level, in the Mix'))
 LEVEL_STEP = 5
 
 

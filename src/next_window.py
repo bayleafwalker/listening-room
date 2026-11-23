@@ -24,7 +24,7 @@ import next_model as model
 from next_actions import RoomActions, Ticket
 from next_async import call_on_main, error_text, pool, run_async
 from next_mini import MINI_CSS, MiniPlayer, MiniWindow
-from next_mix import MixSheet
+from next_mix import MIX_SHORTCUTS, MixSheet
 from next_rooms import RoomsPage
 from next_watching import Watching
 from next_widgets import (FocalPicture, choose_renderer, show_texture, OutputPopover, Scene, TimerPopover, accent_css, icon_button,
@@ -75,10 +75,8 @@ SHORTCUT_PAGES = (
     ('Now', (
         Shortcut('space', 'Space', 'Pause or play the room'),
         Shortcut('Up Down', 'Up / Down', 'Room volume, in Now and the mini player'),
-        # Reserved for the O11-CONTROL lane (Mix keys); the coordinator adds them here when that lane lands:
-        #   Shortcut('m', 'M', 'Open or close Mix'), Shortcut('a', 'A', 'Choose an ambience'),
-        #   Shortcut('<Shift>Up <Shift>Down', 'Shift+Up / Shift+Down', 'Ambience level')
     )),
+    ('Mix', tuple(Shortcut(*row) for row in MIX_SHORTCUTS)),   # read by the Mix's key controller
     ('Listen', (
         Shortcut('<Control>f', 'Ctrl+F', 'Search Listen', 'listen.search'),
         Shortcut('<Control>l', 'Ctrl+L', 'Add a link', 'listen.link'),

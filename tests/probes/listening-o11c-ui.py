@@ -99,7 +99,7 @@ with env:
     check('K6 M does nothing while the Mix is closed', not mix.keys.emit('key-pressed', Gdk.KEY_m, 0, 0)
           and not env.commands(mark), env.commands(mark))
     check('K7 the Mix keys are one list for the shortcut table',
-          [k for k, _ in __import__('next_mix').MIX_SHORTCUTS] == ['M', 'A', 'Shift+Up / Down'])
+          [k for _a, k, _ in __import__('next_mix').MIX_SHORTCUTS] == ['M', 'A', 'Shift+Up / Down'])
 
     # ---- row buttons (N10) ------------------------------------------------------------------------
     window.open_mix()
