@@ -150,7 +150,9 @@ class SessionTests(unittest.TestCase):
             'duration': .3, '_max_seconds': 5, '_audio_path': '', '_station_id': station['id']}
         self.controller.queue_step = mock.Mock()
         self.controller._presenter_then_next(self.controller.generation)
-        self.assertTrue(self.backend.presenter_started.wait(1))
+        with self.controller.presenter_pause:
+            self.assertTrue(self.controller.presenter_pause.wait_for(
+                lambda: self.controller.presenter_unit is not None, timeout=1))
         self.controller.transport('pause')
         time.sleep(.35)
         self.assertFalse(self.backend.presenter_stopped.is_set())

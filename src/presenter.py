@@ -6,6 +6,7 @@ records a dropped slot: music carries on and no audio is retained in station sta
 import json
 import io
 import os
+from contextlib import contextmanager
 from pathlib import Path
 import tempfile
 import threading
@@ -64,17 +65,36 @@ class Presenter:
         self.segments, self.status, self._texts = [], '', []
         self.level, self.muted = 50., False
         self._lock = threading.RLock()
+        self._preparation = threading.local()
 
-    def snapshot(self, station=None):
+    def snapshot(self, station=None, ready=False):
         setting = preferences((station or {}).get('presenter'))
         with self._lock:
             return {'enabled': setting['enabled'], 'budget': setting['budget'], 'status': self.status,
+                    'ready': bool(ready),
                     'segments': [{k: v for k, v in segment.items() if not k.startswith('_')}
                                  for segment in self.segments], 'level': self.level, 'muted': self.muted}
 
+    @contextmanager
+    def preparation(self, identity):
+        self._preparation.identity = identity
+        try:
+            yield
+        finally:
+            self._preparation.identity = None
+
+    def discard_preparation_records(self, identity):
+        """Forget preparation records superseded by that slot's late outcome."""
+        with self._lock:
+            self.segments[:] = [item for item in self.segments if item.get('_preparation') is not identity]
+
     def record_drop(self, reason, sources=()):
         with self._lock:
-            self.segments.append({'text': '', 'sources': list(sources), 'outcome': 'dropped', 'reason': reason})
+            record = {'text': '', 'sources': list(sources), 'outcome': 'dropped', 'reason': reason}
+            identity = getattr(self._preparation, 'identity', None)
+            if identity is not None:
+                record['_preparation'] = identity
+            self.segments.append(record)
             del self.segments[:-self.history]
 
     def prepare(self, station, item, metadata_record=None, primary_speech=False, clip=None, timeout=3, cancel=None):

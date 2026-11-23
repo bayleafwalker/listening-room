@@ -622,6 +622,8 @@ class Controller:
         self.presenter = presenter.Presenter(clock=clock)
         self.presenter_prepared = None
         self.presenter_prepare_pending = False
+        self.presenter_prepare_recorded_drop = False
+        self.presenter_prepare_drop_consumed = False
         self.presenter_slot_pending = False
         self.presenter_unit = None
         self.presenter_pause = threading.Condition()
@@ -1023,7 +1025,7 @@ class Controller:
                           'station_recent': self.station_history,
                           'station_learned': {key: bool(value.get('liked_artists') or value.get('disliked'))
                                               for key, value in self.station_memory.items() if isinstance(value, dict)},
-                          'presenter': self.presenter.snapshot(active_station),
+                          'presenter': self.presenter.snapshot(active_station, ready=bool(self.presenter_prepared)),
                           'config_generation': _config_generation(),
                           'station': ({'definition': self.program.station, 'upcoming': ([self.program.override] if self.program.override else []) + self.program.queue,
                                        'recent': self.program.recent,
@@ -2355,20 +2357,25 @@ class Controller:
 
     def _prepare_presenter(self, station, item, generation, cancel):
         """Provider work stays on the controller worker, outside the session lock."""
+        preparation = object()
         try:
             record = self._presenter_metadata(station, item)
-            segment = self.presenter.prepare(station, item, metadata_record=record,
-                primary_speech=self._primary_speech(station, self.active), clip=self._presenter_clip(station),
-                cancel=cancel)
+            with self.presenter.preparation(preparation):
+                segment = self.presenter.prepare(station, item, metadata_record=record,
+                    primary_speech=self._primary_speech(station, self.active), clip=self._presenter_clip(station),
+                    cancel=cancel)
             with self.lock:
-                if generation != self.generation or cancel.is_set() or self.closed:
+                if self.presenter_prepare_drop_consumed:
+                    self.presenter.discard(segment, remove=True)
+                    self.presenter.discard_preparation_records(preparation)
+                elif generation != self.generation or cancel.is_set() or self.closed:
                     self.presenter.discard(segment, remove=True)
                 else:
                     self.presenter_prepared = segment
+                    self.presenter_prepare_recorded_drop = segment is None
         finally:
             with self.lock:
-                if generation == self.generation:
-                    self.presenter_prepare_pending = False
+                self.presenter_prepare_pending = False
             self._changed()
 
     def _schedule_presenter(self, station, item, generation, cancel):
@@ -2376,9 +2383,11 @@ class Controller:
         if not setting['enabled'] or not item:
             return
         with self.lock:
-            if self.presenter_prepare_pending or self.presenter_prepared:
+            if self.presenter_prepare_pending or self.presenter_prepared or self.presenter_prepare_recorded_drop:
                 return
             self.presenter_prepare_pending = True
+            self.presenter_prepare_recorded_drop = False
+            self.presenter_prepare_drop_consumed = False
         self.presenter_worker.submit(self._prepare_presenter, _copy(station), _copy(item), generation, cancel)
 
     def _presenter_then_next(self, generation):
@@ -2395,7 +2404,12 @@ class Controller:
             self.queue_step(1, automatic=True)
             return
         if not segment:
-            self.presenter.record_drop('late')
+            if self.presenter_prepare_pending:
+                self.presenter.record_drop('late')
+                self.presenter_prepare_drop_consumed = True
+            elif not self.presenter_prepare_recorded_drop:
+                self.presenter.record_drop('late')
+            self.presenter_prepare_recorded_drop = False
             self.queue_step(1, automatic=True)
             return
         self.presenter_slot_pending = True
@@ -2410,7 +2424,9 @@ class Controller:
                 unit = self.backend.start_presenter(segment, level_value, muted)
                 with self.lock:
                     if generation == self.generation:
-                        self.presenter_unit = unit
+                        with self.presenter_pause:
+                            self.presenter_unit = unit
+                            self.presenter_pause.notify_all()
                 # Muting does not alter the programme clock. Room Pause does: its
                 # own clock stops until Play, while invalidation ends the slot.
                 remaining = duration

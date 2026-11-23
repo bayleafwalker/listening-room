@@ -97,7 +97,7 @@ class StationTests(unittest.TestCase):
             controller.dispatch('music', {'item': {'id': 'other', 'name': 'Other', 'url': 'https://example.test/music'}})
             self.assertTrue(backend.presenter_stopped.wait(.5))
 
-    def test_late_and_llm_failure_are_quiet_drops_at_verified_track_end(self):
+    def test_prepare_failure_is_the_only_drop_at_verified_track_end(self):
         backend = FakeBackend()
         controller = room_session.Controller(backend, self.temp.name)
         self.addCleanup(controller.close)
@@ -112,9 +112,43 @@ class StationTests(unittest.TestCase):
         snapshot = controller.snapshot()['presenter']
         self.assertIn('model missing', snapshot['status'])
         reasons = [x['reason'] for x in snapshot['segments']]
-        self.assertIn('late', reasons)
-        self.assertIn('language unavailable', reasons)
+        self.assertEqual(reasons, ['language unavailable'])
         self.assertFalse(backend.presenter_started.is_set())
+
+    def test_pending_preparation_records_only_late_for_its_slot(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        preparing = threading.Event()
+        release = threading.Event()
+
+        def slow_failure(*_args, **_kwargs):
+            preparing.set()
+            release.wait(2)
+            controller.presenter.record_drop('language unavailable')
+
+        with mock.patch.object(controller.presenter, 'prepare', side_effect=slow_failure):
+            saved = controller.dispatch('station.save', {'station': self.presenter_station()})['station']
+            with mock.patch.object(controller, '_home_action'), mock.patch.object(controller, '_route_preferred'), \
+                    mock.patch('online_services.jellyfin_queue', return_value=[track(1)]):
+                controller.dispatch('station.start', {'id': saved['id']})
+                self.assertTrue(preparing.wait(1))
+                backend.media = {'eof_reached': True}
+                controller.refresh()
+                controller.worker.submit(lambda: None).result(timeout=2)
+                self.assertEqual(controller.presenter.segments[-1]['reason'], 'late')
+                release.set()
+                controller.presenter_worker.submit(lambda: None).result(timeout=3)
+
+        reasons = [item['reason'] for item in controller.snapshot()['presenter']['segments']]
+        self.assertEqual(reasons, ['late'])
+
+    def test_snapshot_ready_tracks_prepared_segment(self):
+        controller = room_session.Controller(FakeBackend(), self.temp.name)
+        self.addCleanup(controller.close)
+        self.assertFalse(controller.snapshot()['presenter']['ready'])
+        controller.presenter_prepared = {'text': 'Ready'}
+        self.assertTrue(controller.snapshot()['presenter']['ready'])
 
     def test_clip_uses_same_slot_and_primary_speech_suppresses_generation(self):
         clip_path = Path(self.temp.name) / 'clip.wav'
