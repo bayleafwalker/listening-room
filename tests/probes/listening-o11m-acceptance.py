@@ -1224,9 +1224,10 @@ def churn(env, step, check, info):
           peak_ctx <= loops and peak_disp <= loops and max(end_gl + final_gl) <= loops,
           (peak_ctx, peak_disp, end_gl, final_gl), measured=(peak_ctx, peak_disp) + end_gl)
     # C4 [ORIGINAL] took "settled" as 3 s without a change in GL threads or fds. On dd4985e (run o11m-run, load ~17-29)
-    # it measured +17 right after the churn and +2 after one more pass, likely old sources the sweep had yet to close
-    # (it retries for up to 10 s). C4-R1 measures base, end and final the same way, once the release and the sweep's
-    # own bound have passed. A leak persists past that; C4 still runs as a SUPERSEDED line, not counted.
+    # it measured +17 right after the churn and +2 after one more pass. The rerun's fd kinds show the swing is dmabuf
+    # fds (the stills' frames: +4, then -11), not files. C4-R1 measures base, end and final the same way, once the
+    # release and the sweep's own bound (old sources are closed within 10 s) have passed. A leak grows with the 140
+    # cycles and persists past that; C4 still runs as a SUPERSEDED line, not counted.
     grown = max(end_fds, final_fds) - base_fds
     print('SUPERSEDED %s C4 [ORIGINAL, superseded by C4-R1] churn: open files do not grow beyond one per loop file once '
           'settled (%+d since the first pass, for %d loop files)' % ('PASS' if grown <= loops else 'FAIL', grown, loops),
