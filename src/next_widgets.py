@@ -370,9 +370,10 @@ def _gst_known():
 #
 # A loop that no Scene has wanted for RELEASE_MS is stopped as well (GstPlay's own gst_play_stop: the
 # pipeline goes to READY). That ends its streaming threads (source, typefind, demuxer, queues, decoder)
-# and frees the decoder with its frames, and the heap is trimmed after. The GstPlay, its thread and the
-# GL sink stay: nothing is unreffed, cleared or finalized, so this is not a teardown. Wanted again, the
-# loop prerolls from the start on its own threads while the picture keeps the last frame it showed.
+# and frees the decoder with its frames. Once it is at READY, GTK's video sink is taken out of the pipeline
+# too (_load_shed), and the heap is trimmed after. The MediaFile, its GstPlay and the GstPlay thread stay:
+# neither is unreffed, cleared or finalized, so this is not a teardown. Wanted again, the player gets a new
+# sink and the loop prerolls from the start on its own threads while the picture keeps the last frame.
 # Each stop leaves the old file source referenced (not by this code), so its file is closed (_sweep).
 DECODER_THREADS = 1
 LOOP_LIMIT = 12           # loop files that may hold a pipeline: the catalogue's, plus a few of your own
@@ -380,6 +381,7 @@ RELEASE_MS = 1000         # an unwanted loop waits this long before it stops (le
 TRIM_MS = 500             # after a release: close old sources' files and trim the heap (looked at again until done)
 SWEEP_TRIES = 20          # ... at most this many times (10 s)
 _LOOPS = {}               # loop path -> _Loop
+SHED_GTK = (4, 24, 0)      # the GTK whose video sink leaks its GL context (see _load_shed); others keep the sink
 GST_MEDIA_FILE_FIELDS = 5  # GtkGstMediaFile's own fields after its parent (GTK 4.24), the GstPlay first
 _PLAY = {}                # GstPlay/GStreamer calls through ctypes (_load_play) and the release sweep's work, or 'off'
 
@@ -461,6 +463,8 @@ class _Loop:
         self.player = gst_player(self.media)   # its GstPlay (borrowed, never reffed), or None: never released
         self.releasing = 0    # the timeout that stops it once nobody wants it
         self.released = False
+        self.renderer = None  # its GtkGstPaintable (reffed) once its video sink was dropped
+        self.shed = False     # its video sink is dropped: renewed before it plays again
 
     def want(self, scene, playing):
         (self.wanted.add if playing else self.wanted.discard)(id(scene))
@@ -471,6 +475,9 @@ class _Loop:
             if not self.seam:
                 self.seam = self.media.connect('notify::timestamp', _Loop._restart_at_end)
             self.released = False
+            if self.shed:
+                self.shed = False
+                _PLAY['renew'](self.player, self.renderer)
             self.media.play()
         else:
             self.media.pause()
@@ -617,8 +624,117 @@ def _load_play(ctypes):
         gst.gst_object_unref(pipeline)
         return state.value <= 2 and pending.value == 0       # GST_STATE_READY, GST_STATE_VOID_PENDING
 
+    shed = renew = None
+    if (Gtk.get_major_version(), Gtk.get_minor_version(), Gtk.get_micro_version()) == SHED_GTK:
+        try:
+            shed, renew = _load_shed(ctypes, gobject, gst, play, pointer, pointers)
+        except (OSError, AttributeError):     # no libgstgl: stopped loops keep their sink, as before
+            pass
     _PLAY.update(stop=play.gst_play_stop, type=play.gst_play_get_type(), is_a=gobject.g_type_check_instance_is_a,
-                 address=address, source=source, close=close, stopped=stopped, sources=[], stopping=[], tries=0)
+                 address=address, source=source, close=close, stopped=stopped, shed=shed, renew=renew,
+                 unref=gobject.g_object_unref,
+                 sources=[], stopping=[], tries=0)
+
+
+def _load_shed(ctypes, gobject, gst, play, pointer, pointers):
+    """Dropping a stopped loop's video sink, and giving its player a new one (GTK 4.24.0 only).
+
+    A loop stopped at READY still holds GTK's video sink: GStreamer's GL upload chain with its frames
+    and pools, and the GL display and context GtkGstSink creates for itself (two threads and, with
+    software GL, most of the 35 MB a stopped loop kept). So once the pipeline is at READY, the sink is
+    taken out of playbin (its own video-sink property) and the pipeline set to NULL, so playsink lets go
+    of its video chain and the sink is finalized. GstPlay and the MediaFile are untouched. Wanted again,
+    the player gets a new sink from the same GtkGstPaintable through GstPlay's public video-renderer
+    property, as GstPlay did when GTK created it.
+
+    GtkGstSink in GTK 4.24.0 does not unref the GstGLContext it created when it is finalized (verified
+    with GStreamer's leaks tracer: after the sink is gone, only that creation reference is left, and
+    the context keeps its thread and the GL display alive). Left so, every resume would leak one. So
+    the context is looked up from the sink (its own context query, reffed) before the sink goes, and
+    after the sink is confirmed finalized, the one leaked reference is dropped only when exactly ours
+    and that one are left. Anything else (a GL frame still holding the context, a sink something else
+    still holds) leaves the context alone and stops shedding for the rest of the process."""
+    gl = ctypes.CDLL('libgstgl-1.0.so.0')
+    gl.gst_gl_context_get_type.restype = ctypes.c_size_t
+    play.gst_play_video_renderer_get_type.restype = ctypes.c_size_t
+    gobject.g_type_name_from_instance.argtypes, gobject.g_type_name_from_instance.restype = pointers, ctypes.c_char_p
+    gobject.g_object_ref.argtypes, gobject.g_object_ref.restype = pointers, pointer
+    gst.gst_element_set_state.argtypes = [pointer, ctypes.c_int]
+    gst.gst_element_get_static_pad.argtypes, gst.gst_element_get_static_pad.restype = [pointer, ctypes.c_char_p], pointer
+    gst.gst_query_new_context.argtypes, gst.gst_query_new_context.restype = [ctypes.c_char_p], pointer
+    gst.gst_pad_query.argtypes = [pointer, pointer]
+    gst.gst_query_parse_context.argtypes = [pointer, pointer]
+    gst.gst_context_get_structure.argtypes, gst.gst_context_get_structure.restype = pointers, pointer
+    gst.gst_mini_object_unref.argtypes = pointers
+    finalized = set()
+    gone = ctypes.CFUNCTYPE(None, pointer, pointer)(lambda data, _where: finalized.add(data))
+    gobject.g_object_weak_ref.argtypes = [pointer, type(gone), pointer]
+    held = [gone]       # the callback lives as long as the process (a weak ref may fire late)
+
+    def child(owner, name):
+        out = pointer()
+        gobject.g_object_get(pointer(owner), name, ctypes.byref(out), None)
+        return out.value
+
+    def refs(instance):
+        return ctypes.c_uint.from_address(instance + ctypes.sizeof(pointer)).value
+
+    def own_context(sink):
+        """The GstGLContext a GtkGstSink answers its context query with, reffed, or None."""
+        pad = gst.gst_element_get_static_pad(sink, b'sink')
+        if not pad:
+            return None
+        query, context, found = gst.gst_query_new_context(b'gst.gl.local_context'), pointer(), pointer()
+        if gst.gst_pad_query(pad, query):
+            gst.gst_query_parse_context(query, ctypes.byref(context))
+            structure = gst.gst_context_get_structure(context) if context.value else None
+            if structure:
+                gst.gst_structure_get(pointer(structure), b'context', ctypes.c_size_t(gl.gst_gl_context_get_type()),
+                                      ctypes.byref(found), None)
+        gst.gst_mini_object_unref(query)
+        gst.gst_object_unref(pad)
+        return found.value
+
+    def shed(player):
+        """Drop the sink of a player whose pipeline is at READY; its renderer (reffed), or None when the
+        sink is not GTK's and nothing was done."""
+        pipeline = play.gst_play_get_pipeline(player)
+        if not pipeline:
+            return None
+        outer = child(pipeline, b'video-sink')
+        sink = None
+        if outer:
+            sink = child(outer, b'sink') if gobject.g_type_name_from_instance(outer) == b'GstGLSinkBin' else \
+                gobject.g_object_ref(outer)
+        renderer = child(sink, b'paintable') if sink and gobject.g_type_name_from_instance(sink) == b'GtkGstSink' \
+            else None
+        if renderer and not gobject.g_type_check_instance_is_a(renderer, play.gst_play_video_renderer_get_type()):
+            gobject.g_object_unref(renderer)
+            renderer = None
+        context = own_context(sink) if renderer else None
+        if renderer:
+            gobject.g_object_weak_ref(sink, gone, sink)
+        for instance in (sink, outer):
+            if instance:
+                gobject.g_object_unref(instance)
+        if renderer:
+            gobject.g_object_set(pointer(pipeline), b'video-sink', pointer(None), None)
+            gst.gst_element_set_state(pipeline, 1)                         # GST_STATE_NULL
+            if context:
+                if sink in finalized and refs(context) == 2:
+                    gst.gst_object_unref(context)                          # GTK 4.24.0's leaked reference
+                else:
+                    _PLAY['shed'] = None                                   # not the known case: stop shedding
+                gst.gst_object_unref(context)
+            finalized.discard(sink)
+        gst.gst_object_unref(pipeline)
+        return renderer
+
+    def renew(player, renderer):
+        """A new video sink for a shed player, made by its renderer as GstPlay makes one."""
+        gobject.g_object_set(pointer(player), b'video-renderer', pointer(renderer), None)
+
+    return shed, renew
 
 
 def _after_release():
@@ -633,12 +749,24 @@ def _sweep():
     pipeline drops it, and with it the open loop file: one file per resume. Each one is closed once it is
     out of its pipeline at NULL; a source still in use (the loop resumed first) is let go unclosed.
     A stopped pipeline frees its decoder into the C heap on GstPlay's thread, and glibc keeps freed memory
-    unless asked: once every stopped pipeline is at READY (or playing again), malloc_trim runs on a worker
+    unless asked. A stopped pipeline at READY also gives up its video sink here (_load_shed). Once every
+    stopped pipeline is at READY (or playing again), malloc_trim runs on a worker
     (it takes the heap locks), not on the GTK thread. Under load GstPlay's thread may be late, so this
     looks again, up to SWEEP_TRIES times."""
     _PLAY['sweep'] = 0
     _PLAY['sources'] = [source for source in _PLAY['sources'] if not _PLAY['close'](source)]
-    _PLAY['stopping'] = [loop for loop in _PLAY['stopping'] if loop.released and not _PLAY['stopped'](loop.player)]
+    stopping = []
+    for loop in _PLAY['stopping']:
+        if loop.released and not _PLAY['stopped'](loop.player):
+            stopping.append(loop)
+        elif loop.released and not loop.shed and _PLAY.get('shed'):
+            renderer = _PLAY['shed'](loop.player)
+            if renderer and loop.renderer:
+                _PLAY['unref'](renderer)          # the same paintable, already held
+            elif renderer:
+                loop.renderer = renderer
+            loop.shed = bool(renderer)
+    _PLAY['stopping'] = stopping
     if _PLAY['sources'] or _PLAY['stopping']:
         _PLAY['tries'] += 1
         if _PLAY['tries'] < SWEEP_TRIES:

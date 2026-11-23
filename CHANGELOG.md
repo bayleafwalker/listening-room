@@ -6,12 +6,13 @@ All notable changes are recorded here. The format follows
 ## [Unreleased]
 
 ### Changed
-- A room loop that is off screen for a second gives back its streaming threads and decoder: its
-  pipeline is stopped (GStreamer's own stop, not a teardown: the player and its GL sink stay, so the
-  2.3.2 crash guarantee holds) and freed memory goes back to the system. Shown again, the loop
-  starts over while the picture keeps its last frame. With all 8 catalogue loops shown and left,
-  the window holds 32 media threads instead of 80, and the loops cost about 311 MB instead of
-  371 MB (35 MB per loop after the first instead of 42, software GL at load 20+).
+- A room loop that is off screen for a second gives back its streaming threads, its decoder and
+  its video output (GL context and buffers): its pipeline is stopped and its video sink dropped,
+  using GStreamer's own stop and player API, not a teardown, so the player and the loop stay and the
+  2.3.2 crash guarantee holds. Freed memory goes back to the system. Shown again, the loop gets a
+  new video sink and starts over while the picture keeps its last frame. With all 8 catalogue loops
+  shown and left, the window holds 16 media threads instead of 80, and a loop off screen keeps
+  about 15 MB instead of 42-49 (software GL).
 
 ## [2.5.0] - 2026-11-22
 

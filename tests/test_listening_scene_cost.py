@@ -382,6 +382,71 @@ class OldSourcesAreClosed(unittest.TestCase):
         self.assertEqual(next_widgets._PLAY['stopping'], [])
 
 
+class StoppedLoopsDropTheirSink(unittest.TestCase):
+    """Once a released loop's pipeline is at READY its video sink is dropped (once); wanted again, the
+    player gets a new sink from the same renderer before it plays. The MediaFile is the same throughout."""
+    def setUp(self):
+        self.calls, self.ready = [], set()
+        for item in [mock.patch.object(next_widgets.Gtk.MediaFile, 'new_for_filename', side_effect=FakeMedia),
+                     mock.patch.object(next_widgets, 'gst_player', side_effect=lambda media: 'player:%s' % media.path),
+                     mock.patch.object(next_widgets, 'TRIM_MS', 5),
+                     mock.patch.object(next_widgets.threading, 'Thread', side_effect=lambda **kw: mock.Mock()),
+                     mock.patch.dict(next_widgets._PLAY, {
+                         'close': lambda source, give_up=False: True, 'sources': [], 'tries': 0, 'stopping': [],
+                         'stopped': lambda player: player in self.ready,
+                         'shed': lambda player: self.calls.append(('shed', player)) or 'renderer:%s' % player,
+                         'renew': lambda player, renderer: self.calls.append(('renew', player, renderer)),
+                         'unref': lambda renderer: self.calls.append(('unref', renderer))}, clear=True)]:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def released(self, path):
+        loop = next_widgets._Loop(path)
+        loop.released = True
+        next_widgets._PLAY['stopping'].append(loop)
+        return loop
+
+    def test_the_sink_goes_once_the_pipeline_is_at_ready_and_comes_back_before_it_plays(self):
+        loop = self.released('drive.mp4')
+        next_widgets._sweep()
+        self.assertEqual(self.calls, [], 'not before READY')
+        self.ready.add('player:drive.mp4')
+        next_widgets._sweep()
+        self.assertEqual(self.calls, [('shed', 'player:drive.mp4')])
+        self.assertTrue(loop.shed)
+        self.assertEqual(loop.renderer, 'renderer:player:drive.mp4')
+        media = loop.media
+        media.play = lambda: self.calls.append(('play',))
+        loop.want('scene', True)
+        self.assertEqual(self.calls[1:], [('renew', 'player:drive.mp4', 'renderer:player:drive.mp4'), ('play',)])
+        self.assertFalse(loop.shed)
+        self.assertIs(loop.media, media)
+        loop.want('scene', True)
+        self.assertEqual(self.calls[-1], ('play',), 'renewed only once')
+        self.assertEqual(len([c for c in self.calls if c[0] == 'renew']), 1)
+
+    def test_a_second_release_keeps_the_one_renderer(self):
+        loop = self.released('drive.mp4')
+        self.ready.add('player:drive.mp4')
+        next_widgets._sweep()
+        loop.shed, loop.released = False, True
+        next_widgets._PLAY['stopping'].append(loop)
+        next_widgets._sweep()
+        self.assertEqual(self.calls[-1], ('unref', 'renderer:player:drive.mp4'), 'the same paintable, already held')
+        self.assertEqual(loop.renderer, 'renderer:player:drive.mp4')
+
+    def test_nothing_is_dropped_for_a_loop_wanted_again_or_without_shedding(self):
+        loop = self.released('drive.mp4')
+        loop.released = False
+        self.ready.add('player:drive.mp4')
+        next_widgets._sweep()
+        next_widgets._PLAY['shed'] = None
+        self.released('lake.mp4')
+        self.ready.add('player:lake.mp4')
+        next_widgets._sweep()
+        self.assertEqual(self.calls, [])
+
+
 class GStreamerPlayer(unittest.TestCase):
     """The GstPlay is only ever read from a GStreamer MediaFile of the known layout."""
     def test_anything_else_has_no_player(self):
