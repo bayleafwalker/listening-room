@@ -778,6 +778,19 @@ def media(env, step, check, info):
     files = {rooms.loop_of(c) for c in catalogue}
     check('M0 fixture: 8 catalogue loop rooms with 8 distinct loop files', len(catalogue) == 8 and len(files) == 8,
           (len(catalogue), len(files)))
+    # Revision (phase 2, 3ac5e81 run 2): under load the cold sample was once taken before the window had finished its
+    # own one-time set-up (renderer and disk-cache threads, ~80 MB not yet there: cold 236 MB against 316-323 MB in every
+    # other run), which charged that set-up to the media (H2, P1r). The baseline now waits until no thread outside
+    # GLib's worker pool has appeared for 3 s (at most 30 s) before it is sampled.
+    settled, last_names, since = time.monotonic(), None, time.monotonic()
+    while time.monotonic() - settled < 30:
+        pump(.5)
+        names_now = sorted(n for n in thread_names() if not GLIB_POOL.match(n))
+        if names_now != last_names:
+            last_names, since = names_now, time.monotonic()
+        elif time.monotonic() - since >= 3:
+            break
+    info('cold baseline settled after %.1f s' % (time.monotonic() - settled))
     cold = measure('cold, before any preview', repeats=3)
     result['cold'] = cold
     offset0 = log_offset()
