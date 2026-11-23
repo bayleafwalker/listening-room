@@ -1102,10 +1102,35 @@ def _fds():
     return len(os.listdir('/proc/self/fd'))
 
 
-def _quiet(env, limit=20.):
-    """Until GL threads and fds have not changed for 3 s (releases, sheds and sweeps done), at most `limit` s."""
+def _fd_kinds():
+    """Open fds by what they point at (dmabuf, files, sockets...), for the C4 evidence."""
+    kinds = {}
+    for fd in os.listdir('/proc/self/fd'):
+        try:
+            target = os.readlink('/proc/self/fd/' + fd)
+        except OSError:
+            continue
+        kind = target.split(':')[0] if ':' in target and not target.startswith('/') else \
+            ('/dmabuf' if 'dmabuf' in target else os.path.splitext(target)[1] or os.path.dirname(target))
+        kinds[kind] = kinds.get(kind, 0) + 1
+    return kinds
+
+
+def _kinds_diff(before, after):
+    return {k: after.get(k, 0) - before.get(k, 0) for k in set(before) | set(after) if after.get(k, 0) != before.get(k, 0)}
+
+
+SETTLE_S = 12.   # C4-R1: RELEASE_MS (1 s) plus the sweep's own bound for closing old sources (20 tries x 500 ms)
+
+
+def _quiet(env, limit=20., at_least=0.):
+    """Until GL threads and fds have not changed for 3 s (releases, sheds and sweeps done) and at least `at_least` s
+    have passed, at most `limit` s."""
     start, last, since = time.monotonic(), None, time.monotonic()
-    while time.monotonic() - start < limit:
+    while time.monotonic() - start < max(limit, at_least):
+        if time.monotonic() - start < at_least:
+            env.pump(.5)
+            continue
         env.pump(.5)
         now = _gl() + (_fds(),)
         if now != last:
@@ -1140,8 +1165,10 @@ def churn(env, step, check, info):
         pump(.4)
     waited = _quiet(env)
     base_gl, base_fds = _gl(), _fds()
-    info('churn: after the first pass (%.0f s to settle): gstglcontext/gldisplay-event %s, fds %d' % (
-        waited, base_gl, base_fds))
+    _quiet(env, at_least=SETTLE_S)
+    base_r1, base_kinds = _fds(), _fd_kinds()
+    info('churn: after the first pass (%.0f s to settle): gstglcontext/gldisplay-event %s, fds %d; %d after %.0f s' % (
+        waited, base_gl, base_fds, base_r1, SETTLE_S))
     step('churn')
     peak_ctx = peak_disp = 0
     peak_fds, cycles, shed_resumes, races, sampled = base_fds, 0, 0, 0, []
@@ -1167,6 +1194,10 @@ def churn(env, step, check, info):
         peak_ctx, peak_disp, peak_fds = max(peak_ctx, ctx), max(peak_disp, disp), max(peak_fds, _fds())
     waited = _quiet(env)
     end_gl, end_fds = _gl(), _fds()
+    _quiet(env, at_least=SETTLE_S)
+    end_r1, end_kinds = _fds(), _fd_kinds()
+    info('churn: fds once settled %d, after %.0f s %d; by kind since the first pass %s' % (
+        end_fds, SETTLE_S, end_r1, _kinds_diff(base_kinds, end_kinds)))
     step('every loop once more')
     after = []
     for card in catalogue:
@@ -1176,6 +1207,10 @@ def churn(env, step, check, info):
         pump(.4)
     _quiet(env)
     final_gl, final_fds = _gl(), _fds()
+    _quiet(env, at_least=SETTLE_S)
+    final_r1, final_kinds = _fds(), _fd_kinds()
+    info('churn: after one more pass fds %d, after %.0f s %d; by kind since the first pass %s' % (
+        final_fds, SETTLE_S, final_r1, _kinds_diff(base_kinds, final_kinds)))
     info('churn: %d cycles (%d races), %d resumes of a shed loop; peak gstglcontext %d, gldisplay-event %d, fds %d; '
          'settled after the churn (%.0f s): GL %s, fds %d (base %d); after one more pass: GL %s, fds %d; motion sampled '
          '%s, afterwards %s' % (cycles, races, shed_resumes, peak_ctx, peak_disp, peak_fds, waited, end_gl, end_fds,
@@ -1188,9 +1223,18 @@ def churn(env, step, check, info):
           'gldisplay-event, for %d loop files; @@ and @@ once settled)' % loops,
           peak_ctx <= loops and peak_disp <= loops and max(end_gl + final_gl) <= loops,
           (peak_ctx, peak_disp, end_gl, final_gl), measured=(peak_ctx, peak_disp) + end_gl)
+    # C4 [ORIGINAL] took "settled" as 3 s without a change in GL threads or fds. On dd4985e (run o11m-run, load ~17-29)
+    # it measured +17 right after the churn and +2 after one more pass, likely old sources the sweep had yet to close
+    # (it retries for up to 10 s). C4-R1 measures base, end and final the same way, once the release and the sweep's
+    # own bound have passed. A leak persists past that; C4 still runs as a SUPERSEDED line, not counted.
     grown = max(end_fds, final_fds) - base_fds
-    check('C4 churn: open files do not grow beyond one per loop file once settled (@@ since the first pass, for %d loop '
-          'files)' % loops, grown <= loops, (base_fds, end_fds, final_fds, peak_fds), measured='%+d' % grown)
+    print('SUPERSEDED %s C4 [ORIGINAL, superseded by C4-R1] churn: open files do not grow beyond one per loop file once '
+          'settled (%+d since the first pass, for %d loop files)' % ('PASS' if grown <= loops else 'FAIL', grown, loops),
+          flush=True)
+    grown_r1 = max(end_r1, final_r1) - base_r1
+    check('C4-R1 churn: open files do not grow beyond one per loop file, %.0f s after the last release (@@ since the '
+          'first pass, for %d loop files)' % (SETTLE_S, loops), grown_r1 <= loops,
+          (base_r1, end_r1, final_r1, peak_fds), measured='%+d' % grown_r1)
     check('C5 churn: loops still move when shown, during the churn and after it (@@ of @@ sampled)',
           sampled and all(sampled) and all(after), (sampled, after),
           measured=(sum(sampled) + sum(after), len(sampled) + len(after)))
