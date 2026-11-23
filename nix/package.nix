@@ -120,6 +120,7 @@ stdenvNoCC.mkDerivation {
     fileset = lib.fileset.unions [
       ../src
       ../tests
+      ../CHANGELOG.md   # the CHANGELOG oracles (o11h C1/C2) read it
     ];
   };
   nativeBuildInputs = [
