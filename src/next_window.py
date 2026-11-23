@@ -44,33 +44,54 @@ CARD_GAP = 16                   # at least this much between the start card and 
 MINI_CONTROLS_CLEARANCE = 96    # the mini layout's control row
 TOAST_ROOM = 120                # window height kept free for a toast above the open Mix
 MUSIC_STARTS = ('music', 'online', 'link', 'station.start', 'station.replay')  # starts that replace a room's music
-# The one shortcut table: the Keyboard shortcuts dialog and SHORTCUTS are both built from it, so a key added
-# here appears in both. Each item is (GTK accelerator the dialog draws, the key as plain text, what it does).
-# Installing a key is separate (install_actions, ListenPage.install_shortcuts, key_captured): list it here too.
+class Shortcut(tuple):
+    """One row of SHORTCUT_PAGES: (GTK accelerator the dialog draws, the key as plain text, what it does). As a
+    tuple it is just those three; ``action`` names the handler that installs it ('win.NAME' is a window action,
+    'listen.NAME' one of Listen's shortcuts; None for keys a key controller reads, such as Space and Esc), and
+    ``alts`` are further accelerators for the same action."""
+    def __new__(cls, accel, key, text, action=None, alts=()):
+        row = super().__new__(cls, (accel, key, text))
+        row.action, row.alts = action, tuple(alts)
+        return row
+
+
+# The one shortcut table: the Keyboard shortcuts dialog, SHORTCUTS and the installed accelerators are all read
+# from it, so a key is added (or changed) here and nowhere else; a new handler is named in ``action``.
 SHORTCUT_PAGES = (
     ('General', (
-        ('<Control>1', 'Ctrl+1', 'Rooms'),
-        ('<Control>2', 'Ctrl+2', 'Listen'),
-        ('<Control>3', 'Ctrl+3', 'Now'),
-        ('<Control>m', 'Ctrl+M', 'Mini player'),
-        ('<Control>comma', 'Ctrl+,', 'Preferences'),
-        ('<Control>question', 'Ctrl+?', 'Keyboard shortcuts'),
-        ('Escape', 'Esc', 'Close Mix or a dialog, then go back to where you were'),
+        Shortcut('<Control>1', 'Ctrl+1', 'Rooms', 'win.show-rooms'),
+        Shortcut('<Control>2', 'Ctrl+2', 'Listen', 'win.show-listen'),
+        Shortcut('<Control>3', 'Ctrl+3', 'Now', 'win.show-now'),
+        Shortcut('<Control>m', 'Ctrl+M', 'Mini player', 'win.mini-player'),
+        Shortcut('<Control>comma', 'Ctrl+,', 'Preferences', 'win.preferences'),
+        Shortcut('<Control>question', 'Ctrl+?', 'Keyboard shortcuts', 'win.shortcuts', alts=('<Control><Shift>slash',)),
+        Shortcut('Escape', 'Esc', 'Close Mix or a dialog, then go back to where you were'),
     )),
-    ('Room', (
-        ('space', 'Space', 'Pause or play the room'),
-        ('Up Down', 'Up / Down', 'Room volume, in Now and the mini player'),
+    ('Rooms', (
+        Shortcut('Return', 'Enter', 'Enter the focused room'),
+        Shortcut('space', 'Space', 'Preview the focused room'),
+        Shortcut('Menu <Shift>F10', 'Menu / Shift+F10', 'Open the focused room\'s options, for rooms of yours'),
+    )),
+    ('Now', (
+        Shortcut('space', 'Space', 'Pause or play the room'),
+        Shortcut('Up Down', 'Up / Down', 'Room volume, in Now and the mini player'),
         # Reserved for the O11-CONTROL lane (Mix keys); the coordinator adds them here when that lane lands:
-        #   ('m', 'M', 'Open or close Mix'), ('a', 'A', 'Choose an ambience'),
-        #   ('<Shift>Up <Shift>Down', 'Shift+Up / Shift+Down', 'Ambience level')
+        #   Shortcut('m', 'M', 'Open or close Mix'), Shortcut('a', 'A', 'Choose an ambience'),
+        #   Shortcut('<Shift>Up <Shift>Down', 'Shift+Up / Shift+Down', 'Ambience level')
     )),
     ('Listen', (
-        ('<Control>f', 'Ctrl+F', 'Search Listen'),
-        ('<Control>l', 'Ctrl+L', 'Add a link'),
-        ('<Control>v', 'Ctrl+V', 'Add a link from the clipboard, outside text fields'),
+        Shortcut('<Control>f', 'Ctrl+F', 'Search Listen', 'listen.search'),
+        Shortcut('<Control>l', 'Ctrl+L', 'Add a link', 'listen.link'),
+        Shortcut('<Control>v', 'Ctrl+V', 'Add a link from the clipboard, outside text fields', 'listen.paste'),
     )),
 )
 SHORTCUTS = tuple((key, text) for _page, items in SHORTCUT_PAGES for _accel, key, text in items)
+
+
+def shortcuts_for(prefix):
+    """{handler name: [accelerators]} for the table rows whose action starts with ``prefix`` ('win.', 'listen.')."""
+    return {row.action[len(prefix):]: [row[0], *row.alts] for _page, items in SHORTCUT_PAGES for row in items
+            if row.action and row.action.startswith(prefix)}
 
 
 _system_animations = None
@@ -1126,20 +1147,21 @@ class NextWindow(Adw.ApplicationWindow):
 
     # ---- keyboard -------------------------------------------------------------------
 
+    @staticmethod
+    def shortcut_accels(prefix):
+        return shortcuts_for(prefix)
+
     def install_actions(self):
-        for name, accel, callback in (('show-rooms', '<Control>1', self.show_rooms),
-                                      ('show-listen', '<Control>2', self.show_listen),
-                                      ('show-now', '<Control>3', self.show_now),
-                                      ('preferences', '<Control>comma', self.open_preferences),
-                                      ('mini-player', '<Control>m', self.open_mini),
-                                      ('shortcuts', '<Control>question', self.shortcuts_dialog),
-                                      ('toggle-room', None, self.toggle_room)):
+        accels = shortcuts_for('win.')
+        for name, callback in (('show-rooms', self.show_rooms), ('show-listen', self.show_listen),
+                               ('show-now', self.show_now), ('preferences', self.open_preferences),
+                               ('mini-player', self.open_mini), ('shortcuts', self.shortcuts_dialog),
+                               ('toggle-room', self.toggle_room)):
             action = Gio.SimpleAction.new(name, None)
             action.connect('activate', lambda *_, cb=callback: cb())
             self.add_action(action)
-            if accel:
-                self.get_application().set_accels_for_action(
-                    'win.' + name, [accel, '<Control><Shift>slash'] if name == 'shortcuts' else [accel])
+            if name in accels:
+                self.get_application().set_accels_for_action('win.' + name, accels[name])
         captured = Gtk.EventControllerKey()
         captured.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         captured.connect('key-pressed', self.key_captured)

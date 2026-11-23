@@ -11,6 +11,8 @@ CSS = '''
 .scene-choice { padding: 4px; border-radius: 12px; min-height: 0; min-width: 0; }
 .scene-choice.scene-current { outline: 2px solid @accent_bg_color; outline-offset: -2px; }
 .scene-thumb { border-radius: 8px; background: rgba(255,255,255,.08); }
+.scene-grid flowboxchild { padding: 0; border-radius: 12px; background: transparent; }
+.scene-grid flowboxchild:selected { background: transparent; }
 .scene-name { font-size: 13px; font-weight: 600; }
 .scene-tag { background: rgba(10,10,12,.78); color: #ffffff; border-radius: 9px; padding: 1px 8px; font-size: 11px;
   font-weight: 700; margin: 6px; }
@@ -53,8 +55,14 @@ class LayerRow(Gtk.Box):
             self.change.set_tooltip_text('Choose %s in Listen' % ('an ambience' if layer == 'atmosphere' else 'music'))
         else:
             self.current_scene = None
-            self.choices = Gtk.Grid(row_spacing=6, column_spacing=6, margin_top=8, margin_bottom=8, margin_start=8,
-                                    margin_end=8)
+            self.choices = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.SINGLE, homogeneous=True, row_spacing=6,
+                                       column_spacing=6, margin_top=8, margin_bottom=8, margin_start=8, margin_end=8,
+                                       activate_on_single_click=True, valign=Gtk.Align.START)
+            self.choices.add_css_class('scene-grid')
+            arrows = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+            arrows.connect('key-pressed', self.tile_key)
+            self.choices.add_controller(arrows)
+            self.choices.connect('child-activated', lambda _box, child: child.get_child().emit('clicked'))
             scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
                                         propagate_natural_width=True, max_content_height=380, child=self.choices)
             popover = Gtk.Popover(child=scroll)
@@ -136,8 +144,33 @@ class LayerRow(Gtk.Box):
             self.choices.remove(self.choices.get_first_child())
         root = self.get_root()
         columns = 3 if root is None or root.get_width() >= 640 else 2
-        for index, scene in enumerate(self.options(self.layer)):
-            self.choices.attach(self.scene_choice(scene, popover), index % columns, index // columns, 1, 1)
+        self.choices.set_min_children_per_line(columns)
+        self.choices.set_max_children_per_line(columns)
+        for scene in self.options(self.layer):
+            button = self.scene_choice(scene, popover)
+            tile = Gtk.FlowBoxChild(child=button, sensitive=scene['available'])    # the tile takes the focus and the arrows
+            self.choices.append(tile)
+
+    def tile_key(self, _controller, keyval, _code, state):
+        """Arrow keys move between the scene tiles (Left/Right by one, Up/Down by a line), skipping unavailable ones."""
+        step = {Gdk.KEY_Right: 1, Gdk.KEY_Left: -1, Gdk.KEY_Down: self.choices.get_max_children_per_line(),
+                Gdk.KEY_Up: -self.choices.get_max_children_per_line()}.get(keyval)
+        if step is None or state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SHIFT_MASK):
+            return False
+        tiles = []
+        child = self.choices.get_first_child()
+        while child is not None:
+            tiles.append(child)
+            child = child.get_next_sibling()
+        here = self.choices.get_focus_child()
+        if here not in tiles:
+            return False
+        index = tiles.index(here) + step
+        while 0 <= index < len(tiles) and not tiles[index].get_sensitive():
+            index += 1 if step > 0 else -1
+        if 0 <= index < len(tiles):
+            tiles[index].grab_focus()
+        return True       # at an end the arrow stays put; it never scrolls or leaves the grid
 
     def scene_choice(self, scene, popover):
         current = scene['id'] == self.current_scene
@@ -172,6 +205,8 @@ class LayerRow(Gtk.Box):
         name_it(button, scene['name'] + (', current scene' if current else '' if scene['available'] else ', unavailable'),
                 None if scene['available'] else 'This scene is not installed')
         button.set_sensitive(scene['available'])
+        button.set_focusable(False)
+        button.set_can_target(False)     # clicks and keys go to the tile (a FlowBoxChild), which presses this button
         button.connect('clicked', lambda *_: (popover.popdown(), None if current else self.send(*scene['command'])))
         return button
 

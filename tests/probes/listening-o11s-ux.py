@@ -78,6 +78,18 @@ with env:
     dialog = window.get_visible_dialog()
     check('S1 Keyboard shortcuts is an Adw.ShortcutsDialog', isinstance(dialog, Adw.ShortcutsDialog), type(dialog).__name__)
     shot(window, 'shortcuts')
+    app = window.get_application()
+    parse = lambda names: sorted(Gtk.accelerator_parse(n)[1:] for n in names)
+    bad = [(a, app.get_accels_for_action('win.' + a)) for a, want in next_window.shortcuts_for('win.').items()
+           if parse(app.get_accels_for_action('win.' + a)) != parse(want)]
+    check('S3 every window shortcut in the table is installed as the table says', not bad and
+          len(next_window.shortcuts_for('win.')) == 6, bad)
+    triggers = [c for c in window.observe_controllers() if isinstance(c, Gtk.ShortcutController)]
+    count = sum(c.get_n_items() for c in triggers)
+    check('S4 the Listen shortcuts are installed from the table (3)', count >= 3, count)
+    titles = [(p, [r[2] for r in items]) for p, items in next_window.SHORTCUT_PAGES]
+    check('S5 pages follow the app (General, Rooms, Now, Listen) and Rooms lists the card options key',
+          [p for p, _ in titles] == ['General', 'Rooms', 'Now', 'Listen'] and any('options' in t for t in titles[1][1]), titles)
     pages = [(p, len(i)) for p, i in next_window.SHORTCUT_PAGES]
     check('S2 the table has pages and every SHORTCUTS entry comes from it', len(next_window.SHORTCUTS) == sum(n for _p, n in pages), pages)
     if dialog is not None:
@@ -112,12 +124,20 @@ with env:
     off = [b for b in buttons if not b.get_sensitive()]
     check('G4 a scene whose files are missing is shown but unavailable', len(off) == 1, len(off))
     shot(window, 'scene-grid')
-    first_button = next(b for b in buttons if b.get_sensitive())
-    first_button.grab_focus()
-    popover.child_focus(Gtk.DirectionType.RIGHT)
-    moved = window.get_focus()
-    check('G6 the arrow keys move between the scene thumbnails', moved is not first_button
-          and any(a in buttons for a in ancestors(moved)), moved)
+    tiles = [t for t in env.widgets(grid) if isinstance(t, Gtk.FlowBoxChild) and t.get_sensitive()]
+    tiles[0].grab_focus()
+    box = tiles[0].get_parent()
+    keys = [c for c in box.observe_controllers() if isinstance(c, Gtk.EventControllerKey)][0]
+    keys.emit('key-pressed', Gdk.KEY_Right, 0, Gdk.ModifierType(0))
+    pump(.2)
+    right_ok = window.get_focus() is tiles[1]
+    keys.emit('key-pressed', Gdk.KEY_Left, 0, Gdk.ModifierType(0))
+    pump(.2)
+    left_ok = window.get_focus() is tiles[0]
+    keys.emit('key-pressed', Gdk.KEY_Down, 0, Gdk.ModifierType(0))
+    pump(.2)
+    check('G6 Right and Left move between scene tiles, Down by a line', right_ok and left_ok and window.get_focus() is tiles[
+        box.get_max_children_per_line()], (right_ok, left_ok))
     target = next(b for b in buttons if b.get_sensitive() and 'scene-current' not in b.get_css_classes())
     target.emit('clicked')
     pump(.5)
