@@ -230,9 +230,15 @@ def video_arguments(value=None):
         return 'inspect', {}
     if value == 'stop':
         return 'video', {'action': 'stop'}
-    if len(value) > 2048 or any(ord(char) < 32 for char in value) or not value.lower().startswith('https://'):
-        raise ValueError('Give a public YouTube video link (https://…), or stop')
-    return 'video', {'action': 'start', 'url': value}
+    import player_core
+    try:   # refused here, before anything is queued: the controller would only report it later
+        url = player_core.youtube_video_url(value) if len(value) <= 2048 else None
+    except player_core.HubError:
+        url = None
+    if not url:
+        raise ValueError('Watch plays a public YouTube video: give its https://www.youtube.com/watch?v=… '
+                         'or https://youtu.be/… link, or stop')
+    return 'video', {'action': 'start', 'url': url}
 
 
 def transport_arguments(action, value=None):

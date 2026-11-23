@@ -74,7 +74,7 @@ class VideoVerb(unittest.TestCase):
         self.assertEqual(roomctl.video_arguments('stop'), ('video', {'action': 'stop'}))
         url = 'https://www.youtube.com/watch?v=abcdefghijk'
         self.assertEqual(roomctl.video_arguments(url), ('video', {'action': 'start', 'url': url}))
-        for bad in ('http://example.test/x', 'file:///etc/passwd', 'rewind', 'https://x\n'):
+        for bad in ('http://example.test/x', 'file:///etc/passwd', 'rewind', 'https://x\n', 'https://example.test/not-a-video'):
             with self.assertRaises(ValueError):
                 roomctl.video_arguments(bad)
 
@@ -99,6 +99,17 @@ class VideoVerb(unittest.TestCase):
         request.assert_called_once_with('video', {'action': 'stop'})
         code, request, _ = self.run_main('cancel', answer={'cancelled': False})
         request.assert_called_once_with('entry.cancel', {})
+
+    def test_a_link_that_is_not_a_public_youtube_video_is_refused_and_nothing_is_sent(self):
+        for link in ('https://example.test/not-a-video', 'https://www.youtube.com/@somebody',
+                     'https://www.youtube.com/results?search_query=rain', 'http://www.youtube.com/watch?v=abcdefghijk'):
+            errors = []
+            with mock.patch.object(sys, 'argv', ['listening-roomctl', 'video', link]), \
+                    mock.patch.object(roomctl.session_client, 'request') as request, \
+                    mock.patch('builtins.print', side_effect=lambda *a, **k: errors.append((a, k))):
+                self.assertEqual(roomctl.main(), 1, link)
+            request.assert_not_called()
+            self.assertTrue(any('public YouTube video' in str(a[0]) and k.get('file') is sys.stderr for a, k in errors), errors)
 
 
 class MediaKeys(unittest.TestCase):

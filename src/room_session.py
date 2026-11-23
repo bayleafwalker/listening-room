@@ -581,6 +581,9 @@ class Controller:
         self.entry = None
         self.entry_before = None   # what a start replaced (offer, errors, music state), restored by Cancel
         self.video = None   # the Watch window while it is open: status, name, url, started_at, room_paused
+        # Counts the controller's own changes to the video's play state (Quiet, Resume, start, stop). A
+        # refresh read of the player taken before one of them is stale and never written back.
+        self.video_epoch = 0
         self.generation = 0
         self.cancel = threading.Event()
         self.closed = False
@@ -1755,6 +1758,7 @@ class Controller:
                 self.resume_offer.update(reason='video', with_video=[layer for layer in layers if layer in paused or layer in again])
             if video_paused and self.video is video:
                 video.update(status='Paused', transport_paused=True)
+                self.video_epoch += 1
             self.errors.update(errors)
             for layer in paused:
                 self.live[layer]['status'] = 'Paused'
@@ -1806,6 +1810,7 @@ class Controller:
             self.errors.pop('video', None)
             video = self.video = {'status': 'Opening', 'name': name, 'url': url, 'started_at': started,
                                   'room_paused': bool(self.resume_offer)}
+            self.video_epoch += 1
         self._changed()
         try:
             self.backend.start_video({'id': 'youtube-watch', 'name': name, 'url': url},
@@ -1815,6 +1820,7 @@ class Controller:
             with self.lock:
                 if self.video is video:
                     self.video = None
+                    self.video_epoch += 1
                     if not cancel.is_set():     # Pause, Leave or Stop watching cancelled it: not a failure
                         self.errors['video'] = str(error) or 'The video could not be played'
             self._changed()
@@ -1822,6 +1828,7 @@ class Controller:
         with self.lock:
             if self.video is video:
                 video['status'] = 'Playing'
+                self.video_epoch += 1
         self._changed()
         return {'message': 'Watching ' + name, 'paused': paused}
 
@@ -1835,6 +1842,7 @@ class Controller:
                 error = str(failure)
         with self.lock:
             self.video = None
+            self.video_epoch += 1
             offer = bool(self.resume_offer)
         self._changed()
         return {'message': 'Stopped watching', 'resume_offer': offer, 'errors': {'video': error} if error else {}}
@@ -1842,7 +1850,7 @@ class Controller:
     def _refresh_video(self):
         """Notice the Watch window closing or its video ending; an ended video's window is closed."""
         with self.lock:
-            video = self.video
+            video, epoch = self.video, self.video_epoch
         if not video or video.get('status') == 'Opening' or not hasattr(self.backend, 'video_state'):
             return
         try:
@@ -1856,8 +1864,8 @@ class Controller:
                 pass
             state = None
         with self.lock:
-            if self.video is not video:
-                return
+            if self.video is not video or self.video_epoch != epoch:
+                return      # Quiet, Resume or Stop watching changed it after this read: the read is stale
             if state is None:
                 self.video = None
             else:
@@ -1902,6 +1910,7 @@ class Controller:
             if play_video and self.video is video:
                 video['status'] = 'Playing'
                 video.pop('transport_paused', None)
+                self.video_epoch += 1
         self._changed()
         return {'message': 'Video resumed' if keep_offer else 'Room resumed'}
 
@@ -1965,6 +1974,7 @@ class Controller:
             self.program = None
             self.resume_offer = None
             self.video = None
+            self.video_epoch += 1
             self.live = {name: {'status': 'Stopped'} for name in self.live}
             self.errors.update(errors)
         # Restoring optional remote lighting must not hold the urgent Stop RPC

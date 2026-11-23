@@ -284,6 +284,51 @@ class VideoTransport(WatchController):
         self.transport()
         self.assertEqual(self.statuses(), ('Paused', 'Paused', 'Playing'))
 
+    def interleave(self, action):
+        """A refresh that reads the player, then ``action`` runs before the refresh writes what it read."""
+        backend, original = self.backend, self.backend.video_state
+        def video_state():
+            state = original()          # the stale read
+            backend.video_state = original
+            action()
+            return state
+        backend.video_state = video_state
+        self.controller.refresh()
+
+    def test_a_refresh_read_before_quiet_does_not_undo_the_video_pause(self):
+        """V18: resume under the video, room Pause, room Play: the video always plays again."""
+        self.enter()
+        self.watch()
+        self.controller.resume()
+        self.controller.refresh()
+        self.assertEqual(self.statuses(), ('Playing', 'Playing', 'Playing'))
+        self.interleave(lambda: self.service.execute('transport', {'action': 'pause'}))
+        snapshot = self.controller.snapshot()
+        self.assertEqual(snapshot['video']['status'], 'Paused', 'a stale read overwrote the pause')
+        self.assertTrue(snapshot['video'].get('transport_paused'))
+        self.service.execute('transport', {'action': 'play'})
+        self.controller.refresh()
+        self.assertEqual(self.statuses(), ('Playing', 'Playing', 'Playing'))
+        self.assertEqual(self.backend.video['status'], 'Playing')
+
+    def test_a_refresh_read_before_resume_does_not_undo_the_video_play(self):
+        self.enter()
+        self.watch()
+        self.controller.resume()
+        self.controller.refresh()
+        self.transport('pause')
+        self.interleave(lambda: self.service.execute('transport', {'action': 'play'}))
+        self.assertEqual(self.controller.snapshot()['video']['status'], 'Playing', 'a stale read overwrote the play')
+        self.transport('pause')      # so the next Pause still pauses the video
+        self.assertEqual(self.statuses(), ('Paused', 'Paused', 'Paused'))
+        self.assertEqual(self.backend.video['status'], 'Paused')
+
+    def test_a_stale_read_after_stop_watching_does_not_bring_the_video_back(self):
+        self.enter()
+        self.watch()
+        self.interleave(lambda: self.service.execute('video', {'action': 'stop'}))
+        self.assertIsNone(self.controller.snapshot()['video'])
+
     def test_leave_stops_the_video(self):
         self.enter()
         self.watch()
