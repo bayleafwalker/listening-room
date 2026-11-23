@@ -2,10 +2,22 @@
 import gi
 gi.require_version('Gtk', '4.0')
 gi.require_version('Adw', '1')
-from gi.repository import Adw, GLib, Gtk
+from gi.repository import Adw, Gdk, GLib, Gtk
 
 import next_model
-from next_widgets import icon_button, label, menu_item, name_it
+from next_widgets import CARD_SIZE, icon_button, install_css, label, menu_item, name_it, show_art
+
+CSS = '''
+.scene-choice { padding: 4px; border-radius: 12px; min-height: 0; min-width: 0; }
+.scene-choice.scene-current { outline: 2px solid @accent_bg_color; outline-offset: -2px; }
+.scene-thumb { border-radius: 8px; background: rgba(255,255,255,.08); }
+.scene-grid flowboxchild { padding: 0; border-radius: 12px; background: transparent; }
+.scene-grid flowboxchild:selected { background: transparent; }
+.scene-name { font-size: 13px; font-weight: 600; }
+.scene-tag { background: rgba(10,10,12,.78); color: #ffffff; border-radius: 9px; padding: 1px 8px; font-size: 11px;
+  font-weight: 700; margin: 6px; }
+'''
+SCENE_THUMB = (148, 83)   # a card poster at 16:9; the build's pre-scaled card file is decoded for it
 
 ICONS = {'music': 'audio-x-generic-symbolic', 'atmosphere': 'weather-showers-symbolic',
          'picture': 'image-x-generic-symbolic'}
@@ -42,9 +54,18 @@ class LayerRow(Gtk.Box):
             self.change.connect('clicked', lambda *_: choose_other(layer))
             self.change.set_tooltip_text('Choose %s in Listen' % ('an ambience' if layer == 'atmosphere' else 'music'))
         else:
-            self.choices = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=6, margin_bottom=6,
-                                   margin_start=6, margin_end=6)
-            popover = Gtk.Popover(child=self.choices)
+            self.current_scene = None
+            self.choices = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.SINGLE, homogeneous=True, row_spacing=6,
+                                       column_spacing=6, margin_top=8, margin_bottom=8, margin_start=8, margin_end=8,
+                                       activate_on_single_click=True, valign=Gtk.Align.START)
+            self.choices.add_css_class('scene-grid')
+            arrows = Gtk.EventControllerKey(propagation_phase=Gtk.PropagationPhase.CAPTURE)
+            arrows.connect('key-pressed', self.tile_key)
+            self.choices.add_controller(arrows)
+            self.choices.connect('child-activated', lambda _box, child: child.get_child().emit('clicked'))
+            scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True,
+                                        propagate_natural_width=True, max_content_height=380, child=self.choices)
+            popover = Gtk.Popover(child=scroll)
             popover.connect('show', lambda *_: self.fill_choices(popover))
             self.change = Gtk.MenuButton(label='Change…', popover=popover)
         top.append(self.change)
@@ -117,10 +138,77 @@ class LayerRow(Gtk.Box):
             self.controls.append(moving)
 
     def fill_choices(self, popover):
+        """Scene › Change…: a grid of the scenes' own pictures. Browsing is inert: still images only, and only
+        the chosen scene's command is sent."""
         while self.choices.get_first_child():
             self.choices.remove(self.choices.get_first_child())
-        for text, command in self.options(self.layer):
-            self.choices.append(menu_item(text, lambda c=command: self.send(*c), popover))
+        root = self.get_root()
+        columns = 3 if root is None or root.get_width() >= 640 else 2
+        self.choices.set_min_children_per_line(columns)
+        self.choices.set_max_children_per_line(columns)
+        for scene in self.options(self.layer):
+            button = self.scene_choice(scene, popover)
+            tile = Gtk.FlowBoxChild(child=button, sensitive=scene['available'])    # the tile takes the focus and the arrows
+            self.choices.append(tile)
+
+    def tile_key(self, _controller, keyval, _code, state):
+        """Arrow keys move between the scene tiles (Left/Right by one, Up/Down by a line), skipping unavailable ones."""
+        step = {Gdk.KEY_Right: 1, Gdk.KEY_Left: -1, Gdk.KEY_Down: self.choices.get_max_children_per_line(),
+                Gdk.KEY_Up: -self.choices.get_max_children_per_line()}.get(keyval)
+        if step is None or state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SHIFT_MASK):
+            return False
+        tiles = []
+        child = self.choices.get_first_child()
+        while child is not None:
+            tiles.append(child)
+            child = child.get_next_sibling()
+        here = self.choices.get_focus_child()
+        if here not in tiles:
+            return False
+        index = tiles.index(here) + step
+        while 0 <= index < len(tiles) and not tiles[index].get_sensitive():
+            index += 1 if step > 0 else -1
+        if 0 <= index < len(tiles):
+            tiles[index].grab_focus()
+        return True       # at an end the arrow stays put; it never scrolls or leaves the grid
+
+    def scene_choice(self, scene, popover):
+        current = scene['id'] == self.current_scene
+        button = Gtk.Button()
+        button.add_css_class('flat')
+        button.add_css_class('scene-choice')
+        if current:
+            button.add_css_class('scene-current')
+        art = Gtk.Overlay()
+        frame = Gtk.Box()       # sets the thumbnail's size; the picture over it never grows it to the image's own
+        frame.add_css_class('scene-thumb')
+        frame.set_size_request(*SCENE_THUMB)
+        art.set_child(frame)
+        art.set_overflow(Gtk.Overflow.HIDDEN)
+        picture = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, can_shrink=True)
+        art.add_overlay(picture)
+        show_art(picture, scene['poster'], CARD_SIZE)
+        if not scene['poster']:
+            art.add_overlay(Gtk.Image(icon_name=ICONS['picture'], pixel_size=28, opacity=.5))
+        note = 'Current' if current else '' if scene['available'] else 'Unavailable'
+        if note:
+            tag = label(note, ['scene-tag'])
+            tag.set_halign(Gtk.Align.START)
+            tag.set_valign(Gtk.Align.START)
+            art.add_overlay(tag)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.append(art)
+        name = label(scene['name'], ['scene-name'], ellipsize=True)
+        name.set_max_width_chars(16)
+        box.append(name)
+        button.set_child(box)
+        name_it(button, scene['name'] + (', current scene' if current else '' if scene['available'] else ', unavailable'),
+                None if scene['available'] else 'This scene is not installed')
+        button.set_sensitive(scene['available'])
+        button.set_focusable(False)
+        button.set_can_target(False)     # clicks and keys go to the tile (a FlowBoxChild), which presses this button
+        button.connect('clicked', lambda *_: (popover.popdown(), None if current else self.send(*scene['command'])))
+        return button
 
     def args(self, action, **extra):
         return ('layer', dict({'layer': self.layer, 'action': action}, **extra))
@@ -229,11 +317,13 @@ class MixSheet(Gtk.Box):
         head.append(menu_item('Save as my room…', save, None, css=('pill',)))
         head.append(icon_button('go-down-symbolic', 'Close mix', close, ['circular']))
         self.append(head)
+        install_css(Gdk.Display.get_default(), CSS)
         self.rows = {name: LayerRow(name, send, choose_other, options) for name in next_model.LAYER_ORDER}
         for row in self.rows.values():
             self.append(row)
 
     def update(self, snapshot):
         self.room.set_text((snapshot.get('active') or {}).get('name', ''))
+        self.rows['picture'].current_scene = ((snapshot.get('active') or {}).get('picture') or {}).get('preset_id')
         for row in next_model.mix_rows(snapshot):
             self.rows[row['layer']].update(row)
