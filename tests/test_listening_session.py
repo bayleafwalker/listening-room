@@ -140,6 +140,41 @@ class SessionTests(unittest.TestCase):
             patch.start()
             self.addCleanup(patch.stop)
 
+    def test_room_transport_pauses_presenter_slot_without_spending_its_remaining_time(self):
+        station = {'id': 'spoken-links', 'presenter': {'enabled': True,
+                   'budget': {'every_tracks': 4, 'max_seconds': 5}}}
+        self.controller.active = {'id': 'room', 'music': {'station': station}}
+        self.controller.program = mock.Mock(station=station)
+        self.controller.station_history = [{'tracks': [{'id': 'one'}]}]
+        self.controller.presenter_prepared = {'text': 'Words', 'sources': [], 'outcome': 'played',
+            'duration': .3, '_max_seconds': 5, '_audio_path': '', '_station_id': station['id']}
+        self.controller.queue_step = mock.Mock()
+        self.controller._presenter_then_next(self.controller.generation)
+        self.assertTrue(self.backend.presenter_started.wait(1))
+        self.controller.transport('pause')
+        time.sleep(.35)
+        self.assertFalse(self.backend.presenter_stopped.is_set())
+        self.assertIn(('presenter_control', 'pause', None), self.backend.calls)
+        self.controller.transport('play')
+        self.assertTrue(self.backend.presenter_stopped.wait(1))
+        self.assertIn(('presenter_control', 'play', None), self.backend.calls)
+        deadline = time.monotonic() + 1
+        while not self.controller.queue_step.called and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertEqual(self.controller.queue_step.call_count, 1)
+
+    def test_entry_cancel_stops_presenter_and_discards_prepared_work(self):
+        audio = Path(self.tmp.name) / 'prepared.wav'
+        audio.write_bytes(b'prepared')
+        self.controller.presenter_unit = {'unit': 'presenter-test'}
+        self.controller.presenter_prepared = {'_audio_path': str(audio), 'text': 'Prepared'}
+        self.controller.entry = {'id': 7, 'name': 'Next room', 'state': 'connecting'}
+        self.controller.entry_before = {'id': 7, 'active': False}
+        self.controller.transition = {'kind': 'enter', 'id': 7}
+        result = self.controller.cancel_entry({'id': 7})
+        self.assertTrue(result['cancelled'])
+        self.assertIn(('stop_presenter', {'unit': 'presenter-test'}), self.backend.calls)
+        self.assertFalse(audio.exists())
     def settle(self):
         self.controller.worker.submit(lambda: None).result(timeout=3)
         self.controller.refresh()

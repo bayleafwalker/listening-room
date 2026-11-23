@@ -624,6 +624,9 @@ class Controller:
         self.presenter_prepare_pending = False
         self.presenter_slot_pending = False
         self.presenter_unit = None
+        self.presenter_pause = threading.Condition()
+        self.presenter_paused = False
+        self.presenter_remaining = 0.
         self._music_position_item = None
         self._music_position = 0.
         self._music_position_at = self.clock()
@@ -1239,6 +1242,10 @@ class Controller:
             self.cancel.set()
             old_unit = self.presenter_unit
             self.presenter_unit = None
+            with self.presenter_pause:
+                self.presenter_paused = False
+                self.presenter_remaining = 0.
+                self.presenter_pause.notify_all()
             self.cancel = threading.Event()
             self.generation += 1
             self.atmosphere_generation += 1
@@ -1759,7 +1766,28 @@ class Controller:
         A watched video is part of the room: it sounds too."""
         with self.lock:
             return (any((self.live.get(layer) or {}).get('status') == 'Playing' for layer in ('music', 'atmosphere'))
-                    or (self.video or {}).get('status') == 'Playing')
+                    or (self.video or {}).get('status') == 'Playing'
+                    or bool(self.presenter_unit and not self.presenter_paused))
+
+    def _pause_presenter(self):
+        with self.presenter_pause:
+            unit = self.presenter_unit
+            if not unit or self.presenter_paused:
+                return False
+            self.backend.presenter_control(unit, 'pause', None)
+            self.presenter_paused = True
+            self.presenter_pause.notify_all()
+            return True
+
+    def _resume_presenter(self):
+        with self.presenter_pause:
+            unit = self.presenter_unit
+            if not unit or not self.presenter_paused:
+                return False
+            self.backend.presenter_control(unit, 'play', None)
+            self.presenter_paused = False
+            self.presenter_pause.notify_all()
+            return True
 
     def _video_control(self, action):
         """Pause or play the Watch window's player (the same mpv property Quiet already set)."""
@@ -1767,7 +1795,7 @@ class Controller:
         if control:
             control(action)
 
-    def quiet(self, minutes=None):
+    def quiet(self, minutes=None, pause_presenter=False):
         """Room Pause: pause every playing layer and remember exactly those in the resume offer.
 
         A layer the user had already paused on its own is not in the offer, so Resume leaves it paused.
@@ -1779,7 +1807,11 @@ class Controller:
         duration = float(minutes or 0)
         if not math.isfinite(duration) or not 0 <= duration <= 1440:
             raise SessionError('Choose an interruption from 0 to 1440 minutes')
-        self._invalidate()
+        if pause_presenter:
+            presenter_paused = self._pause_presenter()
+        else:
+            self._invalidate()
+            presenter_paused = False
         with self.lock:
             current = _copy(self.live)
             identity = self.active.get('id') if self.active else None
@@ -1817,7 +1849,8 @@ class Controller:
             for layer in paused:
                 self.live[layer]['status'] = 'Paused'
         self._changed()
-        return {'message': 'Room quiet. Resume is always explicit.', 'paused': paused, 'errors': errors}
+        return {'message': 'Room quiet. Resume is always explicit.', 'paused': paused, 'errors': errors,
+                'presenter_paused': presenter_paused}
 
     # ---- Watch (video with sound) ------------------------------------------------------------
 
@@ -1939,9 +1972,10 @@ class Controller:
             identity = self.active.get('id') if self.active else None
             paused = [layer for layer in self.PAUSABLE if (self.live.get(layer) or {}).get('status') == 'Paused']
             video = self.video if (self.video or {}).get('status') == 'Paused' else None
+            presenter_paused = bool(self.presenter_unit and self.presenter_paused)
         watching = bool(offer and offer.get('reason') == 'video')
         play_video = bool(video and (video.get('transport_paused') or not offer or watching))
-        if not offer and not (self.active and paused) and not play_video:
+        if not offer and not (self.active and paused) and not play_video and not presenter_paused:
             raise SessionError('There is no paused room to resume')
         if offer and identity != offer['session_id'] and not play_video:
             raise SessionError('The paused room has changed; choose it again to resume')
@@ -1953,6 +1987,8 @@ class Controller:
             self.live[layer]['status'] = 'Playing'
         if play_video:
             self._video_control('play')
+        if presenter_paused:
+            self._resume_presenter()
         with self.lock:
             if not keep_offer:
                 self.resume_offer = None
@@ -1977,14 +2013,15 @@ class Controller:
         if action == 'pause' or (action == 'toggle' and audible):
             if not audible:
                 return {'message': 'The room is already quiet'}
-            return self.quiet()
+            return self.quiet(pause_presenter=True)
         if audible:
             return {'message': 'The room is already playing'}
         with self.lock:
             offer, active = self.resume_offer, _copy(self.active)
             paused = any((self.live.get(layer) or {}).get('status') == 'Paused' for layer in self.PAUSABLE)
             video_paused = (self.video or {}).get('status') == 'Paused'
-        if offer or (active and paused) or video_paused:
+            presenter_paused = bool(self.presenter_unit and self.presenter_paused)
+        if offer or (active and paused) or video_paused or presenter_paused:
             return self.resume()
         if active:
             return self.enter({'recipe': active})
@@ -2374,9 +2411,23 @@ class Controller:
                 with self.lock:
                     if generation == self.generation:
                         self.presenter_unit = unit
-                # Muting does not alter the programme clock; generation invalidation
-                # ends this exact slot immediately.
-                slot_cancel.wait(duration)
+                # Muting does not alter the programme clock. Room Pause does: its
+                # own clock stops until Play, while invalidation ends the slot.
+                remaining = duration
+                with self.presenter_pause:
+                    self.presenter_remaining = remaining
+                    self.presenter_paused = False
+                while remaining > 0 and not slot_cancel.is_set():
+                    with self.presenter_pause:
+                        while self.presenter_paused and not slot_cancel.is_set():
+                            self.presenter_pause.wait(.2)
+                        if slot_cancel.is_set():
+                            break
+                        started = time.monotonic()
+                        self.presenter_pause.wait(remaining)
+                        if not self.presenter_paused:
+                            remaining = max(0., remaining - (time.monotonic() - started))
+                        self.presenter_remaining = remaining
             except (OSError, ValueError, hub.HubError, AttributeError):
                 self.presenter.discard(segment, remove=True)
                 self.presenter.record_drop('audio unavailable', segment.get('sources', ()))
@@ -2387,6 +2438,10 @@ class Controller:
                 with self.lock:
                     if self.presenter_unit == unit:
                         self.presenter_unit = None
+                        with self.presenter_pause:
+                            self.presenter_paused = False
+                            self.presenter_remaining = 0.
+                            self.presenter_pause.notify_all()
                     if generation == self.generation:
                         self.presenter_slot_pending = False
                     if generation == self.generation and not self.cancel.is_set():

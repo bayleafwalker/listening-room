@@ -38,18 +38,23 @@ def preferences(value=None):
     return {'enabled': enabled, 'budget': budget(value.get('budget'))}
 
 
-def metadata_sources(record):
-    """Project facts only from a captured metadata record, naming that record."""
+def metadata_sources(record, item=None):
+    """Project facts from a captured record and the resolved library item's tags."""
     if not isinstance(record, dict) or not record.get('item_id'):
         return []
     result = []
-    receipt = str(record['item_id'])
-    for observation in record.get('identities') or []:
-        if (isinstance(observation, dict) and isinstance(observation.get('name'), str)
-                and isinstance(observation.get('value'), str) and observation['value'].strip()
-                and observation.get('name') != 'revision'):
-            result.append({'field': observation['name'], 'value': observation['value'].strip(),
+    receipt = str(record.get('origin') or 'unknown') + ':' + str(record['item_id'])
+    for field in ('title', 'name', 'artist', 'album'):
+        value = (item or {}).get(field)
+        if isinstance(value, str) and value.strip() and not (field == 'name' and (item or {}).get('title')):
+            result.append({'field': 'title' if field == 'name' else field, 'value': value.strip(),
                            'source': receipt, 'record': receipt})
+    for collection in ('identities', 'features'):
+        for observation in record.get(collection) or []:
+            if (isinstance(observation, dict) and isinstance(observation.get('name'), str)
+                    and observation.get('value') not in (None, '') and observation.get('name') != 'revision'):
+                result.append({'field': observation['name'], 'value': observation['value'],
+                               'source': receipt, 'record': receipt})
     return result
 
 
@@ -74,7 +79,7 @@ class Presenter:
 
     def prepare(self, station, item, metadata_record=None, primary_speech=False, clip=None, timeout=3, cancel=None):
         setting = preferences((station or {}).get('presenter'))
-        sources = metadata_sources(metadata_record)
+        sources = metadata_sources(metadata_record, item)
         if not setting['enabled']:
             return None
         if primary_speech:

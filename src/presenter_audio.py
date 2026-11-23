@@ -46,5 +46,7 @@ def stop(unit):
 def control(player, action, value):
     if not isinstance(player, dict) or not player.get('socket'):
         return
-    prop = {'level': 'volume', 'muted': 'mute'}[action]
+    prop = {'level': 'volume', 'muted': 'mute', 'pause': 'pause', 'play': 'pause'}[action]
+    if action in ('pause', 'play'):
+        value = action == 'pause'
     mpv_ipc.call(Path(player['socket']), ['set_property', prop, value], 1)

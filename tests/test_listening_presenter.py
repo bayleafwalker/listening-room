@@ -62,7 +62,15 @@ class PresenterTests(unittest.TestCase):
             self.assertIsNone(value.prepare(self.STATION, self.TRACK, self.RECORD))
         segment = value.snapshot()['segments'][-1]
         self.assertEqual(segment['reason'], 'repeated segment')
-        self.assertEqual(segment['sources'][0]['source'], 'track-1')
+        self.assertEqual(segment['sources'][0]['source'], 'library:track-1')
+
+    def test_sources_include_resolved_library_tags_identities_and_features(self):
+        record = dict(self.RECORD, features=[{'provider': 'analysis', 'name': 'tempo', 'value': 96}])
+        sources = presenter.metadata_sources(record, self.TRACK)
+        self.assertEqual([(source['field'], source['value']) for source in sources[:3]],
+                         [('title', 'Night Walk'), ('artist', 'Example Quartet'), ('album', 'Dusk')])
+        self.assertIn(('tempo', 96), [(source['field'], source['value']) for source in sources])
+        self.assertTrue(all(source['record'] == 'library:track-1' for source in sources))
 
     def test_wav_duration_and_request_format_are_public(self):
         value = presenter.Presenter()
