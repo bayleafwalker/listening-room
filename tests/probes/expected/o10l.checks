@@ -4,7 +4,9 @@
 # toasts cover the room name, and so on. This list therefore has no "!" known failures: a failing line is a real gap.
 # KNOWN FAILURES (!): F1, N1, N5 and N6 are kept running as ORIGINALS, superseded by F1-R1, N1-R1, N5-R1 and N6-R1
 # (coordinator 2026-11-21: deferred to O11, reason "deferred to O11"; the originals stay visible as the gaps O11 closes).
-!F1 [ORIGINAL, superseded by F1-R1] at first launch something in the window content has the keyboard focus (not nothing, not the header)
+# O11-SHELL phase 2 (O11-SHELL acceptance author, 2026-11-22, merge of feat/o11-shell 47da808): F1, N1 and N6 now pass
+# (first card focused at launch, native Adw.ShortcutsDialog, scene thumbnail grid), so they lose their "!".
+F1 [ORIGINAL, superseded by F1-R1] at first launch something in the window content has the keyboard focus (not nothing, not the header)
 F1-R1 a first launch shows a page, starts nothing and does not put the focus on a window-control button
 G1 at 360 px the mini layout is showing and its window controls are on screen (precondition)
 G2 at 360 px the minimize/maximize/close controls do not overlap "Open the full window"
@@ -119,7 +121,7 @@ R3 a tag match ("rain" in the tags of Calm Mix) ranks above substring noise
 R4 a word-start match (Rainbow) ranks above substring noise
 R5 within the same kind of match the more popular station stays first (Rain Sounds before Heavy Rain; Ukrainian before Trainspotting)
 R6 ranking drops no station and repeats none
-!N1 [ORIGINAL, superseded by N1-R1] Keyboard shortcuts is an Adw.ShortcutsDialog, not a text block in an alert
+N1 [ORIGINAL, superseded by N1-R1] Keyboard shortcuts is an Adw.ShortcutsDialog, not a text block in an alert
 N1-R1 Keyboard shortcuts still opens a dialog that lists the shortcuts
 N2 at 560 px the Listen scope chips (Your stations, Live channels, …) are not ellipsized
 N3 at 560 px the station card and rows show the station name in full ("Morning lift", not "Mo…")
@@ -128,5 +130,5 @@ N3 at 640 px the station card and rows show the station name in full ("Morning l
 N4 Recently played shows a station once even when it was played twice
 N5 [ORIGINAL, superseded by N5-R1] at 1440 px the Rooms cards (or a hero) cover at least 45% of the area under the header
 N5-R1 at 1440 px the Rooms page still shows its room cards, all inside the window
-!N6 [ORIGINAL, superseded by N6-R1] the scene Change… list shows a picture for each scene, not text only
+N6 [ORIGINAL, superseded by N6-R1] the scene Change… list shows a picture for each scene, not text only
 N6-R1 the scene Change… list still offers the scenes as choices

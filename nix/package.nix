@@ -114,12 +114,13 @@ let
 in
 stdenvNoCC.mkDerivation {
   pname = "listening-hub";
-  version = "2.5.0";
+  version = "2.6.0";
   src = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
       ../src
       ../tests
+      ../CHANGELOG.md   # the CHANGELOG oracles (o11h C1/C2) read it
     ];
   };
   nativeBuildInputs = [

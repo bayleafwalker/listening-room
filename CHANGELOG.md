@@ -5,6 +5,48 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-11-23
+
+### Added
+- A watched video is part of the room: the window's Pause, the popover, MPRIS, the media
+  keys and `listening-roomctl toggle|pause|play` pause it with the other layers and play it
+  again. While the room is paused for the video, Pause then Play brings back only the video,
+  and Stop watching still offers Resume (Quiet while watching keeps the video's offer).
+  Leave closes it. MPRIS names the video while it plays.
+- `listening-roomctl video` shows the room's video, `video URL` watches a public YouTube
+  video, `video stop` closes it.
+- Partial pause is reported: `listening-roomctl status` (and `--follow`) reads
+  "‹room› · Music paused · Rain on glass" with class `paused`, and the Mix summary says
+  "Music paused" too. MPRIS stays Playing while anything is audible. A watched video reads
+  "Watching ‹title›" or "Video paused". Other status lines are unchanged.
+- The Waybar popover has a per-layer line under the room name ("Music ▮▮ · Ambience ▶",
+  each tappable); the mini player keeps one room Pause/Play.
+- In the Mix, M and A pause or play Music and Ambience, Shift+Up/Down change the focused
+  row's level, and Next track is a button on the Music row when the source can skip.
+- While a room connects, the Mix shows only progress and Cancel. Cancel is honest: the
+  controller abandons the start (new `entry.cancel` action, `listening-roomctl cancel`),
+  nothing it began plays afterwards, and the previous room (or idle) is restored.
+- Keyboard shortcuts is now a native shortcuts dialog, grouped by page and built from one table
+  in the window code, so a key added there shows up in the dialog.
+- Mix › Scene › Change… shows a grid of scene pictures: the current scene is marked, a scene whose
+  files are missing is shown as unavailable, and browsing the grid starts nothing.
+
+### Changed
+- Controller (additive): the `video` snapshot field may carry `transport_paused`, the
+  resume offer may carry `reason: video` and `with_video` after Quiet while watching, and
+  `entry.state` may be `cancelled`. 2.5.0 clients and stored state keep working.
+- On a first launch the first Tab or arrow key lands on the first room card, not in the header.
+- In a window 1280 px or wider Rooms shows three larger cards to a line, so the page fills the
+  window instead of leaving half of it empty.
+- Now with only a video playing (no room) no longer shows the last room's scene or colour.
+
+### Fixed
+- World radio search finds the right station even when the directory's first 50 results are
+  noise: it reads a larger bounded page (and the exact tag for a one-word search), then ranks
+  whole-word and tag matches first. A search makes at most two requests.
+- A start interrupted just after its new player started (by Quiet, Stop, Cancel or another
+  start) no longer leaves that player playing outside the room.
+
 ## [2.5.0] - 2026-11-22
 
 ### Added

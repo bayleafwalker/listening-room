@@ -24,7 +24,7 @@ import next_model as model
 from next_actions import RoomActions, Ticket
 from next_async import call_on_main, error_text, pool, run_async
 from next_mini import MINI_CSS, MiniPlayer, MiniWindow
-from next_mix import MixSheet
+from next_mix import MIX_SHORTCUTS, MixSheet
 from next_rooms import RoomsPage
 from next_watching import Watching
 from next_widgets import (FocalPicture, choose_renderer, show_texture, OutputPopover, Scene, TimerPopover, accent_css, icon_button,
@@ -44,12 +44,52 @@ CARD_GAP = 16                   # at least this much between the start card and 
 MINI_CONTROLS_CLEARANCE = 96    # the mini layout's control row
 TOAST_ROOM = 120                # window height kept free for a toast above the open Mix
 MUSIC_STARTS = ('music', 'online', 'link', 'station.start', 'station.replay')  # starts that replace a room's music
-SHORTCUTS = (('Space', 'Pause or play the room'), ('Ctrl+1', 'Rooms'), ('Ctrl+2', 'Listen'), ('Ctrl+3', 'Now'),
-             ('Ctrl+F', 'Search Listen'), ('Ctrl+L', 'Add a link'), ('Ctrl+V', 'Add a link from the clipboard, outside text fields'),
-             ('Ctrl+M', 'Mini player'), ('Ctrl+,', 'Preferences'),
-             ('Esc', 'Close Mix or a dialog, then go back to where you were'),
-             ('Up / Down', 'Room volume, in Now and the mini player'),
-             ('Ctrl+?', 'Keyboard shortcuts'))
+class Shortcut(tuple):
+    """One row of SHORTCUT_PAGES: (GTK accelerator the dialog draws, the key as plain text, what it does). As a
+    tuple it is just those three; ``action`` names the handler that installs it ('win.NAME' is a window action,
+    'listen.NAME' one of Listen's shortcuts; None for keys a key controller reads, such as Space and Esc), and
+    ``alts`` are further accelerators for the same action."""
+    def __new__(cls, accel, key, text, action=None, alts=()):
+        row = super().__new__(cls, (accel, key, text))
+        row.action, row.alts = action, tuple(alts)
+        return row
+
+
+# The one shortcut table: the Keyboard shortcuts dialog, SHORTCUTS and the installed accelerators are all read
+# from it, so a key is added (or changed) here and nowhere else; a new handler is named in ``action``.
+SHORTCUT_PAGES = (
+    ('General', (
+        Shortcut('<Control>1', 'Ctrl+1', 'Rooms', 'win.show-rooms'),
+        Shortcut('<Control>2', 'Ctrl+2', 'Listen', 'win.show-listen'),
+        Shortcut('<Control>3', 'Ctrl+3', 'Now', 'win.show-now'),
+        Shortcut('<Control>m', 'Ctrl+M', 'Mini player', 'win.mini-player'),
+        Shortcut('<Control>comma', 'Ctrl+,', 'Preferences', 'win.preferences'),
+        Shortcut('<Control>question', 'Ctrl+?', 'Keyboard shortcuts', 'win.shortcuts', alts=('<Control><Shift>slash',)),
+        Shortcut('Escape', 'Esc', 'Close Mix or a dialog, then go back to where you were'),
+    )),
+    ('Rooms', (
+        Shortcut('Return', 'Enter', 'Enter the focused room'),
+        Shortcut('space', 'Space', 'Preview the focused room'),
+        Shortcut('Menu <Shift>F10', 'Menu / Shift+F10', 'Open the focused room\'s options, for rooms of yours'),
+    )),
+    ('Now', (
+        Shortcut('space', 'Space', 'Pause or play the room'),
+        Shortcut('Up Down', 'Up / Down', 'Room volume, in Now and the mini player'),
+    )),
+    ('Mix', tuple(Shortcut(*row) for row in MIX_SHORTCUTS)),   # read by the Mix's key controller
+    ('Listen', (
+        Shortcut('<Control>f', 'Ctrl+F', 'Search Listen', 'listen.search'),
+        Shortcut('<Control>l', 'Ctrl+L', 'Add a link', 'listen.link'),
+        Shortcut('<Control>v', 'Ctrl+V', 'Add a link from the clipboard, outside text fields', 'listen.paste'),
+    )),
+)
+SHORTCUTS = tuple((key, text) for _page, items in SHORTCUT_PAGES for _accel, key, text in items)
+
+
+def shortcuts_for(prefix):
+    """{handler name: [accelerators]} for the table rows whose action starts with ``prefix`` ('win.', 'listen.')."""
+    return {row.action[len(prefix):]: [row[0], *row.alts] for _page, items in SHORTCUT_PAGES for row in items
+            if row.action and row.action.startswith(prefix)}
 
 
 _system_animations = None
@@ -535,6 +575,27 @@ class NextWindow(Adw.ApplicationWindow):
         if pending['state'] == 'failed' and pending.get('timed_out'):
             pending['state'] = 'connecting'   # a slow start that did succeed: the next snapshot clears the card
             self.render_pending()
+        if pending.get('cancel_requested'):
+            self.cancel_pending()
+
+    def cancel_pending(self):
+        """The Mix's Cancel (O11-CONTROL): the controller abandons the start (``entry.cancel``) and keeps the
+        room before it, or idle; then the card goes, as Back does. A start not yet answered is cancelled
+        as soon as its reply names it, so Cancel never races the start it means."""
+        pending = self.pending
+        if not pending or pending['state'] != 'connecting':
+            return
+        if pending.get('id') is None and pending['inflight']:
+            pending['cancel_requested'] = True
+            return
+        pending['cancel_requested'] = False
+
+        def done(result):
+            if pending is self.pending and isinstance(result, dict) and result.get('cancelled'):
+                self.dismiss_pending()
+                self.toast('Stopped connecting to ' + pending['name'])
+        self.command('entry.cancel', {'id': pending['id']} if pending.get('id') is not None else {},
+                     urgent=True, done=done)
 
     def pending_failed(self, error, pending=None, plain=None):
         pending = self.pending if pending is None else pending
@@ -604,6 +665,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.pending_retry.set_tooltip_text('Still waiting for an answer' if failed and pending['inflight'] else None)
         self.show_details(self.pending_details, pending.get('details', '') if failed else '')
         self.play.set_sensitive(not (self.offline or connecting))
+        self.mix.show_connecting(pending['name'] if connecting else None, self.cancel_pending)  # O11-CONTROL
         if not pending:
             return
         if connecting:
@@ -663,7 +725,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.changed_chip.set_visible(model.room_changed(snapshot, self.catalogue))
         assets = model.scene_assets(snapshot.get('active'), self.presets)
         own_scene = bool(assets.get('still') or assets.get('loop'))
-        self.choose_scene.set_visible((ad_hoc or self.listen_first or not own_scene) and bool(self.layer_options('picture')))
+        self.choose_scene.set_visible((ad_hoc or self.listen_first or not own_scene) and any(scene['available'] for scene in self.layer_options('picture')))
         self.now_line.set_text(line)
         self.now_detail.set_text('· ' + detail if detail else '')
         self.now_detail.set_visible(bool(detail))
@@ -850,9 +912,12 @@ class NextWindow(Adw.ApplicationWindow):
         self.sheet.set_open(True)
 
     def layer_options(self, layer):
-        """What Change… offers on the Scene row: offline rooms and views. Music and Ambience open Listen."""
-        return [(preset['name'], ('layer', {'layer': 'picture', 'action': 'select', 'preset_id': preset['id']}))
-                for preset in self.presets if preset.get('kind') == 'local' and preset.get('available', True)]
+        """What Change… offers on the Scene row: every offline room and view, with its picture; ones whose files
+        are missing are listed as unavailable. Music and Ambience open Listen."""
+        return [{'id': preset['id'], 'name': preset['name'].split(' · ')[0], 'poster': preset.get('poster_path'),
+                 'available': preset.get('available', True),
+                 'command': ('layer', {'layer': 'picture', 'action': 'select', 'preset_id': preset['id']})}
+                for preset in self.presets if preset.get('kind') == 'local']
 
     def choose_other(self, layer):
         """Music and Ambience are chosen in Listen (Ambience in its own mode); Scene on its Mix row."""
@@ -1028,10 +1093,12 @@ class NextWindow(Adw.ApplicationWindow):
         self.rooms.save_dialog()
 
     def shortcuts_dialog(self):
-        dialog = Adw.AlertDialog(heading='Keyboard shortcuts',
-                                 body='\n'.join('%s    %s' % pair for pair in SHORTCUTS))
-        dialog.set_follows_content_size(True)
-        dialog.add_response('close', 'Close')
+        dialog = Adw.ShortcutsDialog()
+        for page, items in SHORTCUT_PAGES:
+            section = Adw.ShortcutsSection(title=page)
+            for accel, _key, text in items:
+                section.add(Adw.ShortcutsItem(title=text, accelerator=accel))
+            dialog.add(section)
         dialog.present(self)
 
     def open_preferences(self, service=None):
@@ -1100,20 +1167,21 @@ class NextWindow(Adw.ApplicationWindow):
 
     # ---- keyboard -------------------------------------------------------------------
 
+    @staticmethod
+    def shortcut_accels(prefix):
+        return shortcuts_for(prefix)
+
     def install_actions(self):
-        for name, accel, callback in (('show-rooms', '<Control>1', self.show_rooms),
-                                      ('show-listen', '<Control>2', self.show_listen),
-                                      ('show-now', '<Control>3', self.show_now),
-                                      ('preferences', '<Control>comma', self.open_preferences),
-                                      ('mini-player', '<Control>m', self.open_mini),
-                                      ('shortcuts', '<Control>question', self.shortcuts_dialog),
-                                      ('toggle-room', None, self.toggle_room)):
+        accels = shortcuts_for('win.')
+        for name, callback in (('show-rooms', self.show_rooms), ('show-listen', self.show_listen),
+                               ('show-now', self.show_now), ('preferences', self.open_preferences),
+                               ('mini-player', self.open_mini), ('shortcuts', self.shortcuts_dialog),
+                               ('toggle-room', self.toggle_room)):
             action = Gio.SimpleAction.new(name, None)
             action.connect('activate', lambda *_, cb=callback: cb())
             self.add_action(action)
-            if accel:
-                self.get_application().set_accels_for_action(
-                    'win.' + name, [accel, '<Control><Shift>slash'] if name == 'shortcuts' else [accel])
+            if name in accels:
+                self.get_application().set_accels_for_action('win.' + name, accels[name])
         captured = Gtk.EventControllerKey()
         captured.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         captured.connect('key-pressed', self.key_captured)
@@ -1481,7 +1549,10 @@ class NextWindow(Adw.ApplicationWindow):
             self.first = False
             if model.launch_view(snapshot) == 'rooms':
                 self.show_rooms()
-                GLib.idle_add(lambda: (self.hero_button.get_mapped() and self.hero_button.grab_focus()) and False)
+                if model.hero(snapshot, self.catalogue)['kind'] == 'first-run':
+                    self.rooms.focus_first_card_soon()
+                else:
+                    GLib.idle_add(lambda: (self.hero_button.get_mapped() and self.hero_button.grab_focus()) and False)
             else:
                 self.show_page('now')
         elif self.want_now and active and not snapshot.get('transition'):

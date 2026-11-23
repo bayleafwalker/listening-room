@@ -689,6 +689,13 @@ def rank_radio(rows, query):
     return sorted(rows, key=lambda row: (_match_tier(row, words), counted(row, 'clickcount'), counted(row, 'votes')))
 
 
+# Radio Browser search: rows asked for per request, and rows shown. At most two requests per search
+# (name, then tag for a one-word query), each 5 s at most.
+RADIO_FETCH = 250
+RADIO_TAG_FETCH = 50
+RADIO_SHOWN = 50
+
+
 def search_radio(query, *, country=None, language=None, tag=None, cache=True):
     def term(value, label):
         if value is None:
@@ -733,32 +740,54 @@ def search_radio(query, *, country=None, language=None, tag=None, cache=True):
     if not hosts:
         hosts = ['de1.api.radio-browser.info', 'nl1.api.radio-browser.info']
     random.shuffle(hosts)
-    params = urllib.parse.urlencode(dict(filters, limit=50, hidebroken='true', order='clickcount', reverse='true'))
+    def fetch(host, wanted):
+        params = urllib.parse.urlencode(dict(wanted, hidebroken='true', order='clickcount', reverse='true'))
+        request = urllib.request.Request('https://' + host + '/json/stations/search?' + params, headers={'User-Agent': 'listening-hub/1.0'})
+        with urllib.request.urlopen(request, timeout=5) as r:
+            data = json.load(r)
+        if not isinstance(data, list):
+            raise ValueError('invalid response')
+        return data
+
     errors = []
     data = None
+    good_host = None
     for host in hosts:
-        url = 'https://' + host + '/json/stations/search?' + params
         try:
-            request = urllib.request.Request(url, headers={'User-Agent': 'listening-hub/1.0'})
-            with urllib.request.urlopen(request, timeout=5) as r:
-                data = json.load(r)
-            if not isinstance(data, list):
-                raise ValueError('invalid response')
+            # The directory matches the name inside words and orders by clicks, so the best match can sit past the
+            # first 50 behind substring noise ("rain" in "Ukrainian"). Fetch a bounded larger page and rank it here.
+            data = fetch(host, dict(filters, limit=RADIO_FETCH))
+            good_host = host
             break
         except (OSError, ValueError) as e:
             errors.append('%s: %s' % (host, clean(e)))
     if data is None or not isinstance(data, list):
         raise HubError('Radio Browser search failed: ' + '; '.join(errors))
+    words = _words(filters.get('name', ''))
+    if len(words) == 1 and 'tag' not in filters:
+        # Stations tagged with the word but not named with it are never in a name search. One more bounded,
+        # best-effort request on the host that just answered (a failure here keeps the name results).
+        try:
+            seen = {row.get('stationuuid') for row in data if isinstance(row, dict)}
+            data = data + [row for row in fetch(good_host, {'tag': words[0], 'tagExact': 'true', 'limit': RADIO_TAG_FETCH})
+                           if isinstance(row, dict) and row.get('stationuuid') not in seen]
+        except (OSError, ValueError):
+            pass
     result = []
+    seen_ids = set()
     for row in data:
         if not isinstance(row, dict) or not valid_url(row.get('url_resolved', '')):
             continue
+        identifier = 'browser-' + clean(row.get('stationuuid'))
+        if identifier in seen_ids:
+            continue
+        seen_ids.add(identifier)
         website = row.get('homepage', '')
         tags = row.get('tags', '')
-        result.append({'id': 'browser-' + clean(row.get('stationuuid')), 'name': clean(row.get('name')) or 'Unnamed station', 'group': 'Search results', 'kind': 'radio', 'url': row['url_resolved'], 'country': clean(row.get('country')), 'countrycode': clean(row.get('countrycode')), 'language': clean(row.get('language')), 'tags': [clean(tag) for tag in tags.split(',') if clean(tag)] if isinstance(tags, str) else [], 'website': website if valid_url(website) else '',
+        result.append({'id': identifier, 'name': clean(row.get('name')) or 'Unnamed station', 'group': 'Search results', 'kind': 'radio', 'url': row['url_resolved'], 'country': clean(row.get('country')), 'countrycode': clean(row.get('countrycode')), 'language': clean(row.get('language')), 'tags': [clean(tag) for tag in tags.split(',') if clean(tag)] if isinstance(tags, str) else [], 'website': website if valid_url(website) else '',
                        'clickcount': _count(row.get('clickcount')), 'votes': _count(row.get('votes'))})
     # The directory matches inside words too: put whole-word and tag matches first.
-    result = rank_radio(result, query)[:50]
+    result = rank_radio(result, query)[:RADIO_SHOWN]
     if cache:
         save_json(STATE / 'search-cache.json', result)
     return result

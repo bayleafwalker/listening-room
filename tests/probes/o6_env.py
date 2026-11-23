@@ -87,6 +87,7 @@ class Env:
         self.source = Path(self.args.source).resolve()
         sys.path.insert(0, str(self.source))
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        os.environ['LISTENING_HUB_SOURCE'] = str(self.source / 'listening_hub.py')  # every helper follows --source
         self.output = Path(self.args.output)
         self.output.mkdir(parents=True, exist_ok=True)
         # Fixture knobs, read at call time by the fakes below.

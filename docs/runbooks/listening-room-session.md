@@ -209,7 +209,22 @@ action; the window sends the same `quiet`/`resume`/`enter` it decides):
   own; MPRIS `PlaybackStatus` follows the same rule (Playing if any layer plays).
 - **Stop** (MPRIS `Stop`, the media Stop key) leaves the room as the window's Leave does.
 - Per-layer controls: `listening-roomctl music|ambience pause|play|toggle|stop|next`
-  (the `layer` action). Next, Previous and Seek stay the music layer's own.
+  (the `layer` action). Next, Previous and Seek stay the music layer's own. In the Mix,
+  M and A pause or play Music and Ambience and Shift+Up/Down change the focused row's
+  level; the Waybar popover has a per-layer line ("Music ▮▮ · Ambience ▶", each tappable).
+- **A watched video is part of the room.** Pause pauses it with every other playing layer
+  (the snapshot's `video` gets `transport_paused`), and Play brings it back. While the room
+  is paused for the video (`resume_offer.reason` is `video`), Quiet keeps that offer, so
+  Play resumes only the video (and whatever that Quiet paused, `with_video`), and Stop
+  watching still offers the room's Resume. A video paused in its own window plays again
+  from room Play. Leave and Stop close it. `listening-roomctl video` shows the video
+  (JSON, `null` when none), `video URL` watches a public YouTube video, `video stop`
+  closes it.
+- **Partial pause is reported.** With one layer paused while another plays,
+  `listening-roomctl status` reads "‹room› · Music paused · Rain on glass" with class
+  `paused`; MPRIS `PlaybackStatus` stays Playing because something is audible. A watched
+  video reads "‹room› · Watching ‹title›" (class `playing`) or "‹room› · Video paused".
+  Every other line (all playing, all paused, stopped) is the 2.5.0 one.
 
 MPRIS metadata names what plays (title, and artist or station) and the room
 (`xesam:album` when the track has no album of its own, and `xesam:comment`
@@ -227,7 +242,13 @@ its own. The controller reports the latest start in `inspect` as `entry`
 (`{id, name, state: connecting|started|failed, error, kept}`); `id` matches the `enter`
 reply. A layer that fails in a playing room (Try again in the Mix, a reconnect) shows on
 its layer and the rest of the room keeps playing. While connecting, Now shows only the
-spinner, the name and the stored room volume: no track controls.
+spinner, the name and the stored room volume: no track controls, and the Mix shows only
+progress and **Cancel**. Cancel (the `entry.cancel` action, `{id}`, answered at once;
+`listening-roomctl cancel`) abandons the start like any interrupted one: its candidate
+player stops, nothing it began plays afterwards, and the room before it comes back with
+its resume offer and errors (`entry.state` becomes `cancelled`). If the candidate had
+already replaced the previous music when Cancel landed, the room stops (idle) instead of
+staying half; Return still offers it. A start that already started is not cancelled.
 
 ## Desktop, MPRIS and phone controls
 
@@ -249,6 +270,8 @@ listening-roomctl quiet 10
 listening-roomctl resume
 listening-roomctl toggle        # room Play/Pause, as MPRIS and the media keys
 listening-roomctl music pause   # one layer: music|ambience pause|play|toggle|stop|next
+listening-roomctl video https://www.youtube.com/watch?v=VIDEO_ID   # watch with sound; `video` shows, `video stop` closes
+listening-roomctl cancel        # stop a room that is still connecting
 listening-roomctl save 'Rainy reading'
 listening-roomctl return
 listening-roomctl leave

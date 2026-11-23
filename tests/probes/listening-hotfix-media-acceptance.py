@@ -19,9 +19,10 @@ Each child is a subprocess, so a segfault is a result (exit status -11 or anothe
 of the probe. Children disable core dumps for themselves. The summary reports crashes per child and per
 stress cycle, plus the load average, and ends with "N passed, M failed".
 
-The dev shell has no GStreamer, and without it Scene never creates a Gtk.MediaFile (no loop, no crash):
---gstreamer auto (the default) adds the package's GStreamer from the flake's own nixpkgs, and a setup
-check fails when playbin3 is still missing, so a clean run is never vacuous.
+Without GStreamer Scene never creates a Gtk.MediaFile (no loop, no crash). The dev shell has provided the
+package's GStreamer since O10, so the environment's own is used; --gstreamer auto (the default) only adds
+one from the flake's nixpkgs for a shell that lacks it, and a setup check fails when playbin3 is still
+missing, so a clean run is never vacuous.
 
   scripts/listening-dev.sh probe OUT listening-hotfix-media-acceptance   (defaults), or
   scripts/listening-dev.sh shell, then:
@@ -98,9 +99,9 @@ def reexec_isolated():
 
 
 def gstreamer(args):
-    """Where the window's GStreamer comes from. The dev shell has none, and without it Scene never creates a
-    Gtk.MediaFile: no loop plays and the crash cannot happen, so a clean run would prove nothing. The package
-    build has GStreamer (its buildInputs); 'auto' adds the same packages from the flake's own nixpkgs."""
+    """Where the window's GStreamer comes from. The dev shell has it (since O10) and is used as it is.
+    Without GStreamer Scene never creates a Gtk.MediaFile: no loop plays and the crash cannot happen, so a clean
+    run would prove nothing. For a shell that lacks it, 'auto' adds the package's packages from the flake's nixpkgs."""
     def ready():
         return subprocess.call([sys.executable, '-c', GST_READY], stderr=subprocess.DEVNULL) == 0
     if ready():
