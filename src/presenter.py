@@ -61,7 +61,7 @@ def metadata_sources(record, item=None):
 class Presenter:
     def __init__(self, clock=time.time, history=12):
         self.clock, self.history = clock, history
-        self.segments, self.status, self._texts = [], '', []
+        self.segments, self.status, self._texts = [], '', {}  # _texts: recent spoken text per station
         self.level, self.muted = 50., False
         self._lock = threading.RLock()
 
@@ -116,7 +116,7 @@ class Presenter:
             return None, ('malformed generation', sources)
         text = text.strip()
         with self._lock:
-            if text in self._texts:
+            if text in self._texts.get(station.get('id'), ()):
                 return None, ('repeated segment', sources)
         try:
             if clip and Path(clip['audio']).stat().st_size > 2 * 1024 * 1024:
@@ -138,8 +138,10 @@ class Presenter:
             segment.update(source=clip['source'], placement=clip['allowed_placement'])
         with self._lock:
             self.status = ''
-            self.segments.append(segment); self._texts.append(text)
-            del self.segments[:-self.history]; del self._texts[:-self.history]
+            self.segments.append(segment)
+            recent = self._texts.setdefault(station.get('id'), [])
+            recent.append(text)
+            del self.segments[:-self.history]; del recent[:-self.history]
         return segment, None
 
     def discard(self, segment, remove=False):
@@ -151,9 +153,9 @@ class Presenter:
                 with self._lock:
                     if segment in self.segments:
                         self.segments.remove(segment)
-                    text = segment.get('text')
-                    if text in self._texts:
-                        self._texts.remove(text)
+                    recent = self._texts.get(segment.get('_station_id'), [])
+                    if segment.get('text') in recent:
+                        recent.remove(segment.get('text'))
 
     def _runtime_audio(self, audio):
         if not isinstance(audio, bytes) or not audio:
