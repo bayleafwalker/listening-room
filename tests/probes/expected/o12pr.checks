@@ -5,14 +5,16 @@ P0c an untouched saved station contains references/preferences only, never audio
 P1 station detail exposes a Presenter switch and a visible adjustable budget
 P1e-R1 tuning starts music at once but does not create an opening presenter slot
 # P1b [ORIGINAL, superseded by P1b-R1] still prints as a SUPERSEDED line, not counted: persistence alone did not prove a lower budget.
-P1b-R1 Less talking leaves Presenter enabled and persists a strictly sparser budget
+# P1b-R1 [SUPERSEDED by P1b-R2] read the active snapshot after editing an inactive station, which reports the default budget.
+P1b-R2 Less talking leaves Presenter enabled and persists a strictly sparser saved-station budget
 P1c Music only is station feedback: it turns Presenter off without changing station
 P2 the Mix exposes a Presenter row with its own level and Mute
 # P2b [ORIGINAL, superseded by P2b-R1] still prints as a SUPERSEDED line, not counted: whole layer equality hid a moving clock.
 # P2b-R1 [SUPERSEDED by P2b-R2] did not first prove an eligible slot boundary.
 P2b-R2 muting Presenter while it is playing keeps music identity and advancing clock
 P3 listening-roomctl inspect reports presenter enabled, budget, quiet status and recent sourced outcomes
-P3b MPRIS remains music playback while an optional presenter layer is enabled
+# P3b [SUPERSEDED by P3b-R1] queried an unowned bus name rather than starting the probe's private MPRIS service.
+P3b-R1 MPRIS remains music playback while an optional presenter layer is enabled on the private bus
 # P4 [ORIGINAL, superseded by P4-R1] still prints as SUPERSEDED lines, not counted: snapshot-only failures could leave a visible error card.
 # P4-R1 [SUPERSEDED by P4-R2] did not first prove an eligible slot boundary.
 P4-R2 LLM timeout drops quietly with no window error card
