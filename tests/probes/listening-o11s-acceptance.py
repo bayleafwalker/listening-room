@@ -774,7 +774,11 @@ with env:
                     if isinstance(w, Gtk.Label) and w.get_mapped() and w.get_text().casefold().startswith(title):
                         node = w
                         while node is not None and node is not root:
-                            if node.get_focusable() or isinstance(node, (Gtk.FlowBoxChild, Gtk.Button, Gtk.ListBoxRow)):
+                            # Harness revision H1 (acceptance author, phase-2 rerun, 2026-11-23; no criterion changed): the
+                            # tile is the nearest focusable ancestor. [ORIGINAL, superseded by H1] also stopped at any
+                            # Gtk.Button, so a non-focusable button inside a focusable FlowBoxChild tile was taken for the
+                            # tile and grab_focus() on it went nowhere.
+                            if node.get_focusable() or isinstance(node, Gtk.FlowBoxChild):
                                 break
                             node = node.get_parent()
                         if node is not None and node is not root and node is not getattr(window.mix.rows.get('picture'), 'change', None):
