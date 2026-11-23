@@ -23,9 +23,12 @@ H2 the 8 catalogue loops cost under 400 MB in total, at every sample after the f
 # P1 [ORIGINAL, superseded by P1r] still runs and prints as a SUPERSEDED line, not counted: it counted GLib's worker
 # pool too, which idles out (3ac5e81: -14 pool threads), so it passed at +18 while the media held 32 threads.
 P1r with all 8 catalogue loops off screen the media holds at most 24 threads, GLib's worker pool aside (2.5.0: +80; @@)
-P2 ... and at most 7 GStreamer streaming threads: one loop may stay warm (2.5.0: 56; @@)
-P3 a paused loop keeps at most 10 MB: its still and little else (2.5.0: 42-49 MB; Theil-Sen @@ MB per loop over the 8 off-screen samples)
-R0 the entered room played, and with it off screen the media also let go (@@ streaming threads)
+# P2, P3 and R0 [ORIGINAL, superseded by P2-R1, P3-R1 and R0-R1] still run and print as SUPERSEDED lines, not counted.
+# Coordinator rulings, phase 2 on dd4985e (O11-DECISIONS.md): the GstVideoDmabufPool watcher threads belong to the still
+# (P1r still bounds them); a paused loop may keep 20 MB, the still's frame and the dmabuf pool its buffer pins.
+P2-R1 ... and at most 7 GStreamer streaming threads, the still's dmabuf pool watchers aside (2.5.0: 48; @@)
+P3-R1 a paused loop keeps at most 20 MB, under half of 2.5.0's 42-49 MB (Theil-Sen @@ MB per loop over the 8 off-screen samples)
+R0-R1 the entered room played, and with it off screen the media also let go (@@ streaming threads, the still's dmabuf pool watchers aside)
 R1 returning to a loop that let go never holds the GTK thread over 100 ms (4 previews and Now; worst @@ ms without run-queue wait)
 R2 returning to a loop that let go shows no black or blank frame (sampled at about 30 Hz)
 R3 a loop that let go moves again when shown (4 previews and Now)
@@ -38,6 +41,28 @@ D2 no player pipeline is built twice for a loop file, after every loop was shown
 D3 no Gtk.MediaFile with an open file is cleared, re-opened or finalized while the window lives
 media: the child finished without a crash or hang
 media: the child reported all its oracles and exited 0
+# Coordinator ruling, phase 2 on dd4985e: the workaround that drops GTK 4.24.0's leaked GL context reference is a
+# memory-safety risk of the 2.3.2 class. C: release -> resume churn across loops, part of it at load > 15. B: the fallback
+# when the version gate (gate) or the reference-count check (refs, refused for real by an extra sink reference) does not match.
+C1 churn: at least 100 release-resume cycles of a shed loop ran across the 8 loop files (@@ cycles, @@ resumes of a shed loop)
+C3 churn: GL context and display threads never exceed one per loop file (peak @@ gstglcontext, @@ gldisplay-event, for 8 loop files; @@ and @@ once settled)
+C4 churn: open files do not grow beyond one per loop file once settled (@@ since the first pass, for 8 loop files)
+C5 churn: loops still move when shown, during the churn and after it (@@ of @@ sampled)
+churn: the child finished without a crash or hang
+churn: the child reported all its oracles and exited 0
+C6 churn: the host load was above 15 for part of the churn (peak @@)
+B1 gate: with the GTK version gate not matching, shedding is off for the process (@@ loops shed)
+B2 gate: with the GTK version gate not matching, GL context threads stay at one per loop and do not grow across resumes (@@ after release, @@ after 6 resumes, for 8 loops)
+B3 gate: with the GTK version gate not matching, loops still play, resume (6 resumes) and loop past their clip
+B4 gate: with the GTK version gate not matching, loops off screen stay paused: media threads use <= 50 ms CPU in 5 s on the grid (@@ ms)
+fallback-gate: the child finished without a crash or hang
+fallback-gate: the child reported all its oracles and exited 0
+B1 refs: with the reference-count check refusing (an extra sink reference), shedding is off for the process (@@ loops shed)
+B2 refs: with the reference-count check refusing (an extra sink reference), GL context threads stay at one per loop and do not grow across resumes (@@ after release, @@ after 6 resumes, for 8 loops)
+B3 refs: with the reference-count check refusing (an extra sink reference), loops still play, resume (6 resumes) and loop past their clip
+B4 refs: with the reference-count check refusing (an extra sink reference), loops off screen stay paused: media threads use <= 50 ms CPU in 5 s on the grid (@@ ms)
+fallback-refs: the child finished without a crash or hang
+fallback-refs: the child reported all its oracles and exited 0
 X1 stress: at least 300 scene-media stress cycles ran with scene loops (@@ attempted, @@ completed)
 X2 stress: zero crashes over those cycles (@@ crashed children)
 X3 stress: the host load was above 15 for part of the run (peak @@)

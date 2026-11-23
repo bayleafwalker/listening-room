@@ -36,6 +36,13 @@ Parts (each child is a subprocess, so a segfault is a result):
               (a disposed GstPlay joins its thread), no player pipeline is built twice for a loop file
               (GST_DEBUG element creation), and no Gtk.MediaFile with an open file is cleared, re-opened
               or finalized (Python hooks on Gtk.MediaFile: the calls that tear GstPlay down).
+  churn   criterion 2, the sink-shedding workaround (coordinator ruling on dd4985e): 140 preview cycles across the
+          loops, a fifth of them racing back to the loop just left around its release and shed; at least 100 resumes
+          of a shed loop; GL context/display threads and settled fds never beyond one per loop file; motion sampled;
+          nice-19 load helpers for at most its first 60 s, up to load 16.
+  fallback-gate / fallback-refs   the workaround's fallback: its GTK version gate patched not to match, or its
+          reference-count check refused for real (an extra reference on the first loop's video sink): shedding off,
+          GL threads one per loop and flat across resumes, loops play, resume, loop past their clip and stay paused.
   stress  criterion 2: tests/probes/listening-scene-media-stress.py, 10 children x 30 cycles = 300 cycles,
           3 at a time; host load above 15 for part of the run (nice-19 helpers for at most its first 60 s, up to
           load 16, then stopped); every signal is a crash.
@@ -121,6 +128,9 @@ PAGE_CPU_MS = {'Listen': 14.4, 'Now': 24.0, 'Mix': 11.0}   # [ORIGINAL, supersed
 PAGE_CPU_BASE_MS = {'Listen': 14.5, 'Now': 16.9, 'Mix': 12.9}
 PAGE_CPU_R_MS = {page: round(value * 1.25, 1) for page, value in PAGE_CPU_BASE_MS.items()}   # 18.1, 21.1, 16.1
 
+DMABUF_WATCHER = re.compile(r'^video-dmabuf')   # GstVideoDmabufPool's watcher: it belongs to the still's buffer
+PAUSED_MB_R1 = 20.        # P3-R1 (coordinator ruling, phase 2 on dd4985e): a paused loop keeps <= 20 MB, under half of
+                          # 2.5.0's 42-49 MB: the still's own frame and the dmabuf pool its outstanding buffer pins
 GLIB_POOL = re.compile(r'^pool-\d+$')    # GLib's shared worker threads: they idle-exit and respawn
 STREAMING = re.compile(r'^(typefind|multiqueue|qtdemux|matroskadem|vqueue|aqueue|queue\d|video-dmabuf|'
                        r'.*:(src|sink|sr|si|s)$)')
@@ -247,7 +257,7 @@ def run_parent(args):
     def note_load(label):
         summary['load_samples'].append((label, round(time.time()), os.getloadavg()))
 
-    def child(mode, timeout=900, load_done=None):
+    def child(mode, timeout=900, load_done=None, help_load=None):
         log = output / ('%s.log' % mode)
         gst = output / ('%s.gst' % mode)
         environment = dict(os.environ, PYTHONFAULTHANDLER='1', GST_DEBUG='GST_ELEMENT_FACTORY:4',
@@ -261,11 +271,20 @@ def run_parent(args):
             process = subprocess.Popen(command, stdout=handle, stderr=subprocess.STDOUT, env=environment,
                                        preexec_fn=no_core_dumps)
             marker = output / mode / 'load-done'
+            peak = os.getloadavg()[0]
+            if help_load is not None:        # coordinator ruling: nice-19 helpers for at most 60 s, up to load 16
+                help_load.start(STRESS_LOAD + 1)
             while True:
                 try:
                     code = process.wait(timeout=1)
                     break
                 except subprocess.TimeoutExpired:
+                    peak = max(peak, os.getloadavg()[0])
+                    if help_load is not None and help_load.procs and (
+                            os.getloadavg()[0] >= STRESS_LOAD + 1 or time.monotonic() - started > 60):
+                        help_load.stop()
+                        info('load helpers stopped after %.0f s of the %s child (load 1m %.1f)' % (
+                            time.monotonic() - started, mode, os.getloadavg()[0]))
                     if load_done is not None and marker.exists():
                         load_done()          # the child measured what needs load; the rest runs at the host's own
                         load_done = None
@@ -274,6 +293,8 @@ def run_parent(args):
                         process.wait()
                         code = 'timeout'
                         break
+        if help_load is not None:
+            help_load.stop()
         shutil.rmtree(runtime, ignore_errors=True)
         if isinstance(code, int) and code > 128:
             code = -(code - 128)
@@ -282,10 +303,10 @@ def run_parent(args):
         except OSError:
             pass
         text = log.read_text(errors='replace')
-        result = {}
+        result = {'load_peak': round(peak, 1)}
         for line in text.splitlines():
             if line.startswith('RESULT '):
-                result = json.loads(line[7:])
+                result = dict(json.loads(line[7:]), load_peak=round(peak, 1))
             elif line.startswith('INFO '):
                 print(line, flush=True)
         info('%s child: exit %s in %.0f s; %s' % (mode, code, time.monotonic() - started, uptime()))
@@ -305,7 +326,7 @@ def run_parent(args):
     print('uptime at start: %s' % summary['uptime_start'], flush=True)
     if args.inject:
         print('DIAGNOSTIC RUN: --inject %s (not an acceptance run)' % args.inject, flush=True)
-    parts = set(filter(None, args.only.split(','))) or {'setup', 'pages', 'media', 'stress', 'notes'}
+    parts = set(filter(None, args.only.split(','))) or {'setup', 'pages', 'media', 'churn', 'fallback', 'stress', 'notes'}
     media_ready = subprocess.call([sys.executable, '-c', GST_READY], stderr=subprocess.DEVNULL) == 0
     if 'setup' in parts:
         check('S1 the dev shell provides GStreamer playbin3 to the window (scene loops can play)', media_ready,
@@ -327,6 +348,20 @@ def run_parent(args):
         if 'media' in parts:
             summary['media'] = child('media', timeout=1500, load_done=load.stop)
             note_load('after media')
+
+        # ------------------------------------------------------------ criterion 2: the sink-shedding workaround
+        # Coordinator ruling (phase 2 on dd4985e): releasing a loop's GL context by hand (GTK 4.24.0's leaked
+        # reference) is a memory-safety risk of the 2.3.2 class, so it gets its own adversarial oracles: release ->
+        # resume churn across loops (part of it at load > 15), and the fallback when its version gate or its
+        # reference count check does not match.
+        if 'churn' in parts:
+            summary['churn'] = churned = child('churn', timeout=1200, help_load=load)
+            check('C6 churn: the host load was above %d for part of the churn (peak @@)' % STRESS_LOAD,
+                  churned.get('load_peak', 0) > STRESS_LOAD, churned.get('load_peak'),
+                  measured=float(churned.get('load_peak', 0)))
+        if 'fallback' in parts:
+            for mode in ('fallback-gate', 'fallback-refs'):
+                summary[mode] = child(mode, timeout=600)
 
         # ------------------------------------------------------------ criterion 2: stress, zero crashes
         if 'stress' in parts:
@@ -464,7 +499,14 @@ def run_child(mode, args):
         print('INFO ' + text, flush=True)
 
     with env:
-        result = (pages if mode == 'pages' else media)(env, step, check, info)
+        if mode == 'pages':
+            result = pages(env, step, check, info)
+        elif mode == 'churn':
+            result = churn(env, step, check, info)
+        elif mode.startswith('fallback-'):
+            result = fallback(env, step, check, info, mode.split('-', 1)[1])
+        else:
+            result = media(env, step, check, info)
         print('RESULT ' + json.dumps(result, default=str), flush=True)
         for window in list(env.app.get_windows()):
             window.close()
@@ -658,6 +700,7 @@ def media(env, step, check, info):
             point, names = o10p.sample(label)
             names_now = thread_names()
             point['streaming'] = streaming_count(names_now)
+            point['streaming_r1'] = streaming_count([n for n in names_now if not DMABUF_WATCHER.match(n)])
             point['non_pool_threads'] = sum(1 for n in names_now if not GLIB_POOL.match(n))
             point['gstplay'] = len(gstplay_tids())
             points.append((point, names))
@@ -858,10 +901,21 @@ def media(env, step, check, info):
     check('P1r with all 8 catalogue loops off screen the media holds at most %d threads, GLib\'s worker pool aside '
           '(2.5.0: +80; @@)' % PAUSED_THREADS_MAX, all_played and added_media <= PAUSED_THREADS_MAX,
           (cold['non_pool_threads'], released['non_pool_threads']), measured='+%d' % added_media)
-    check('P2 ... and at most %d GStreamer streaming threads: one loop may stay warm (2.5.0: 56; @@)' % STREAMING_MAX,
-          all_played and released['streaming'] <= STREAMING_MAX, released['streaming'], measured=released['streaming'])
-    check('P3 a paused loop keeps at most %.0f MB: its still and little else (2.5.0: 42-49 MB; Theil-Sen @@ MB per loop '
-          'over the 8 off-screen samples)' % PAUSED_MB_PER_LOOP, all_played and slope <= PAUSED_MB_PER_LOOP,
+    # Revisions P2-R1 and P3-R1 (coordinator rulings, phase 2 on dd4985e, O11-DECISIONS.md). P2-R1 leaves out the
+    # GstVideoDmabufPool watcher threads (video-dmabuf-po): they belong to the still (P1r still bounds them). P3-R1
+    # allows 20 MB per paused loop: what remains is the still's frame and the dmabuf pool its buffer pins, which only
+    # clearing the MediaFile (forbidden) would drop. The originals still run and print as SUPERSEDED lines, not counted.
+    print('SUPERSEDED %s P2 [ORIGINAL, superseded by P2-R1] ... and at most %d GStreamer streaming threads: one loop may '
+          'stay warm (2.5.0: 56; %d)' % ('PASS' if all_played and released['streaming'] <= STREAMING_MAX else 'FAIL',
+                                         STREAMING_MAX, released['streaming']), flush=True)
+    check('P2-R1 ... and at most %d GStreamer streaming threads, the still\'s dmabuf pool watchers aside (2.5.0: 48; @@)'
+          % STREAMING_MAX, all_played and released['streaming_r1'] <= STREAMING_MAX, released['streaming_r1'],
+          measured=released['streaming_r1'])
+    print('SUPERSEDED %s P3 [ORIGINAL, superseded by P3-R1] a paused loop keeps at most %.0f MB (Theil-Sen %.1f MB per '
+          'loop)' % ('PASS' if all_played and slope <= PAUSED_MB_PER_LOOP else 'FAIL', PAUSED_MB_PER_LOOP, slope),
+          flush=True)
+    check('P3-R1 a paused loop keeps at most %.0f MB, under half of 2.5.0\'s 42-49 MB (Theil-Sen @@ MB per loop over '
+          'the 8 off-screen samples)' % PAUSED_MB_R1, all_played and slope <= PAUSED_MB_R1,
           rss_points, measured=float(round(slope, 1)))
 
     # ---- criterion 1: returning to a loop that let go, at the host's own load (the brief sets load 20+ for the
@@ -922,10 +976,13 @@ def media(env, step, check, info):
     info('entered room: played %s; off screen +%d threads, %d streaming; resumed on Now %s' % (
         entered, off_now['threads'] - cold['threads'], off_now['streaming'], json.dumps(now_resume)))
     all_resumes = resumes + ([now_resume] if now_resume else [])
-    check('R0 the entered room played, and with it off screen the media also let go (@@ streaming threads)',
-          entered and off_now['streaming'] <= STREAMING_MAX
-          and off_now['non_pool_threads'] - cold['non_pool_threads'] <= PAUSED_THREADS_MAX,
-          (entered, off_now), measured=off_now['streaming'])
+    off_now_ok = entered and off_now['non_pool_threads'] - cold['non_pool_threads'] <= PAUSED_THREADS_MAX
+    print('SUPERSEDED %s R0 [ORIGINAL, superseded by R0-R1] the entered room played, and with it off screen the media '
+          'also let go (%d streaming threads)' % ('PASS' if off_now_ok and off_now['streaming'] <= STREAMING_MAX
+                                                  else 'FAIL', off_now['streaming']), flush=True)
+    check('R0-R1 the entered room played, and with it off screen the media also let go (@@ streaming threads, the '
+          'still\'s dmabuf pool watchers aside)', off_now_ok and off_now['streaming_r1'] <= STREAMING_MAX,
+          (entered, off_now), measured=off_now['streaming_r1'])
     worst_stall = max([r['stall_ms'] for r in all_resumes] or [1e9])
     check('R1 returning to a loop that let go never holds the GTK thread over %d ms (4 previews and Now; worst @@ ms '
           'without run-queue wait)' % RESUME_STALL_MS,
@@ -1025,6 +1082,222 @@ def media(env, step, check, info):
     check('D3 no Gtk.MediaFile with an open file is cleared, re-opened or finalized while the window lives',
           all_played and not hooks.finalized and not hooks.dropped, (hooks.finalized[:8], hooks.dropped[:8]))
     return result
+
+
+# ---------------------------------------------------------------------------- the sink-shedding workaround
+# The product's loop table (next_widgets._LOOPS: .released, .shed) is read only to count how often the path under
+# test ran, so a run that never sheds cannot pass vacuously; every judgement is on threads, fds and pixels.
+
+def _loop_state(next_widgets, path):
+    loop = getattr(next_widgets, '_LOOPS', {}).get(path)
+    return bool(getattr(loop, 'shed', False)), bool(getattr(loop, 'released', False))
+
+
+def _gl(names=None):
+    names = names if names is not None else thread_names()
+    return names.count('gstglcontext'), names.count('gldisplay-event')
+
+
+def _fds():
+    return len(os.listdir('/proc/self/fd'))
+
+
+def _quiet(env, limit=20.):
+    """Until GL threads and fds have not changed for 3 s (releases, sheds and sweeps done), at most `limit` s."""
+    start, last, since = time.monotonic(), None, time.monotonic()
+    while time.monotonic() - start < limit:
+        env.pump(.5)
+        now = _gl() + (_fds(),)
+        if now != last:
+            last, since = now, time.monotonic()
+        elif time.monotonic() - since >= 3.:
+            break
+    return time.monotonic() - start
+
+
+CHURN_CYCLES = 140
+CHURN_RESUMES = 100          # coordinator ruling: >= 100 release -> resume cycles across loops
+
+
+def churn(env, step, check, info):
+    import random
+    import next_widgets
+    pump = env.pump
+    rng = random.Random(1123)
+    step('launch')
+    window = env.launch(page='rooms')
+    window.show_rooms()
+    pump(2.)
+    rooms = o10p.Rooms(env, window)
+    catalogue = rooms.loop_cards()
+    files = sorted({rooms.loop_of(c) for c in catalogue})
+    step('first pass')
+    first_moved = []
+    for card in catalogue:
+        rooms.click(card)
+        first_moved.append(rooms.moves(6.)[0])
+        rooms.escape()
+        pump(.4)
+    waited = _quiet(env)
+    base_gl, base_fds = _gl(), _fds()
+    info('churn: after the first pass (%.0f s to settle): gstglcontext/gldisplay-event %s, fds %d' % (
+        waited, base_gl, base_fds))
+    step('churn')
+    peak_ctx = peak_disp = 0
+    peak_fds, cycles, shed_resumes, races, sampled = base_fds, 0, 0, 0, []
+    previous = None
+    for cycle in range(CHURN_CYCLES):
+        race = previous is not None and cycle % 5 == 4
+        card = previous if race else catalogue[cycle % len(catalogue)]
+        if race:   # back to the loop just left, around its release (1 s) and its shed (the sweep after it)
+            races += 1
+            pump(rng.choice((.6, .9, 1.0, 1.1, 1.3, 1.6, 2.0)))
+        shed, _ = _loop_state(next_widgets, rooms.loop_of(card))
+        shed_resumes += shed
+        rooms.click(card)
+        if cycle % 10 == 9:
+            sampled.append(rooms.moves(5.)[0])
+        else:
+            pump(rng.choice((.3, .6, 1.0)))
+        rooms.escape()
+        pump(rng.choice((.2, .5, 1.0, 1.5)))
+        cycles += 1
+        previous = card
+        ctx, disp = _gl()
+        peak_ctx, peak_disp, peak_fds = max(peak_ctx, ctx), max(peak_disp, disp), max(peak_fds, _fds())
+    waited = _quiet(env)
+    end_gl, end_fds = _gl(), _fds()
+    step('every loop once more')
+    after = []
+    for card in catalogue:
+        rooms.click(card)
+        after.append(rooms.moves(6.)[0])
+        rooms.escape()
+        pump(.4)
+    _quiet(env)
+    final_gl, final_fds = _gl(), _fds()
+    info('churn: %d cycles (%d races), %d resumes of a shed loop; peak gstglcontext %d, gldisplay-event %d, fds %d; '
+         'settled after the churn (%.0f s): GL %s, fds %d (base %d); after one more pass: GL %s, fds %d; motion sampled '
+         '%s, afterwards %s' % (cycles, races, shed_resumes, peak_ctx, peak_disp, peak_fds, waited, end_gl, end_fds,
+                                base_fds, final_gl, final_fds, sampled, after))
+    loops = len(files)
+    check('C1 churn: at least %d release-resume cycles of a shed loop ran across the %d loop files (@@ cycles, @@ '
+          'resumes of a shed loop)' % (CHURN_RESUMES, loops), all(first_moved) and shed_resumes >= CHURN_RESUMES,
+          (first_moved, cycles, shed_resumes), measured=(cycles, shed_resumes))
+    check('C3 churn: GL context and display threads never exceed one per loop file (peak @@ gstglcontext, @@ '
+          'gldisplay-event, for %d loop files; @@ and @@ once settled)' % loops,
+          peak_ctx <= loops and peak_disp <= loops and max(end_gl + final_gl) <= loops,
+          (peak_ctx, peak_disp, end_gl, final_gl), measured=(peak_ctx, peak_disp) + end_gl)
+    grown = max(end_fds, final_fds) - base_fds
+    check('C4 churn: open files do not grow beyond one per loop file once settled (@@ since the first pass, for %d loop '
+          'files)' % loops, grown <= loops, (base_fds, end_fds, final_fds, peak_fds), measured='%+d' % grown)
+    check('C5 churn: loops still move when shown, during the churn and after it (@@ of @@ sampled)',
+          sampled and all(sampled) and all(after), (sampled, after),
+          measured=(sum(sampled) + sum(after), len(sampled) + len(after)))
+    return {'cycles': cycles, 'races': races, 'shed_resumes': shed_resumes, 'peak': [peak_ctx, peak_disp, peak_fds],
+            'base': [base_gl, base_fds], 'end': [end_gl, end_fds], 'final': [final_gl, final_fds],
+            'sampled': sampled, 'after': after, 'uptime': uptime()}
+
+
+def _hold_video_sink(next_widgets, media):
+    """An extra reference on the video sink a loop's player uses, never dropped: when the loop is shed, its sink
+    cannot be finalized, so the workaround's own check refuses (the reference-count fallback, for real)."""
+    import ctypes
+    player = next_widgets.gst_player(media) if hasattr(next_widgets, 'gst_player') else None
+    if not player:
+        return None
+    play = ctypes.CDLL('libgstplay-1.0.so.0')
+    gobject = ctypes.CDLL('libgobject-2.0.so.0')
+    gst = ctypes.CDLL('libgstreamer-1.0.so.0')
+    play.gst_play_get_pipeline.argtypes, play.gst_play_get_pipeline.restype = [ctypes.c_void_p], ctypes.c_void_p
+    gst.gst_object_unref.argtypes = [ctypes.c_void_p]
+    pipeline = play.gst_play_get_pipeline(player)
+    if not pipeline:
+        return None
+    sink = ctypes.c_void_p()
+    gobject.g_object_get(ctypes.c_void_p(pipeline), b'video-sink', ctypes.byref(sink), None)   # reffed: kept
+    gst.gst_object_unref(pipeline)
+    return sink.value
+
+
+def fallback(env, step, check, info, mode):
+    """mode 'gate': the workaround's GTK version gate does not match (SHED_GTK set to a GTK that is not this one).
+    mode 'refs': the gate matches, but an extra reference holds the first loop's sink, so its check refuses."""
+    import next_widgets
+    pump = env.pump
+    if mode == 'gate':
+        next_widgets.SHED_GTK = (0, 0, 0)       # before the first loop loads the GStreamer calls
+    step('launch')
+    window = env.launch(page='rooms')
+    window.show_rooms()
+    pump(2.)
+    rooms = o10p.Rooms(env, window)
+    catalogue = rooms.loop_cards()
+    baseline = set(threads_cpu())
+    held, moved = None, []
+    step('every loop once')
+    for index, card in enumerate(catalogue):
+        rooms.click(card)
+        moved.append(rooms.moves(6.)[0])
+        if mode == 'refs' and index == 0:
+            scene = rooms.scene_widget()
+            _, paintable = o10p.largest_paintable(scene) if scene else (None, None)
+            if isinstance(paintable, env.Gtk.MediaFile):
+                held = _hold_video_sink(next_widgets, paintable)
+        rooms.escape()
+        pump(.4)
+    _quiet(env)
+    pump(3.)
+    _quiet(env)
+    released_gl = _gl()
+    shed_loops = sum(_loop_state(next_widgets, rooms.loop_of(c))[0] for c in catalogue)
+    shedding_on = bool(getattr(next_widgets, '_PLAY', {}).get('shed'))
+    step('resumes')
+    resumed = []
+    for card in (catalogue[1], catalogue[4], catalogue[6]) * 2:
+        rooms.click(card)
+        resumed.append(rooms.moves(6.)[0])
+        rooms.escape()
+        pump(2.5)
+    _quiet(env)
+    resumed_gl = _gl()
+    before = threads_cpu()
+    pump(5.)
+    idle = o10p.media_cpu_ms(before, threads_cpu(), baseline)
+    step('entered loop past its end')
+    rooms.click(catalogue[2])
+    pump(1.)
+    widgets = window.rooms.preview_widgets
+    if widgets and widgets.get('enter') is not None:
+        widgets['enter'].emit('clicked')
+    env.settle(1.5)
+    start = time.monotonic()
+    entered = window.current_page() == 'now' and rooms.moves(6.)[0]
+    late = []
+    while time.monotonic() - start < CLIP_S + 6.:
+        moving, pct, _ = rooms.moves(2.5, threshold=1e9)
+        if time.monotonic() - start > CLIP_S + 2.:
+            late.append(round(pct, 3))
+    looped = entered and bool(late) and all(p > .005 for p in late)
+    loops = len(catalogue)
+    info('fallback %s: held sink %s; after release GL %s, %d loops shed, shedding on %s; after 6 resumes GL %s; idle '
+         'media CPU %.0f ms; entered %s, late motion %s' % (mode, bool(held), released_gl, shed_loops, shedding_on,
+                                                             resumed_gl, idle, entered, late))
+    label = {'gate': 'gate: with the GTK version gate not matching',
+             'refs': 'refs: with the reference-count check refusing (an extra sink reference)'}[mode]
+    engaged = (not shedding_on and shed_loops == 0) if mode == 'gate' else (bool(held) and not shedding_on and shed_loops <= 1)
+    check('B1 %s, shedding is off for the process (@@ loops shed)' % label, all(moved) and engaged,
+          (moved, held, shed_loops, shedding_on), measured=shed_loops)
+    check('B2 %s, GL context threads stay at one per loop and do not grow across resumes (@@ after release, @@ after '
+          '6 resumes, for %d loops)' % (label, loops),
+          released_gl[0] <= loops and released_gl[1] <= loops and resumed_gl[0] <= released_gl[0]
+          and resumed_gl[1] <= released_gl[1], (released_gl, resumed_gl), measured=(released_gl[0], resumed_gl[0]))
+    check('B3 %s, loops still play, resume (6 resumes) and loop past their clip' % label,
+          all(moved) and all(resumed) and looped, (moved, resumed, entered, late))
+    check('B4 %s, loops off screen stay paused: media threads use <= %d ms CPU in 5 s on the grid (@@ ms)' % (
+        label, o10p.IDLE_MEDIA_CPU_MS), idle <= o10p.IDLE_MEDIA_CPU_MS, idle, measured=round(idle))
+    return {'mode': mode, 'held': bool(held), 'released_gl': released_gl, 'resumed_gl': resumed_gl,
+            'shed_loops': shed_loops, 'shedding_on': shedding_on, 'idle_ms': idle, 'late': late, 'uptime': uptime()}
 
 
 if __name__ == '__main__':
