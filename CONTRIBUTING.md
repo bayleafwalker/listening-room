@@ -50,6 +50,11 @@ Both run their GUI children at low CPU priority (a user scope with CPUWeight=20 
 so a run does not starve your desktop; set `LISTENING_DEV_PRIORITY=normal` to turn that off.
 On a busy host the probes, and their timing checks, run slower.
 
+**Negative controls.** Point a probe at another tree with `--source COPY/src` (`--repo COPY` for
+the acceptance probes) and every helper imports from that tree, whether or not
+`LISTENING_HUB_SOURCE` is set (`tests/source_tree.py`). The `*_oracles.py` modules still read
+`LISTENING_HUB_SOURCE`, so set it too when a probe imports one.
+
 **Adding a probe.** Add `tests/probes/listening-<name>.py` (and, for an acceptance probe,
 a line in `tests/probes/acceptance.manifest`). An acceptance probe prints `PASS`/`FAIL`
 lines and writes its `*acceptance*.json` results into `--output`.

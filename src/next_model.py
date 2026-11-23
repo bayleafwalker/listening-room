@@ -150,17 +150,22 @@ def same_text(a, b):
 
 
 def layer_summary(snapshot, room=''):
-    """Names of what is sounding, for the Mix button: Piano · Rain on glass · Scene. A layer named like the
+    """Names of what is sounding, for the Mix button: Piano · Rain on glass · Scene (or Music paused · Rain on
+    glass while only the music is paused). A layer named like the
     ``room`` title above it is called by its kind (Music) rather than repeating the name."""
     parts = []
     music, ambience, picture = (_layer(snapshot, name) for name in LAYER_ORDER)
     active = snapshot.get('active') or {}
+    # With one layer paused while another plays, the paused one says so: "Music paused · Rain on glass".
+    partial = _playing(music) or _playing(ambience)
     if music.get('status') in ('Playing', 'Paused'):
         named = music.get('station') or music.get('name') or (active.get('music') or {}).get('name')
-        parts.append(MUSIC if not named or same_text(named, room) else named)
+        parts.append(MUSIC + ' paused' if partial and not _playing(music) else
+                     MUSIC if not named or same_text(named, room) else named)
     if ambience.get('status') in ('Playing', 'Paused') and ambience.get('kind', 'local') != 'none':
         named = ambience.get('name') or ambience.get('title')
-        parts.append(AMBIENCE if not named or same_text(named, room) else named)
+        parts.append(AMBIENCE + ' paused' if partial and not _playing(ambience) else
+                     AMBIENCE if not named or same_text(named, room) else named)
     if picture.get('status') in ('Playing', 'Paused'):
         parts.append(SCENE)
     return ' · '.join(parts) if parts else 'Nothing playing'
@@ -172,9 +177,11 @@ def room_state(snapshot):
     While anything is audible the room shows Pause (Pause quiets everything audible), even with one layer
     paused on its own; with nothing audible, a paused layer or a resume offer shows Play."""
     layers = [_layer(snapshot, name) for name in ('music', 'atmosphere')]
-    if any(_playing(layer) for layer in layers):
-        return 'playing'
-    if snapshot.get('resume_offer') or any(layer.get('status') == 'Paused' for layer in layers):
+    video = snapshot.get('video') if isinstance(snapshot.get('video'), dict) else {}
+    if any(_playing(layer) for layer in layers) or video.get('status') == 'Playing':
+        return 'playing'     # a watched video is part of the room: Pause pauses it too
+    if snapshot.get('resume_offer') or any(layer.get('status') == 'Paused' for layer in layers) \
+            or video.get('status') == 'Paused':
         return 'paused'
     return 'idle'
 

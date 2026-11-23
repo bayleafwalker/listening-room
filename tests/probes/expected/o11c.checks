@@ -1,0 +1,78 @@
+# O11-CONTROL acceptance (author-owned). Every check must pass once the outcome is implemented.
+# Written on main 70db15e (2.5.0), where 50 of these 66 fail by design (evidence-o11c-acceptance/main-probe.log;
+# V5b re-run after a phase-1 fix that made it depend on the video actually stopping: main-probe-video.log).
+# The 16 passing ones are setup checks (V7, V17, K1) and regression guards: Leave stops the video (V20), the 2.5.0
+# protocol (X1-X4), MPRIS Playing with one layer audible (P3), the 2.x status line outside partial pause (P0, P7-P9),
+# one room Pause/Play in popover and mini player (U3, U9), Stop on the Music row with no single-item menu (R1).
+# Author-set limits awaiting a coordinator ruling: 6 s fixture connect, Cancel effective within 3 s, follow/popover
+# change within 2 s, "nothing starts" observed until 2 s past the connect (see the probe docstring).
+V1 listening-roomctl --help names the video command
+V2 listening-roomctl starts the room's video from a URL the user gives (that video plays)
+V2b ... as Watch: the room stays the same room and nothing else starts
+V3 listening-roomctl shows the room's video: its name and that it plays
+V4 while a video is watched, listening-roomctl status (Waybar) names it
+V5 listening-roomctl stops the room's video: the player closes and the room reports no video
+V5b ... and stopping it resumes nothing (Resume stays explicit)
+V6 with the start verb working, a link that is not a public YouTube video is refused (non-zero exit, a message) and opens nothing
+V7 (setup) Watch paused the room and the video plays
+V8 MPRIS reports Playing while the video plays (something is audible)
+V10 ... the room reports the video as paused
+V10b ... and MPRIS then reports Paused
+V9/V11 listening-roomctl pause / play pauses the video and then resumes it; Music and Ambience stay paused throughout (Play restores exactly what Pause paused)
+V12/V13 MPRIS Pause / Play pauses the video and then resumes it; Music and Ambience stay paused throughout (Play restores exactly what Pause paused)
+V14 MPRIS PlayPause twice pauses the video and then resumes it; Music and Ambience stay paused throughout (Play restores exactly what Pause paused)
+V15 the media key (listening-hub toggle) twice pauses the video and then resumes it; Music and Ambience stay paused throughout (Play restores exactly what Pause paused)
+V16 the window's room Pause then Play pauses the video and then resumes it; Music and Ambience stay paused throughout (Play restores exactly what Pause paused)
+V17 (setup) the room resumed while the video plays
+V18 with the room and the video playing, room Pause pauses all three and Play restores all three
+V19 with no room, room transport pauses and resumes the video
+V19b ... MPRIS reports the paused video as Paused, and no room is invented or started
+V20 Leave stops the video: within 5 s (a Leave fade) the player is closed and no video is reported
+X4 a 2.5.0 client's raw `video` start/stop request still opens and closes the video
+P0 with everything playing the line is the playing line (class playing, nothing said paused)
+P1 with the music paused on its own, status says "Music paused" and names the ambience still playing (Rain on glass)
+P2 ... with a paused class
+P3 ... and MPRIS PlaybackStatus is Playing (the ambience is audible)
+P4 status --follow prints the "Music paused" line with the paused class within 2 s
+P5 ... and the playing line again within 2 s once the music plays
+P6 with the ambience paused on its own, status says the ambience is paused, names the music (SomaFM Drone Zone) and has the paused class
+P7 a stopped layer is not reported as paused (music stopped, ambience playing: no "paused", class playing)
+P8 the whole room paused keeps the 2.x paused line
+P9 every status line read in this probe stays parseable and keeps the 2.x line outside partial pause and video (revised WP2 status oracle)
+U1 the popover shows a tappable Music item and a tappable Ambience item
+U2 ... under the room name
+U3 the popover keeps one room Pause/Play besides the per-layer items
+# U4-U8 were recorded on main under the probe's fallback names "(no per-layer items to tap)", the name
+# used when the popover has no items; phase 2 (4574991) lists the real check names. Same checks, oracle fix.
+U4 tapping Music pauses the music alone (the ambience keeps playing)
+U5 ... and the Music item then shows it is paused (its look changed), the Ambience item unchanged
+U6 tapping Music again plays it
+U7 tapping Ambience pauses the ambience alone, and again plays it
+U8 a pause made elsewhere (listening-roomctl music pause) shows on the popover line within 2 s
+U9 the mini player keeps one room Pause/Play and no per-layer items
+M1 in the Mix, M pauses the music alone
+M2 ... and M again plays it
+M3 in the Mix, A pauses the ambience alone
+M4 ... and A again plays it
+M5 Shift+Up with the Music row focused raises the music level, and neither the ambience level nor the room volume
+M6 Shift+Down lowers it again, the same way
+M7 Shift+Up with the Ambience row focused raises the ambience level alone
+M8 with M working in the Mix, typing M or A in a text entry (Listen search) changes no layer
+# M9 is superseded by M9-R1 (phase 2, 2026-11-22, on 4574991): criterion 4 lets the keys wait in one easy-to-merge
+# list while O11-SHELL's table is not on the branch; the original prints as an uncounted SUPERSEDED line.
+M9-R1 the Keyboard shortcuts list names M (music), A (ambience) and Shift+Up/Down (the focused row's level); while O11-SHELL's shortcuts dialog is not on the branch, one key list in the window or Mix module may hold them
+R1 radio room: Stop is a button on the Music row, and no Mix menu holds a single item
+R2 library room: Next track is a button on the Music row (not only in the ⋯ menu)
+K1 (setup) the room was connecting when the Mix was opened
+K2 while connecting, the Mix shows a progress indicator and Cancel
+K3 ... and no other control (the sheet's close aside)
+K4 Cancel abandons the attempt in the controller within 3 s: not connecting, back to idle
+K5 nothing starts afterwards: past the moment the connect would have finished, no layer started and the room is still idle
+K6 ... and the window no longer shows the connecting Cancel
+K7 (setup) switching to another room was connecting, with Cancel shown
+K8 Cancel while switching restores the previous room within 3 s: same room, same music, playing as before
+K9 ... and nothing of the target starts afterwards: the previous room is still the one playing
+X1 every 2.5.0 controller action still exists with the same argument types (changes are additive)
+X2 ... and what ran at once in 2.5.0 still runs at once (stop, quiet, resume, transport, video stop)
+X3 the snapshot keeps every 2.5.0 field
+X5 the CHANGELOG records the change above 2.5.0: the video from roomctl and room transport, and partial pause in the status

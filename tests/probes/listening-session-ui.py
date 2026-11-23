@@ -541,13 +541,26 @@ with tempfile.TemporaryDirectory(prefix='listening-session-') as folder:
         window.activate_action('win.shortcuts', None)
         pump(.6)
         dialog = window.get_visible_dialog()
-        assert isinstance(dialog, Adw.AlertDialog), dialog
-        body = dialog.get_body()
-        for key, text in next_window.SHORTCUTS:
-            assert key in body and text in body, (key, text)
-        for key in ('Space', 'Ctrl+1', 'Ctrl+2', 'Ctrl+3', 'Ctrl+F', 'Ctrl+L', 'Ctrl+V', 'Ctrl+M', 'Ctrl+,', 'Esc', 'Up / Down', 'Ctrl+?'):
-            assert key in body, 'the shortcuts dialog is missing %s' % key
-        assert 'Ctrl+4' not in body, 'Ctrl+4/5/6 are retired'
+        assert isinstance(dialog, Adw.ShortcutsDialog), dialog
+        # The native dialog draws keycaps, not text, so read the accelerators its keycap widgets draw (O11-SHELL
+        # acceptance author, phase 2: the implementer's version read next_window.SHORTCUT_PAGES, the table the
+        # dialog is built from, which says nothing about what the dialog shows).
+        mask = int(Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK)
+
+        def keycap(token):
+            ok, keyval, mods = Gtk.accelerator_parse(token)
+            mods = int(mods) & mask
+            if keyval == Gdk.KEY_question:
+                keyval, mods = Gdk.KEY_slash, mods | int(Gdk.ModifierType.SHIFT_MASK)
+            return (Gdk.keyval_to_lower(keyval), mods) if ok and keyval else None
+        drawn = {keycap(token) for w in widgets(dialog) if isinstance(w, Gtk.Widget) and w.get_mapped()
+                 and callable(getattr(w, 'get_accelerator', None)) for token in (w.get_accelerator() or '').split()}
+        for key, accels in (('Space', 'space'), ('Ctrl+1', '<Control>1'), ('Ctrl+2', '<Control>2'), ('Ctrl+3', '<Control>3'),
+                            ('Ctrl+F', '<Control>f'), ('Ctrl+L', '<Control>l'), ('Ctrl+V', '<Control>v'), ('Ctrl+M', '<Control>m'),
+                            ('Ctrl+,', '<Control>comma'), ('Esc', 'Escape'), ('Up / Down', 'Up Down'), ('Ctrl+?', '<Control>question')):
+            assert {keycap(t) for t in accels.split()} <= drawn, 'the shortcuts dialog does not draw %s' % key
+        for retired in ('<Control>4', '<Control>5', '<Control>6'):
+            assert keycap(retired) not in drawn, 'Ctrl+4/5/6 are retired'
         dialog.force_close()
         pump(.4)
         # Keyboard-only walk: pages, search, Now, pause and volume, mini, preferences, link sheet; nothing starts anything.

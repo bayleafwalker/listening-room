@@ -11,7 +11,9 @@ import time
 import unittest
 from unittest import mock
 
-sys.path.insert(0, str(Path(os.environ.get('LISTENING_HUB_SOURCE', Path(__file__).resolve().parents[1] / 'src/listening_hub.py')).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import source_tree  # noqa: E402  (keeps a --source/--repo tree the caller already chose)
+source_tree.use_source(Path(__file__).resolve().parents[1] / 'src/listening_hub.py')
 import room_session as sessions
 import session_client
 import session_service

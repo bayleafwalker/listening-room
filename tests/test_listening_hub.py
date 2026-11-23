@@ -65,7 +65,7 @@ class HubTests(unittest.TestCase):
         with mock.patch.object(core.socket, 'getaddrinfo', side_effect=OSError()), mock.patch.object(core.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(payload).encode())) as request:
             result = hub.search_radio('Jazz', country='fi', language='finnish', tag='folk', cache=False)
         params = urllib.parse.parse_qs(urllib.parse.urlsplit(request.call_args.args[0].full_url).query)
-        self.assertEqual(params, {'name': ['Jazz'], 'countrycode': ['FI'], 'language': ['finnish'], 'tag': ['folk'], 'limit': ['50'], 'hidebroken': ['true'], 'order': ['clickcount'], 'reverse': ['true']})
+        self.assertEqual(params, {'name': ['Jazz'], 'countrycode': ['FI'], 'language': ['finnish'], 'tag': ['folk'], 'limit': [str(core.RADIO_FETCH)], 'hidebroken': ['true'], 'order': ['clickcount'], 'reverse': ['true']})
         self.assertEqual(result[0]['country'], 'Finland')
         self.assertEqual(result[0]['countrycode'], 'FI')
         self.assertEqual(result[0]['language'], 'finnish,english')

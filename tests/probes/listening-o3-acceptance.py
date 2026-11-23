@@ -1583,6 +1583,39 @@ def s8_language_and_names():
     close_windows()
 
 
+def drawn_shortcuts(root):
+    """The keys a shortcuts dialog draws: every mapped keycap widget's accelerator (Adw.ShortcutLabel), parsed and
+    normalised (Ctrl+? is Ctrl+Shift+slash). Added by the O11-SHELL acceptance author (revision C-R1)."""
+    keys = set()
+    mask = int(Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK)
+    for widget in walk(root):
+        get = getattr(widget, 'get_accelerator', None)
+        if not callable(get) or not isinstance(widget, Gtk.Widget) or not widget.get_mapped():
+            continue
+        for token in (get() or '').split():
+            ok, keyval, mods = Gtk.accelerator_parse(token)
+            if not ok or not keyval:
+                continue
+            mods = int(mods) & mask
+            if keyval == Gdk.KEY_question:
+                keyval, mods = Gdk.KEY_slash, mods | int(Gdk.ModifierType.SHIFT_MASK)
+            keys.add((Gdk.keyval_to_lower(keyval), mods))
+    return keys
+
+
+def drawn(root, accelerators):
+    """True when the dialog draws every one of these GTK accelerators (space-separated alternatives all required)."""
+    keys = drawn_shortcuts(root)
+    want = set()
+    for token in accelerators.split():
+        ok, keyval, mods = Gtk.accelerator_parse(token)
+        mods = int(mods) & int(Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK)
+        if keyval == Gdk.KEY_question:
+            keyval, mods = Gdk.KEY_slash, mods | int(Gdk.ModifierType.SHIFT_MASK)
+        want.add((Gdk.keyval_to_lower(keyval), mods))
+    return bool(want) and want <= keys
+
+
 def s9_keyboard_flows():
     seed()
     window = listen_window()
@@ -1593,7 +1626,12 @@ def s9_keyboard_flows():
     window.shortcuts_dialog(); pump(.5)
     d = dialog_of(window)
     text = ' '.join(texts(d)) + ' ' + str(getattr(d, 'get_body', lambda: '')())
+    # [ORIGINAL, superseded by C-R1] read the dialog's text for "Ctrl+F" and "Ctrl+L". O11-SHELL made the dialog the
+    # native Adw.ShortcutsDialog the brief asks for, which draws keycaps ("Ctrl" and "F" as separate caps), so the text
+    # never contains "Ctrl+F". Same intent, read from what the dialog draws (revision C-R1, O11-SHELL phase 2).
     check('C the keyboard-shortcuts dialog lists the Listen shortcuts (Ctrl+F search, Ctrl+L add a link)', 'Ctrl+F' in text and 'Ctrl+L' in text, repr(text)[:200])
+    check('C-R1 the keyboard-shortcuts dialog draws the Listen shortcuts (Ctrl+F search, Ctrl+L add a link) as keycaps',
+          d is not None and drawn(d, '<Control>f') and drawn(d, '<Control>l'), repr(sorted(drawn_shortcuts(d)) if d is not None else None)[:300])
     close_dialogs(window)
     # Ctrl+F from the station page returns to Listen search
     p.show_station(stored('Late reading')); pump(.5)

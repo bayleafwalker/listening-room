@@ -30,7 +30,9 @@
 4e "Workspace 9" appears only as a Scene placement value
 4f Mix row menu 'Music options': no forbidden vocabulary
 4f Mix row menu 'Ambience options': no forbidden vocabulary
-4f Mix row menu 'Change… Northern lake · offline Moonlit lake · offline Midnight Library · offline room Night Drive · offline room Northern Quiet · offline room Velvet Circuit · offline room After Hours · offline room Atomic Lounge · offline room Finnish Discoveries · offline room Wizarding Valley · offline room': no forbidden vocabulary
+# O11-SHELL phase 2 (acceptance author): the 4f instance for the Scene Change… popover embeds the popover's text in its name;
+# the thumbnail grid shows scene names without "· offline room" and marks the current one, so the same check now has this name.
+4f Mix row menu 'Change… Northern lake Moonlit lake Current Midnight Library Night Drive Northern Quiet Velvet Circuit After Hours Atomic Lounge Finnish Discoveries Wizarding Valley': no forbidden vocabulary
 4f Mix row menu 'Scene options': no forbidden vocabulary
 5a Pause sends the existing quiet (no minutes), nothing else
 5b Pause quiets the layers (music Paused, not stopped)

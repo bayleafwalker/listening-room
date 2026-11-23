@@ -64,10 +64,12 @@ MPRIS_XML = '''<node>
 
 
 def room_status(snapshot):
-    """The room's PlaybackStatus: Playing while any layer sounds, Paused while a paused layer or a resume
+    """The room's PlaybackStatus: Playing while any layer (or a watched video) sounds, Paused while a paused layer or a resume
     offer waits, else Stopped. The window's Play/Pause button reads the same rule (next_model.room_state)."""
     layers = snapshot.get('layers') or {}
     statuses = [(layers.get(name) or {}).get('status') for name in ('music', 'atmosphere')]
+    video = snapshot.get('video') if isinstance(snapshot.get('video'), dict) else {}
+    statuses.append(video.get('status'))   # a watched video is part of the room's sound
     if 'Playing' in statuses:
         return 'Playing'
     if snapshot.get('active') and ('Paused' in statuses or snapshot.get('resume_offer')):
@@ -99,7 +101,15 @@ def mpris_values(snapshot):
         source_id == 'youtube-video' or bool(selected.get('reference')))
     metadata = {}
     room = active.get('name')
-    if has_track:
+    video = snapshot.get('video') if isinstance(snapshot.get('video'), dict) else {}
+    if video.get('status') in ('Playing', 'Paused') and music_status != 'Playing':
+        # Watching: the video is what the room plays (or paused), not the music it paused.
+        identity = 'video\0' + str(video.get('url') or video.get('name') or '')
+        metadata = {'mpris:trackid': '/app/kotona/ListeningRoom/track/' + hashlib.sha256(identity.encode()).hexdigest()[:24],
+                    'xesam:title': video.get('name') or 'Video', 'xesam:artist': ['Video']}
+        if room:
+            metadata['xesam:album'] = room
+    elif has_track:
         identity = str(source_id) + '\0' + str(current.get('id') or music.get('title', ''))
         title = current.get('name') or music.get('title') or music.get('name') or room or 'Radio'
         metadata = {'mpris:trackid': '/app/kotona/ListeningRoom/track/' + hashlib.sha256(identity.encode()).hexdigest()[:24],
@@ -151,7 +161,8 @@ def mpris_values(snapshot):
 
 # Guarantees the action registry must keep: these interrupt or answer at once and never
 # wait behind a queued load (Quiet/Stop bypass the queue; rename is a bounded edit).
-MUST_RUN_IMMEDIATELY = ('inspect', 'quiet', 'stop', 'resume', 'leave', 'rename', 'room_volume', 'transport')
+MUST_RUN_IMMEDIATELY = ('inspect', 'quiet', 'stop', 'resume', 'leave', 'rename', 'room_volume', 'transport',
+                        'entry.cancel')
 if not (all(room_session.ACTIONS[name].runs_immediately({}) for name in MUST_RUN_IMMEDIATELY)
         and all(room_session.ACTIONS[name].runs_immediately({'action': stop})
                 for name in ('layer', 'picture') for stop in ('pause', 'stop'))):

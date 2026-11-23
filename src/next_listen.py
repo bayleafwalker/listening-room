@@ -559,10 +559,12 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
     def install_shortcuts(self):
         controller = Gtk.ShortcutController()
         controller.set_scope(Gtk.ShortcutScope.GLOBAL)
-        for trigger, callback in (('<Control>f', self.shortcut_search), ('<Control>l', self.shortcut_link),
-                                  ('<Control>v', self.shortcut_paste)):
-            controller.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(trigger),
-                                                     Gtk.CallbackAction.new(callback)))
+        accels = self.window.shortcut_accels('listen.')    # the keys live in the window's one shortcut table
+        for name, callback in (('search', self.shortcut_search), ('link', self.shortcut_link),
+                               ('paste', self.shortcut_paste)):
+            for trigger in accels.get(name, ()):
+                controller.add_shortcut(Gtk.Shortcut.new(Gtk.ShortcutTrigger.parse_string(trigger),
+                                                         Gtk.CallbackAction.new(callback)))
         self.window.add_controller(controller)
         keys = Gtk.EventControllerKey()
         keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)

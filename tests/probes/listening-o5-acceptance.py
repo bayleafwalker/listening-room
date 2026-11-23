@@ -681,6 +681,39 @@ def s8_focus():
 
 
 # ====================================================================== S9 keyboard map and focus order
+def drawn_shortcuts(root):
+    """The keys a shortcuts dialog draws: every mapped keycap widget's accelerator (Adw.ShortcutLabel), parsed and
+    normalised (Ctrl+? is Ctrl+Shift+slash). Added by the O11-SHELL acceptance author (revision S9b-R1)."""
+    keys = set()
+    mask = int(Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK)
+    for widget in walk(root):
+        get = getattr(widget, 'get_accelerator', None)
+        if not callable(get) or not isinstance(widget, Gtk.Widget) or not widget.get_mapped():
+            continue
+        for token in (get() or '').split():
+            ok, keyval, mods = Gtk.accelerator_parse(token)
+            if not ok or not keyval:
+                continue
+            mods = int(mods) & mask
+            if keyval == Gdk.KEY_question:
+                keyval, mods = Gdk.KEY_slash, mods | int(Gdk.ModifierType.SHIFT_MASK)
+            keys.add((Gdk.keyval_to_lower(keyval), mods))
+    return keys
+
+
+def drawn(root, accelerators):
+    """True when the dialog draws every one of these GTK accelerators (space-separated alternatives all required)."""
+    keys = drawn_shortcuts(root)
+    want = set()
+    for token in accelerators.split():
+        ok, keyval, mods = Gtk.accelerator_parse(token)
+        mods = int(mods) & int(Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.ALT_MASK)
+        if keyval == Gdk.KEY_question:
+            keyval, mods = Gdk.KEY_slash, mods | int(Gdk.ModifierType.SHIFT_MASK)
+        want.add((Gdk.keyval_to_lower(keyval), mods))
+    return bool(want) and want <= keys
+
+
 def s9_keys():
     leave_all()
     enter_room('midnight-library')
@@ -694,11 +727,23 @@ def s9_keys():
     window.activate_action('win.shortcuts', None)
     pump(.8)
     dialog_text = ' | '.join(texts(window) + [getattr(w, 'get_body', lambda: '')() or '' for w in walk(window) if isinstance(w, Adw.AlertDialog)])
+    # [ORIGINAL, superseded by S9b-R1] read the dialog's text for each key name. O11-SHELL made the dialog the native
+    # Adw.ShortcutsDialog the brief asks for, which draws keycaps, not "Ctrl+F" text. Same intent, read from the keycaps
+    # the dialog draws (revision S9b-R1, O11-SHELL phase 2). The originals keep running.
     for key_name in ('Space', 'Ctrl+1', 'Ctrl+2', 'Ctrl+3', 'Ctrl+F', 'Ctrl+L', 'Ctrl+V', 'Ctrl+M', 'Ctrl+,', 'Esc', 'Up / Down', 'Ctrl+?'):
         check('S9b the shortcuts dialog lists %s' % key_name, key_name in dialog_text, dialog_text[:200])
+    shortcuts_dialog = window.get_visible_dialog()
+    for key_name, accelerators in (('Space', 'space'), ('Ctrl+1', '<Control>1'), ('Ctrl+2', '<Control>2'), ('Ctrl+3', '<Control>3'),
+                                   ('Ctrl+F', '<Control>f'), ('Ctrl+L', '<Control>l'), ('Ctrl+V', '<Control>v'),
+                                   ('Ctrl+M', '<Control>m'), ('Ctrl+,', '<Control>comma'), ('Esc', 'Escape'),
+                                   ('Up / Down', 'Up Down'), ('Ctrl+?', '<Control>question')):
+        check('S9b-R1 the shortcuts dialog draws %s' % key_name, shortcuts_dialog is not None and drawn(shortcuts_dialog, accelerators),
+              repr(sorted(drawn_shortcuts(shortcuts_dialog)) if shortcuts_dialog is not None else None)[:300])
     for w in walk(window):
         if isinstance(w, Adw.AlertDialog):
             w.close()
+    if isinstance(window.get_visible_dialog(), Adw.ShortcutsDialog):   # S9b-R1: the native dialog closes too
+        window.get_visible_dialog().force_close()
     pump(.5)
     # Esc: sheet first, then browsing
     goto(window, 'now')
