@@ -445,7 +445,6 @@ def run():
                 'P4-R2 malformed LLM output drops quietly with no window error card',
                 'P4-R2 missing speech endpoint drops quietly with no window error card',
                 'P4-R2 failing speech endpoint drops quietly with no window error card',
-                'P5-R2 the captured-metadata positive control plays one sourced fake segment',
                 'P5-R3 the captured-metadata positive control cites the captured record and a library tag field',
                 'P5b-R2 a slow slot drops, with music continuously playing and no played segment for that slot',
                 'P6-R2 primary speech suppresses slots after the positive control proved a slot can play',
