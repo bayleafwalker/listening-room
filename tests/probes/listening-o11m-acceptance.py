@@ -121,6 +121,7 @@ PAGE_CPU_MS = {'Listen': 14.4, 'Now': 24.0, 'Mix': 11.0}   # [ORIGINAL, supersed
 PAGE_CPU_BASE_MS = {'Listen': 14.5, 'Now': 16.9, 'Mix': 12.9}
 PAGE_CPU_R_MS = {page: round(value * 1.25, 1) for page, value in PAGE_CPU_BASE_MS.items()}   # 18.1, 21.1, 16.1
 
+GLIB_POOL = re.compile(r'^pool-\d+$')    # GLib's shared worker threads: they idle-exit and respawn
 STREAMING = re.compile(r'^(typefind|multiqueue|qtdemux|matroskadem|vqueue|aqueue|queue\d|video-dmabuf|'
                        r'.*:(src|sink|sr|si|s)$)')
 DECODER_NAME, GL_NAME = o10p.DECODER_NAME, o10p.GL_NAME
@@ -373,7 +374,11 @@ def run_parent(args):
                     if isinstance(code, int) and code > 128:
                         code = -(code - 128)
                     text = (stress_out / ('stress-%d.log' % item['seed'])).read_text(errors='replace')
-                    survived = re.search(r'scene media stress: (\d+) cycles .*?(\d+) previews with a loop, survived', text)
+                    # Revision (phase 2, 3ac5e81): the stress probe's owner added fields to its summary line ("..., N loop
+                    # releases, survived"); the parse required ", survived" right after the previews and read every run as
+                    # not survived (an oracle error). The line must still say "survived" and give cycles and previews.
+                    survived = re.search(r'scene media stress: (\d+) cycles .*?(\d+) previews with a loop,.*?survived',
+                                         text)
                     runs.append({'seed': item['seed'], 'code': code, 'survived': bool(survived),
                                  'cycles': int(survived.group(1)) if survived else 0,
                                  'loop_previews': int(survived.group(2)) if survived else 0,
@@ -651,7 +656,9 @@ def media(env, step, check, info):
                 gc.collect()
                 pump(.4)
             point, names = o10p.sample(label)
-            point['streaming'] = streaming_count(thread_names())
+            names_now = thread_names()
+            point['streaming'] = streaming_count(names_now)
+            point['non_pool_threads'] = sum(1 for n in names_now if not GLIB_POOL.match(n))
             point['gstplay'] = len(gstplay_tids())
             points.append((point, names))
         point, names = min(points, key=lambda p: p[0]['rss_mb'])
@@ -687,7 +694,7 @@ def media(env, step, check, info):
         while True:
             pump(1.)
             names = thread_names()
-            added = len(names) - cold['threads']
+            added = sum(1 for n in names if not GLIB_POOL.match(n)) - cold['non_pool_threads']
             if (added <= PAUSED_THREADS_MAX and streaming_count(names) <= STREAMING_MAX) or \
                     time.monotonic() - start > limit_s:
                 return time.monotonic() - start
@@ -822,13 +829,22 @@ def media(env, step, check, info):
     waited = wait_released(RELEASE_WAIT_S)
     released = measure('all 8 loops off screen, %.0f s after leaving' % waited)
     added = released['threads'] - cold['threads']
+    added_media = released['non_pool_threads'] - cold['non_pool_threads']
     result.update(released=released, release_wait_s=round(waited, 1))
     info('paused loops: before (2.5.0) +80 threads, 56 streaming, 42-49 MB per loop; after: +%d threads, %d streaming, '
          '%d GstPlay, %.1f MB per paused loop (Theil-Sen), %.1f MB total over cold, after %.0f s' % (
              added, released['streaming'], released['gstplay'], slope, released['rss_mb'] - cold['rss_mb'], waited))
-    check('P1 with all 8 catalogue loops off screen the media holds at most %d threads (2.5.0: +80; @@)'
-          % PAUSED_THREADS_MAX, all_played and added <= PAUSED_THREADS_MAX, (cold['threads'], released['threads']),
-          measured='+%d' % added)
+    # Revision P1r (acceptance author, phase 2, 3ac5e81): P1 counted every added thread, and GLib's idle worker
+    # pool ("pool-N", which exits after idling and respawns) went from 14 threads at cold to 0, so P1 passed at +18
+    # while the media held 32 threads (GstPlay, gldisplay-event, gstglcontext, video-dmabuf-po per loop): a pass by
+    # noise. P1r counts the threads added outside GLib's worker pool. P1 still runs as a SUPERSEDED line, not counted
+    # (it lands either side of its limit with the pool's churn). Same limit (ruled in phase 1).
+    print('SUPERSEDED %s P1 [ORIGINAL, superseded by P1r] with all 8 catalogue loops off screen the media holds at most '
+          '%d threads (2.5.0: +80; +%d)' % ('PASS' if all_played and added <= PAUSED_THREADS_MAX else 'FAIL',
+                                           PAUSED_THREADS_MAX, added), flush=True)
+    check('P1r with all 8 catalogue loops off screen the media holds at most %d threads, GLib\'s worker pool aside '
+          '(2.5.0: +80; @@)' % PAUSED_THREADS_MAX, all_played and added_media <= PAUSED_THREADS_MAX,
+          (cold['non_pool_threads'], released['non_pool_threads']), measured='+%d' % added_media)
     check('P2 ... and at most %d GStreamer streaming threads: one loop may stay warm (2.5.0: 56; @@)' % STREAMING_MAX,
           all_played and released['streaming'] <= STREAMING_MAX, released['streaming'], measured=released['streaming'])
     check('P3 a paused loop keeps at most %.0f MB: its still and little else (2.5.0: 42-49 MB; Theil-Sen @@ MB per loop '
@@ -894,7 +910,8 @@ def media(env, step, check, info):
         entered, off_now['threads'] - cold['threads'], off_now['streaming'], json.dumps(now_resume)))
     all_resumes = resumes + ([now_resume] if now_resume else [])
     check('R0 the entered room played, and with it off screen the media also let go (@@ streaming threads)',
-          entered and off_now['streaming'] <= STREAMING_MAX and off_now['threads'] - cold['threads'] <= PAUSED_THREADS_MAX,
+          entered and off_now['streaming'] <= STREAMING_MAX
+          and off_now['non_pool_threads'] - cold['non_pool_threads'] <= PAUSED_THREADS_MAX,
           (entered, off_now), measured=off_now['streaming'])
     worst_stall = max([r['stall_ms'] for r in all_resumes] or [1e9])
     check('R1 returning to a loop that let go never holds the GTK thread over %d ms (4 previews and Now; worst @@ ms '

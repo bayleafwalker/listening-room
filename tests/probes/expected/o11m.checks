@@ -20,7 +20,9 @@ M1 every catalogue loop visibly played in its preview before its cost was measur
 H0 the cost was measured at load 20+ (1-minute load @@ at the first loop, @@ with all 8)
 H1 each catalogue loop after the first adds at most 40 MB, the O10 way and as a robust slope (@@ MB per loop, Theil-Sen @@ MB)
 H2 the 8 catalogue loops cost under 400 MB in total, at every sample after the first loop (@@ MB at the end, worst @@ MB)
-P1 with all 8 catalogue loops off screen the media holds at most 24 threads (2.5.0: +80; @@)
+# P1 [ORIGINAL, superseded by P1r] still runs and prints as a SUPERSEDED line, not counted: it counted GLib's worker
+# pool too, which idles out (3ac5e81: -14 pool threads), so it passed at +18 while the media held 32 threads.
+P1r with all 8 catalogue loops off screen the media holds at most 24 threads, GLib's worker pool aside (2.5.0: +80; @@)
 P2 ... and at most 7 GStreamer streaming threads: one loop may stay warm (2.5.0: 56; @@)
 P3 a paused loop keeps at most 10 MB: its still and little else (2.5.0: 42-49 MB; Theil-Sen @@ MB per loop over the 8 off-screen samples)
 R0 the entered room played, and with it off screen the media also let go (@@ streaming threads)
