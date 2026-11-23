@@ -648,7 +648,8 @@ with env:
         known = set(controllers) | {t for ts in actions.values() for t in ts} | HANDLED_KEYS
         stale = sorted({t for t in shown if t not in known and t not in RESERVED_MIX})
         check('C6 the dialog lists no key that nothing installs (the reserved Mix keys aside)', bool(rows) and not stale,
-              stale or 'no rows')
+              stale or ('no rows' if not rows else
+                        {'Mix keys shown but not found installed': sorted(t for t in shown if t in RESERVED_MIX and t not in known)}))
         untitled = [r for r in rows if not r[1].strip()]
         check('C7 every row has a title', bool(rows) and not untitled, untitled)
         sections = sorted({s for s, _t, _k in rows})
@@ -727,8 +728,19 @@ with env:
             if block:
                 blocks.append(' '.join(block))
         reserved = [b for b in blocks if re.search(r'O11-CONTROL|\bMix\b', b) and 'Shift' in b]
-        check('C11-R1 a comment block reserves the O11-CONTROL Mix keys (M, A, Shift+Up/Down) (source text)',
-              bool(reserved), [b[:200] for b in reserved[:2]])
+        # [ORIGINAL, superseded by C11-R2] C11-R1 read the reservation as a comment block. Once O11-CONTROL put the Mix
+        # keys in the table as real rows the comment went away by design, so the comment is no longer the evidence.
+        superseded('C11-R1 [ORIGINAL, superseded by C11-R2] a comment block reserves the O11-CONTROL Mix keys (M, A, '
+                   'Shift+Up/Down) (source text)', bool(reserved), [b[:200] for b in reserved[:2]])
+        # C11-R2: the Mix keys have their home in the one table. The open dialog shows them under a Mix section, and that
+        # section comes from a Mix page of next_window.SHORTCUT_PAGES (read from the running module, not the source text).
+        mix_shown = {t for section, _title, triggers in rows if 'mix' in section.casefold() for t in triggers}
+        table = getattr(env.next_window, 'SHORTCUT_PAGES', ())
+        mix_table = {t for page, items in table if 'mix' in str(page).casefold()
+                     for item in items for t in parse_accelerators(item[0])}
+        missing = sorted(set(RESERVED_MIX) - (mix_shown & mix_table))
+        check('C11-R2 the dialog has a Mix section listing M, A and Shift+Up/Down, taken from a Mix page of SHORTCUT_PAGES',
+              not missing, {'missing': missing, 'dialog': sorted(mix_shown), 'table': sorted(mix_table)})
 
     # =========================================================================== D: scene choice (criterion 4)
     def enter_room(window, avoid=()):

@@ -11,6 +11,9 @@
 # C11-R1: a reservation written as a comment block counts (C11 wanted one line naming Mix and Shift).
 # D7-R1: Right is dispatched as GTK does (container bindings first), not child_focus(); D7b Tab and D7c Down added.
 # D9-R1: an insensitive unavailable tile cannot be chosen; activate() reached it although no user can.
+# Integration revision (acceptance author, 2026-11-23), original printed as an uncounted SUPERSEDED line:
+# C11-R2: the Mix keys are real rows of the one table (a Mix page of SHORTCUT_PAGES) and the dialog shows them under
+# Mix; C11-R1's reservation comment was removed by design once O11-CONTROL filled the rows.
 A0 precondition: no room and no history (a first run)
 A1 at 1200x800 the first run opens on Rooms with nothing focused in the header
 A2-R1 at 1200x800 the first card or the hero's primary action has focus at launch or after the first Tab press, and the header never has it
@@ -42,7 +45,7 @@ C7 every row has a title
 C8 rows are grouped by page: more than one titled section, the Listen keys under a Listen section and the volume keys under a Now section
 C9 the dialog is the same when opened again and from a second window, with no duplicate rows
 C10 one shortcut table: each installed Ctrl shortcut is written in one statement of the source (source text)
-C11-R1 a comment block reserves the O11-CONTROL Mix keys (M, A, Shift+Up/Down) (source text)
+C11-R2 the dialog has a Mix section listing M, A and Shift+Up/Down, taken from a Mix page of SHORTCUT_PAGES
 D0 precondition: a room with its own scene is active, and one room scene is unavailable
 D1 Scene › Change… shows a tile for every room scene, the unavailable one included
 D2 each tile shows its own scene's card poster as a thumbnail
