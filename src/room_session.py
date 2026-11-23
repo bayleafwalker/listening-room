@@ -1007,11 +1007,16 @@ class Controller:
         self._file_cache[name] = (key, key is None or time.time_ns() - key[0] > 2_000_000_000, value)
         return value
 
+    def _speech_layer(self):
+        """The presenter's audible layer: Playing or Paused while a slot speaks, else Stopped."""
+        status = 'Stopped' if not self.presenter_unit else 'Paused' if self.presenter_paused else 'Playing'
+        return {'status': status, 'volume': self.presenter.level, 'muted': self.presenter.muted}
+
     def snapshot(self):
         with self.lock:
             active_station = (self.program.station if self.program else ((self.active or {}).get('music', {}).get('station') or {}))
             return _copy({'active': self.active, 'last_session': self.last_session,
-                          'variants': self._cached_file('room-variants.json', self.variants), 'layers': self.live, 'settings': self.settings,
+                          'variants': self._cached_file('room-variants.json', self.variants), 'layers': dict(self.live, speech=self._speech_layer()), 'settings': self.settings,
                           'recent': self.recent, 'resume_offer': self.resume_offer, 'entry': self.entry, 'video': self.video,
                           'transition': self.transition, 'errors': self.errors,
                           'media': self.media, 'audio_policy': self.policy_status,
