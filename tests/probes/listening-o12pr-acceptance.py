@@ -17,9 +17,10 @@ Readings for coordinator ruling:
 * A primary source is represented by a saved station marked speech.  "No metadata" removes the fixture item's
   captured provenance before it is tuned.  These source declarations are deliberately public data rather than a
   presenter implementation hook.
-* The positive fixture is a saved collection station whose Jellyfin reference is the metadata pipeline's captured
-  ``jellyfin:fixture/track-1`` record.  A source must name that captured record (its id or title), rather than merely
-  be non-empty.  The no-metadata fixture uses a distinct, otherwise identical reference with no captured record.
+* The positive fixture is a saved collection station whose Jellyfin reference resolves to the metadata pipeline's
+  captured ``jellyfin:fixture:track-1`` record.  Under ruling 5-R1, its source must name that record and a library
+  tag field (title, artist, or album), rather than merely be non-empty.  The no-metadata fixture uses a distinct,
+  otherwise identical reference with no captured record.
 * P2b/P5b need the existing inspect music-layer identity and monotonic playback position as public observations.
   The probe accepts ``item``/``id``/``name`` and ``position``/``elapsed``/``clock`` spellings, but needs one of each.
 * Narrow clip reading for coordinator ruling: a fixture registers clips as ``preferences.presenter_clips`` entries
@@ -34,6 +35,15 @@ Readings for coordinator ruling:
   ``test_station_eof_advances_only_on_verified_eof_and_returns_history``), then waits for the queue to advance.
   The first eligible slot follows that end.  Later slots follow ``budget.every_tracks`` verified ends; P8 reads that
   public minimum and drives two slots on the same station, rather than mistaking two tunes for two slots.
+* Repeat, primary-speech, no-metadata, and clip fixtures opt in through the public ``station.save``
+  ``preferences.presenter.enabled`` preference; this deliberately tests saved station feedback rather than a
+  presenter-private hook.  P6/P7 additionally read back the station's enabled state while observing.
+* P3b runs MPRIS only inside ``scripts/listening-dev.sh acceptance``: that harness supplies the private D-Bus session.
+  A detached invocation may return ``None`` because it lacks that bus, which is an environment limitation rather
+  than a product result.
+* Ruling 11's room transport checks use the public ``listening-roomctl pause``, ``play``, and ``leave`` surfaces.
+  A speech-layer slot must remain paused for a measurable interval, resume alongside music, and delay the music
+  transition until its remaining segment duration is spent.
 
 Run: scripts/listening-dev.sh acceptance OUTDIR o12pr
 """
@@ -99,7 +109,7 @@ def station(name):
     return next((item for item in env.controller.stations() if item.get('name') == name), None)
 
 
-def save(name, *, speech=False, metadata=True, clips=None):
+def save(name, *, speech=False, metadata=True, clips=None, presenter=False):
     definition = copy.deepcopy(o6_env.RADIO_STATION)
     definition.update(name=name, preferences={})
     # The fixture provenance is created by o6_env through the normal metadata-store pipeline.
@@ -115,6 +125,8 @@ def save(name, *, speech=False, metadata=True, clips=None):
         definition['speech'] = True
     if clips is not None:
         definition['preferences']['presenter_clips'] = clips
+    if presenter:
+        definition['preferences']['presenter'] = {'enabled': True}
     env.service.execute('station.save', {'station': definition})
     found = station(name)
     assert found, 'fixture station was not saved'
@@ -340,7 +352,18 @@ def music_marker(data=None):
 
 def source_names_metadata(segment):
     text = json.dumps(segment.get('sources') or []).casefold()
-    return 'track-1' in text or 'nocturne in c' in text
+    names_record = ('jellyfin:fixture:track-1' in text or
+                    ('jellyfin:fixture' in text and 'track-1' in text))
+    return names_record and any(field in text for field in ('title', 'artist', 'album'))
+
+
+def speech_layer(data=None):
+    layers = (data or snapshot()).get('layers') or {}
+    return layers.get('speech') or layers.get('presenter') or {}
+
+
+def speech_is(status, data=None):
+    return speech_layer(data).get('status') == status
 
 
 def no_error_card(window):
@@ -401,6 +424,7 @@ def run():
                 ('P2b-R1 muting Presenter during a segment never advances, pauses, or delays music', 'P2b-R2'),
                 ('P4-R1 endpoint failure drops the slot quietly, records a reason, and leaves music playing without an error card', 'P4-R2'),
                 ('P5-R1 prepared eligible segments use loopback LLM and speech connections and retain text plus captured sources', 'P5-R2'),
+                ('P5-R2 the captured-metadata positive control plays one sourced fake segment', 'P5-R3'),
                 ('P5b-R1 a segment not ready at its slot is dropped rather than creating a gap', 'P5b-R2'),
                 ('P6-R1 a primary speech station suppresses presenter segments while it plays', 'P6-R2'),
                 ('P7-R1 an item with no metadata gets no factual presenter segment', 'P7-R2'),
@@ -422,12 +446,15 @@ def run():
                 'P4-R2 missing speech endpoint drops quietly with no window error card',
                 'P4-R2 failing speech endpoint drops quietly with no window error card',
                 'P5-R2 the captured-metadata positive control plays one sourced fake segment',
+                'P5-R3 the captured-metadata positive control cites the captured record and a library tag field',
                 'P5b-R2 a slow slot drops, with music continuously playing and no played segment for that slot',
                 'P6-R2 primary speech suppresses slots after the positive control proved a slot can play',
                 'P7-R2 no captured provenance suppresses factual segments after the positive control',
                 'P8-R3 identical text in two eligible slots plays exactly once within the history window',
                 'P1d-R2 an over-budget fake segment is dropped or publicly trimmed to the budget maximum',
                 'P9-R2 prerecorded clips use the slot scheduler, preserve source/placement, and honour expiry',
+                'P10 room Pause and Play pause and resume a presenter slot with its remaining duration',
+                'P11 Leave during a presenter slot stops speech immediately',
             ]:
                 check(name, False, 'Presenter is absent from the station detail on this branch')
             return
@@ -444,13 +471,14 @@ def run():
         if less: less[0].emit('clicked'); env.settle(.6)
         after_less = station(item['name']) or {}
         after_budget = (snapshot().get('presenter') or {}).get('budget')
+        after_less_enabled = bool((snapshot().get('presenter') or {}).get('enabled'))
         music_only = labelled(window, 'Music only', (env.Gtk.Button,))
         if music_only: music_only[0].emit('clicked'); env.settle(.6)
         after_music = station(item['name']) or {}
         superseded('P1b Less talking is station feedback: it lowers/persists the budget without changing station', 'P1b-R1',
                     bool(less) and after_less.get('id') == before_id and after_less != item, after_less)
         check('P1b-R1 Less talking leaves Presenter enabled and persists a strictly sparser budget',
-              bool(less) and after_less.get('id') == before_id and bool((snapshot().get('presenter') or {}).get('enabled'))
+              bool(less) and after_less.get('id') == before_id and after_less_enabled
               and budget_sparser(before_budget, after_budget), (before_budget, after_budget, after_less))
         check('P1c Music only is station feedback: it turns Presenter off without changing station',
               bool(music_only) and after_music.get('id') == before_id and not bool((snapshot().get('presenter') or {}).get('enabled')), after_music)
@@ -515,9 +543,39 @@ def run():
         superseded('P5-R1 prepared eligible segments use loopback LLM and speech connections and retain text plus captured sources', 'P5-R2',
               any(path.endswith('/v1/chat/completions') for path, _ in fake.requests) and any(path.endswith('/v1/audio/speech') for path, _ in fake.requests)
               and all({'text', 'sources', 'outcome'} <= set(s) for s in segments if isinstance(s, dict)), (fake.requests, p))
-        check('P5-R2 the captured-metadata positive control plays one sourced fake segment',
+        superseded('P5-R2 the captured-metadata positive control plays one sourced fake segment', 'P5-R3',
+                    boundary and bool(positive), (fake.requests, p))
+        check('P5-R3 the captured-metadata positive control cites the captured record and a library tag field',
               boundary and bool(positive) and any(path.endswith('/v1/chat/completions') for path, _ in fake.requests)
               and any(path.endswith('/v1/audio/speech') for path, _ in fake.requests), (fake.requests, p))
+
+        # O11's public room transport controls the audible speech layer too.  The frozen music clock during
+        # a measured pause is the observable remaining-duration guard: a slot cannot be spent while paused.
+        transport_station = save('Room transport fixture', metadata=True, presenter=True); tune(transport_station)
+        before = len(segment_list()); transport_boundary = eligible_slot()
+        speaking = transport_boundary and wait(lambda: speech_is(status='Playing'), 6.)
+        playing_music, playing_item, playing_clock = music_marker()
+        played_segment = next((s for s in segment_list()[before:] if s.get('outcome') == 'played'), {})
+        paused_command = roomctl('pause')
+        paused = wait(lambda: speech_is(status='Paused') and music_marker()[0].get('status') == 'Paused', 3.)
+        paused_clock = music_marker()[2]; env.pump(.5); held_clock = music_marker()[2]
+        played_command = roomctl('play')
+        resumed = wait(lambda: speech_is(status='Playing') and music_marker()[0].get('status') == 'Playing', 3.)
+        resumed_music, resumed_item, resumed_clock = music_marker()
+        check('P10 room Pause and Play pause and resume a presenter slot with its remaining duration',
+              speaking and bool(played_segment.get('duration')) and paused_command.returncode == 0
+              and paused and isinstance(paused_clock, (int, float)) and isinstance(held_clock, (int, float))
+              and abs(held_clock - paused_clock) <= .05 and played_command.returncode == 0 and resumed
+              and playing_item == resumed_item and isinstance(resumed_clock, (int, float))
+              and resumed_clock >= held_clock, (playing_music, speech_layer(), paused_clock, held_clock, resumed_music))
+
+        leave_station = save('Leave transport fixture', metadata=True, presenter=True); tune(leave_station)
+        before = len(segment_list()); leave_boundary = eligible_slot()
+        leave_speaking = leave_boundary and wait(lambda: speech_is(status='Playing'), 6.)
+        leave_command = roomctl('leave')
+        left = wait(lambda: speech_is(status='Stopped'), 2.)
+        check('P11 Leave during a presenter slot stops speech immediately',
+              leave_speaking and leave_command.returncode == 0 and left, speech_layer())
 
         fake.mode = 'slow-voice'; fake.requests.clear(); tune(station(item['name']))
         before = len(segment_list()); boundary = eligible_slot(); slow_before, slow_item, slow_clock = music_marker()
@@ -534,7 +592,7 @@ def run():
 
         # Two explicit eligible boundaries on the same station; repeat suppression may occur before speech, so
         # endpoint request count is not an oracle.
-        fake.mode = 'good'; repeat_station = save('Repeat fixture', metadata=True); tune(repeat_station)
+        fake.mode = 'good'; repeat_station = save('Repeat fixture', metadata=True, presenter=True); tune(repeat_station)
         minimum = every_tracks(); before = len(segment_list()); first_boundary = eligible_slot()
         wait(lambda: len(segment_list()) > before, 6); second_boundary = bool(minimum) and eligible_slot(minimum)
         wait(lambda: len(segment_list()) > before + 1, 6); repeated = segment_list()[before:]
@@ -547,24 +605,26 @@ def run():
         check('P8-R3 identical text in two eligible slots plays exactly once within the history window',
               first_boundary and second_boundary and len(repeated) >= 2 and len(played) == 1 and later_drop, repeated)
 
-        fake.mode = 'good'; fake.requests.clear(); speech = save('Primary speech fixture', speech=True); tune(speech)
+        fake.mode = 'good'; fake.requests.clear(); speech = save('Primary speech fixture', speech=True, presenter=True); tune(speech)
         before = len(segment_list()); boundary = eligible_slot(); env.pump(1.)
         speech_p = snapshot().get('presenter') or {}
         speech_segments = segment_list(speech_p)[before:]
         superseded('P6-R1 a primary speech station suppresses presenter segments while it plays', 'P6-R2',
                     not any(s.get('outcome') == 'played' for s in speech_segments), speech_p)
         check('P6-R2 primary speech suppresses slots after the positive control proved a slot can play',
-              boundary and bool(positive) and not fake.requests and not any(s.get('outcome') == 'played' for s in speech_segments), speech_p)
+              boundary and bool(positive) and bool(speech_p.get('enabled')) and not fake.requests
+              and not any(s.get('outcome') == 'played' for s in speech_segments), speech_p)
         # The public record is the oracle: an empty captured-source list may never become a played factual claim.
         # The fixture radio item has no metadata-pipeline provenance; an implementation must therefore leave it
         # unplayed (or omit it), rather than manufacture facts from a title or an LLM response.
-        bare = save('No metadata fixture', metadata=False); fake.requests.clear(); tune(bare)
+        bare = save('No metadata fixture', metadata=False, presenter=True); fake.requests.clear(); tune(bare)
         before = len(segment_list()); boundary = eligible_slot(); env.pump(1.)
         bare_segments = segment_list()[before:]
         superseded('P7-R1 an item with no metadata gets no factual presenter segment', 'P7-R2',
                     all(not (not s.get('sources') and s.get('outcome') == 'played') for s in bare_segments), bare_segments)
         check('P7-R2 no captured provenance suppresses factual segments after the positive control',
-              boundary and bool(positive) and not any(s.get('outcome') == 'played' for s in bare_segments), bare_segments)
+              boundary and bool(positive) and bool((snapshot().get('presenter') or {}).get('enabled'))
+              and not any(s.get('outcome') == 'played' for s in bare_segments), bare_segments)
 
         fake.mode = 'overlong-voice'; tune(station(item['name']))
         before = len(segment_list()); boundary = eligible_slot(); wait(lambda: len(segment_list()) > before, 6)
@@ -581,7 +641,7 @@ def run():
         clip_audio = str(write_clip_wav())
         clips = [{'source': 'fixture-clip', 'audio': clip_audio, 'allowed_placement': 'between_tracks', 'expires_at': now + 60},
                  {'source': 'expired-fixture-clip', 'audio': clip_audio, 'allowed_placement': 'between_tracks', 'expires_at': now - 1}]
-        clip_station = save('Clip fixture', metadata=True, clips=clips); tune(clip_station)
+        clip_station = save('Clip fixture', metadata=True, clips=clips, presenter=True); tune(clip_station)
         before = len(segment_list()); boundary = eligible_slot(); wait(lambda: len(segment_list()) > before, 6)
         clip_segments = segment_list()[before:]
         superseded('P9-R1 prerecorded clips use the slot scheduler, preserve source/placement, and honour expiry', 'P9-R2',

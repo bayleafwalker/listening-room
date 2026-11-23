@@ -21,7 +21,8 @@ P4-R2 missing speech endpoint drops quietly with no window error card
 P4-R2 failing speech endpoint drops quietly with no window error card
 # P5 [ORIGINAL, superseded by P5-R1] still prints as a SUPERSEDED line, not counted: requests and an empty list passed vacuously.
 # P5-R1 [SUPERSEDED by P5-R2] did not first prove an eligible slot boundary.
-P5-R2 the captured-metadata positive control plays one sourced fake segment
+# P5-R2 [SUPERSEDED by P5-R3] accepted any non-empty source; ruling 5-R1 requires the captured record and library tag field.
+P5-R3 the captured-metadata positive control cites the captured record and a library tag field
 # P5b [ORIGINAL, superseded by P5b-R1] still prints as a SUPERSEDED line, not counted: a status alone did not prove a missed slot.
 # P5b-R1 [SUPERSEDED by P5b-R2] did not first prove an eligible slot boundary.
 P5b-R2 a slow slot drops, with music continuously playing and no played segment for that slot
@@ -39,3 +40,5 @@ P8-R3 identical text in two eligible slots plays exactly once within the history
 P1d-R2 an over-budget fake segment is dropped or publicly trimmed to the budget maximum
 # P9-R1 [SUPERSEDED by P9-R2] did not first prove an eligible slot boundary.
 P9-R2 prerecorded clips use the slot scheduler, preserve source/placement, and honour expiry
+P10 room Pause and Play pause and resume a presenter slot with its remaining duration
+P11 Leave during a presenter slot stops speech immediately
