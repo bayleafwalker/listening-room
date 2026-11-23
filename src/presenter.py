@@ -185,7 +185,7 @@ class Presenter:
 
     def _request(self, service, path, payload, timeout):
         try:
-            context = online_services._request_context(service, required=False)
+            context = online_services._request_context(service, required=False, settings=online_services.connection(service))
             endpoint = context['settings']['endpoint'].rstrip('/') + path
             headers = {'Content-Type': 'application/json'}
             if context['token']: headers['Authorization'] = 'Bearer ' + context['token']
