@@ -143,6 +143,43 @@ class StationTests(unittest.TestCase):
         reasons = [item['reason'] for item in controller.snapshot()['presenter']['segments']]
         self.assertEqual(reasons, ['late'])
 
+    def test_late_slot_does_not_block_the_next_tracks_preparation(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        release = threading.Event()
+        calls = []
+
+        def prepare(*_args, **_kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                release.wait(2)
+            return None, ('no captured metadata', ())
+
+        station = self.presenter_station()
+        station['presenter']['budget']['every_tracks'] = 2
+        with mock.patch.object(controller.presenter, 'prepare_slot', side_effect=prepare):
+            saved = controller.dispatch('station.save', {'station': station})['station']
+            with mock.patch.object(controller, '_home_action'), mock.patch.object(controller, '_route_preferred'), \
+                    mock.patch('online_services.jellyfin_queue', return_value=[track(1), track(2), track(3), track(4)]):
+                controller.dispatch('station.start', {'id': saved['id']})
+                controller.worker.submit(lambda: None).result(timeout=3)
+                backend.media = {'eof_reached': True}
+                controller.refresh()          # slot 1 ends while preparation is still running: late
+                controller.worker.submit(lambda: None).result(timeout=3)
+                release.set()
+                controller.presenter_worker.submit(lambda: None).result(timeout=3)
+                self.assertEqual([x['reason'] for x in controller.snapshot()['presenter']['segments']], ['late'])
+                backend.media = {'eof_reached': True}
+                controller.refresh()          # track 2 is not a slot: nothing is recorded
+                controller.worker.submit(lambda: None).result(timeout=3)
+                backend.media = {}
+                controller.refresh()
+                backend.media = {'eof_reached': True}
+                controller.refresh()          # track 3 is the next slot and was prepared for
+                controller.worker.submit(lambda: None).result(timeout=3)
+        self.assertGreaterEqual(len(calls), 2)
+
     def test_snapshot_ready_tracks_prepared_segment(self):
         controller = room_session.Controller(FakeBackend(), self.temp.name)
         self.addCleanup(controller.close)

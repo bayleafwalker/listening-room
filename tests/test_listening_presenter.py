@@ -88,6 +88,18 @@ class PresenterTests(unittest.TestCase):
         self.assertIsNone(value.prepare(self.STATION, self.TRACK, clip={'text': 'Old', 'expires_at': 9}))
         self.assertEqual(value.snapshot()['segments'][-1]['reason'], 'clip expired')
 
+    def test_repeat_window_is_per_station(self):
+        value = presenter.Presenter()
+        with patch.dict('os.environ', {'XDG_RUNTIME_DIR': '/tmp'}, clear=False), \
+                patch.object(value, '_chat', return_value='Same words.'), \
+                patch.object(value, '_speech', return_value=self.wav()):
+            first = value.prepare(dict(self.STATION, id='a'), self.TRACK, self.RECORD)
+            again = value.prepare(dict(self.STATION, id='a'), self.TRACK, self.RECORD)
+            other = value.prepare(dict(self.STATION, id='b'), self.TRACK, self.RECORD)
+        self.assertTrue(first and other)
+        self.assertIsNone(again)
+        self.assertEqual([x.get('reason') for x in value.snapshot()['segments']], [None, 'repeated segment', None])
+
 
 if __name__ == '__main__':
     unittest.main()
