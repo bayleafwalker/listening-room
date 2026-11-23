@@ -6,7 +6,6 @@ records a dropped slot: music carries on and no audio is retained in station sta
 import json
 import io
 import os
-from contextlib import contextmanager
 from pathlib import Path
 import tempfile
 import threading
@@ -65,7 +64,6 @@ class Presenter:
         self.segments, self.status, self._texts = [], '', []
         self.level, self.muted = 50., False
         self._lock = threading.RLock()
-        self._preparation = threading.local()
 
     def snapshot(self, station=None, ready=False):
         setting = preferences((station or {}).get('presenter'))
@@ -75,72 +73,64 @@ class Presenter:
                     'segments': [{k: v for k, v in segment.items() if not k.startswith('_')}
                                  for segment in self.segments], 'level': self.level, 'muted': self.muted}
 
-    @contextmanager
-    def preparation(self, identity):
-        self._preparation.identity = identity
-        try:
-            yield
-        finally:
-            self._preparation.identity = None
-
-    def discard_preparation_records(self, identity):
-        """Forget preparation records superseded by that slot's late outcome."""
-        with self._lock:
-            self.segments[:] = [item for item in self.segments if item.get('_preparation') is not identity]
-
     def record_drop(self, reason, sources=()):
         with self._lock:
             record = {'text': '', 'sources': list(sources), 'outcome': 'dropped', 'reason': reason}
-            identity = getattr(self._preparation, 'identity', None)
-            if identity is not None:
-                record['_preparation'] = identity
             self.segments.append(record)
             del self.segments[:-self.history]
 
-    def prepare(self, station, item, metadata_record=None, primary_speech=False, clip=None, timeout=3, cancel=None):
+    def prepare(self, *args, **kwargs):
+        """Prepare a segment and record its drop, if any (the session records drops per slot)."""
+        segment, drop = self.prepare_slot(*args, **kwargs)
+        if drop:
+            self.record_drop(*drop)
+        return segment
+
+    def prepare_slot(self, station, item, metadata_record=None, primary_speech=False, clip=None, timeout=3, cancel=None):
+        """Return (segment, None), or (None, (reason, sources)) for a drop the caller records."""
         setting = preferences((station or {}).get('presenter'))
         sources = metadata_sources(metadata_record, item)
         if not setting['enabled']:
-            return None
+            return None, None
         if primary_speech:
-            self.record_drop('primary speech source', sources); return None
+            return None, ('primary speech source', sources)
         if clip:
             if clip.get('expires_at', float('inf')) < self.clock():
-                self.record_drop('clip expired', sources); return None
+                return None, ('clip expired', sources)
             if clip.get('allowed_placement') != 'between_tracks' or not clip.get('source'):
-                self.record_drop('invalid clip', sources); return None
+                return None, ('invalid clip', sources)
             text = clip.get('text') or clip['source']
         elif not sources:
-            self.record_drop('no captured metadata'); return None
+            return None, ('no captured metadata', ())
         else:
             try:
                 text = self._chat(sources, setting['budget']['max_seconds'], timeout)
             except (ValueError, OSError, TimeoutError, urllib.error.URLError) as error:
                 if cancel is not None and cancel.is_set():
-                    return None
+                    return None, None
                 with self._lock: self.status = str(error) or 'Presenter unavailable; music only'
-                self.record_drop('language unavailable', sources); return None
+                return None, ('language unavailable', sources)
         if cancel is not None and cancel.is_set():
-            return None
+            return None, None
         if not isinstance(text, str) or not text.strip() or len(text) > setting['budget']['max_seconds'] * 18:
-            self.record_drop('malformed generation', sources); return None
+            return None, ('malformed generation', sources)
         text = text.strip()
         with self._lock:
             if text in self._texts:
-                self.record_drop('repeated segment', sources); return None
+                return None, ('repeated segment', sources)
         try:
             if clip and Path(clip['audio']).stat().st_size > 2 * 1024 * 1024:
                 raise ValueError('Presenter voice unavailable; music only')
             audio = Path(clip['audio']).read_bytes() if clip else self._speech(text, timeout)
             if cancel is not None and cancel.is_set():
-                return None
+                return None, None
             duration = self._wav_duration(audio)
             if duration > setting['budget']['max_seconds']:
-                self.record_drop('over budget', sources); return None
+                return None, ('over budget', sources)
             path = self._runtime_audio(audio)
         except (ValueError, OSError, TypeError) as error:
             with self._lock: self.status = str(error) or 'Presenter voice unavailable; music only'
-            self.record_drop('voice unavailable', sources); return None
+            return None, ('voice unavailable', sources)
         segment = {'text': text, 'sources': sources, 'outcome': 'played', '_audio_path': str(path),
                    '_max_seconds': setting['budget']['max_seconds'], '_station_id': station.get('id'),
                    'duration': duration}
@@ -150,7 +140,7 @@ class Presenter:
             self.status = ''
             self.segments.append(segment); self._texts.append(text)
             del self.segments[:-self.history]; del self._texts[:-self.history]
-        return segment
+        return segment, None
 
     def discard(self, segment, remove=False):
         """Remove the ephemeral voice file once its one scheduled slot is over."""

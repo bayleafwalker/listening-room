@@ -146,8 +146,8 @@ class SessionTests(unittest.TestCase):
         self.controller.active = {'id': 'room', 'music': {'station': station}}
         self.controller.program = mock.Mock(station=station)
         self.controller.station_history = [{'tracks': [{'id': 'one'}]}]
-        self.controller.presenter_prepared = {'text': 'Words', 'sources': [], 'outcome': 'played',
-            'duration': .3, '_max_seconds': 5, '_audio_path': '', '_station_id': station['id']}
+        self.controller.presenter_slot = {'state': 'ready', 'segment': {'text': 'Words', 'sources': [], 'outcome': 'played',
+            'duration': .3, '_max_seconds': 5, '_audio_path': '', '_station_id': station['id']}}
         self.controller.queue_step = mock.Mock()
         self.controller._presenter_then_next(self.controller.generation)
         with self.controller.presenter_pause:
@@ -169,7 +169,7 @@ class SessionTests(unittest.TestCase):
         audio = Path(self.tmp.name) / 'prepared.wav'
         audio.write_bytes(b'prepared')
         self.controller.presenter_unit = {'unit': 'presenter-test'}
-        self.controller.presenter_prepared = {'_audio_path': str(audio), 'text': 'Prepared'}
+        self.controller.presenter_slot = {'state': 'ready', 'segment': {'_audio_path': str(audio), 'text': 'Prepared'}}
         self.controller.entry = {'id': 7, 'name': 'Next room', 'state': 'connecting'}
         self.controller.entry_before = {'id': 7, 'active': False}
         self.controller.transition = {'kind': 'enter', 'id': 7}

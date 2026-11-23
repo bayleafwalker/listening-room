@@ -620,10 +620,8 @@ class Controller:
         self.atmosphere_pending = False
         self.program = None
         self.presenter = presenter.Presenter(clock=clock)
-        self.presenter_prepared = None
-        self.presenter_prepare_pending = False
-        self.presenter_prepare_recorded_drop = False
-        self.presenter_prepare_drop_consumed = False
+        # One ticket per upcoming slot: {'state': pending|ready|dropped, 'segment': ...}.
+        self.presenter_slot = None
         self.presenter_slot_pending = False
         self.presenter_unit = None
         self.presenter_pause = threading.Condition()
@@ -1025,7 +1023,7 @@ class Controller:
                           'station_recent': self.station_history,
                           'station_learned': {key: bool(value.get('liked_artists') or value.get('disliked'))
                                               for key, value in self.station_memory.items() if isinstance(value, dict)},
-                          'presenter': self.presenter.snapshot(active_station, ready=bool(self.presenter_prepared)),
+                          'presenter': self.presenter.snapshot(active_station, ready=bool(self.presenter_slot and self.presenter_slot['state'] == 'ready')),
                           'config_generation': _config_generation(),
                           'station': ({'definition': self.program.station, 'upcoming': ([self.program.override] if self.program.override else []) + self.program.queue,
                                        'recent': self.program.recent,
@@ -1261,10 +1259,7 @@ class Controller:
                 self.lighting_timer = None
             self.timer_ends.clear()
             self.transition = None
-            if self.presenter_prepared:
-                self.presenter.discard(self.presenter_prepared, remove=True)
-            self.presenter_prepared = None
-            self.presenter_prepare_pending = False
+            self._presenter_release_slot()
             self.presenter_slot_pending = False
             if old_unit:
                 try: self.backend.stop_presenter(old_unit)
@@ -2355,61 +2350,65 @@ class Controller:
                 return record
         return None
 
-    def _prepare_presenter(self, station, item, generation, cancel):
+    def _prepare_presenter(self, station, item, generation, cancel, ticket):
         """Provider work stays on the controller worker, outside the session lock."""
-        preparation = object()
         try:
             record = self._presenter_metadata(station, item)
-            with self.presenter.preparation(preparation):
-                segment = self.presenter.prepare(station, item, metadata_record=record,
-                    primary_speech=self._primary_speech(station, self.active), clip=self._presenter_clip(station),
-                    cancel=cancel)
+            segment, drop = self.presenter.prepare_slot(station, item, metadata_record=record,
+                primary_speech=self._primary_speech(station, self.active), clip=self._presenter_clip(station),
+                cancel=cancel)
             with self.lock:
-                if self.presenter_prepare_drop_consumed:
+                if ticket is not self.presenter_slot or self.closed or cancel.is_set():
+                    # The slot already ended (late) or the session moved on: record nothing.
                     self.presenter.discard(segment, remove=True)
-                    self.presenter.discard_preparation_records(preparation)
-                elif generation != self.generation or cancel.is_set() or self.closed:
-                    self.presenter.discard(segment, remove=True)
+                elif drop:
+                    self.presenter.record_drop(*drop)
+                    ticket['state'] = 'dropped'
+                elif segment:
+                    ticket.update(state='ready', segment=segment)
                 else:
-                    self.presenter_prepared = segment
-                    self.presenter_prepare_recorded_drop = segment is None
+                    self.presenter_slot = None
         finally:
-            with self.lock:
-                self.presenter_prepare_pending = False
             self._changed()
 
+    def _presenter_release_slot(self):
+        ticket, self.presenter_slot = self.presenter_slot, None
+        if ticket and ticket['segment']:
+            self.presenter.discard(ticket['segment'], remove=True)
+        return ticket
+
+    @staticmethod
+    def _presenter_due(station, tracks, setting):
+        return bool(setting['enabled'] and tracks and (tracks == 1 or (tracks - 1) % setting['budget']['every_tracks'] == 0))
+
     def _schedule_presenter(self, station, item, generation, cancel):
+        """Prepare for the slot at the end of this track, if that end is a slot."""
         setting = presenter.preferences(station.get('presenter'))
-        if not setting['enabled'] or not item:
+        tracks = len((self.station_history[0].get('tracks') if self.station_history else []) or [])
+        if not item or not self._presenter_due(station, tracks, setting):
             return
         with self.lock:
-            if self.presenter_prepare_pending or self.presenter_prepared or self.presenter_prepare_recorded_drop:
+            if self.presenter_slot is not None:
                 return
-            self.presenter_prepare_pending = True
-            self.presenter_prepare_recorded_drop = False
-            self.presenter_prepare_drop_consumed = False
-        self.presenter_worker.submit(self._prepare_presenter, _copy(station), _copy(item), generation, cancel)
+            ticket = self.presenter_slot = {'state': 'pending', 'segment': None}
+        self.presenter_worker.submit(self._prepare_presenter, _copy(station), _copy(item), generation, cancel, ticket)
 
     def _presenter_then_next(self, generation):
         """Use only prepared slots; late work is dropped and music continues at once."""
         station = self.program.station if self.program else ((self.active or {}).get('music', {}).get('station') or {})
         tracks = len((self.station_history[0].get('tracks') if self.station_history else []) or [])
         setting = presenter.preferences(station.get('presenter'))
-        segment = self.presenter_prepared
-        self.presenter_prepared = None
-        due = setting['enabled'] and tracks and (tracks == 1 or (tracks - 1) % setting['budget']['every_tracks'] == 0)
-        if not due:
-            # Keep the already prepared receipt for its later budgeted slot.
-            self.presenter_prepared = segment
+        ticket, self.presenter_slot = self.presenter_slot, None
+        if not self._presenter_due(station, tracks, setting):
+            if ticket and ticket['segment']:
+                self.presenter.discard(ticket['segment'], remove=True)
             self.queue_step(1, automatic=True)
             return
+        segment = ticket and ticket['segment']
         if not segment:
-            if self.presenter_prepare_pending:
+            # A prepare-time drop is this slot's one record; otherwise preparation is late.
+            if not ticket or ticket['state'] == 'pending':
                 self.presenter.record_drop('late')
-                self.presenter_prepare_drop_consumed = True
-            elif not self.presenter_prepare_recorded_drop:
-                self.presenter.record_drop('late')
-            self.presenter_prepare_recorded_drop = False
             self.queue_step(1, automatic=True)
             return
         self.presenter_slot_pending = True
@@ -3050,7 +3049,7 @@ class Controller:
             self.backend.stop_presenter(self.presenter_unit)
         except (OSError, ValueError, hub.HubError, AttributeError):
             pass
-        self.presenter.discard(self.presenter_prepared, remove=True)
+        self._presenter_release_slot()
         if self.verified_audio:
             self.verified_audio.close()
             self.verified_audio = None

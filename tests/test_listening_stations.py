@@ -68,7 +68,7 @@ class StationTests(unittest.TestCase):
         self.addCleanup(controller.close)
         segment = {'text': 'Link', 'sources': [{'record': '1'}], 'outcome': 'played',
                    'duration': .15, '_max_seconds': 5, '_audio_path': '/fixture.wav'}
-        with mock.patch.object(controller.presenter, 'prepare', return_value=segment):
+        with mock.patch.object(controller.presenter, 'prepare_slot', return_value=(segment, None)):
             self.start_presenter_station(controller)
             first = controller.active['music']['reference']['id']
             controller.presenter.muted = True
@@ -89,7 +89,7 @@ class StationTests(unittest.TestCase):
         self.addCleanup(controller.close)
         segment = {'text': 'Long link', 'sources': [], 'outcome': 'played', 'duration': 2,
                    '_max_seconds': 5, '_audio_path': '/fixture.wav'}
-        with mock.patch.object(controller.presenter, 'prepare', return_value=segment):
+        with mock.patch.object(controller.presenter, 'prepare_slot', return_value=(segment, None)):
             self.start_presenter_station(controller)
             backend.media = {'eof_reached': True}
             controller.refresh()
@@ -125,9 +125,9 @@ class StationTests(unittest.TestCase):
         def slow_failure(*_args, **_kwargs):
             preparing.set()
             release.wait(2)
-            controller.presenter.record_drop('language unavailable')
+            return None, ('language unavailable', ())
 
-        with mock.patch.object(controller.presenter, 'prepare', side_effect=slow_failure):
+        with mock.patch.object(controller.presenter, 'prepare_slot', side_effect=slow_failure):
             saved = controller.dispatch('station.save', {'station': self.presenter_station()})['station']
             with mock.patch.object(controller, '_home_action'), mock.patch.object(controller, '_route_preferred'), \
                     mock.patch('online_services.jellyfin_queue', return_value=[track(1)]):
@@ -147,7 +147,7 @@ class StationTests(unittest.TestCase):
         controller = room_session.Controller(FakeBackend(), self.temp.name)
         self.addCleanup(controller.close)
         self.assertFalse(controller.snapshot()['presenter']['ready'])
-        controller.presenter_prepared = {'text': 'Ready'}
+        controller.presenter_slot = {'state': 'ready', 'segment': {'text': 'Ready'}}
         self.assertTrue(controller.snapshot()['presenter']['ready'])
 
     def test_clip_uses_same_slot_and_primary_speech_suppresses_generation(self):
