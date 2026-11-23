@@ -163,7 +163,7 @@ def room_transport(command):
         snapshot = session_client.request('inspect', timeout=.4, start=False)
     except (OSError, ValueError):
         return False
-    if not (snapshot or {}).get('active'):
+    if not (snapshot or {}).get('active') and not (snapshot or {}).get('video'):
         return False
     transport('radio', command)
     return True
@@ -258,8 +258,11 @@ def main():
             play(item)
         else:
             current = target(all_info())
-            if not current and args.action in ('toggle', 'stop') and room_transport('play-pause' if args.action == 'toggle' else args.action):
-                return 0    # only the room's ambience (no player of its own here) was playing or paused
+            if (not current or current['id'] == 'video') and args.action in ('toggle', 'stop') \
+                    and room_transport('play-pause' if args.action == 'toggle' else args.action):
+                # Only the room's ambience (no player of its own here) was playing or paused, or the room's
+                # watched video was chosen: the room transport pauses and resumes it with the other layers.
+                return 0
             if not current:
                 if args.action == 'toggle':
                     menu()

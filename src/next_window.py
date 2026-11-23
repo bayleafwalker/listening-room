@@ -577,6 +577,27 @@ class NextWindow(Adw.ApplicationWindow):
         if pending['state'] == 'failed' and pending.get('timed_out'):
             pending['state'] = 'connecting'   # a slow start that did succeed: the next snapshot clears the card
             self.render_pending()
+        if pending.get('cancel_requested'):
+            self.cancel_pending()
+
+    def cancel_pending(self):
+        """The Mix's Cancel (O11-CONTROL): the controller abandons the start (``entry.cancel``) and keeps the
+        room before it, or idle; then the card goes, as Back does. A start not yet answered is cancelled
+        as soon as its reply names it, so Cancel never races the start it means."""
+        pending = self.pending
+        if not pending or pending['state'] != 'connecting':
+            return
+        if pending.get('id') is None and pending['inflight']:
+            pending['cancel_requested'] = True
+            return
+        pending['cancel_requested'] = False
+
+        def done(result):
+            if pending is self.pending and isinstance(result, dict) and result.get('cancelled'):
+                self.dismiss_pending()
+                self.toast('Stopped connecting to ' + pending['name'])
+        self.command('entry.cancel', {'id': pending['id']} if pending.get('id') is not None else {},
+                     urgent=True, done=done)
 
     def pending_failed(self, error, pending=None, plain=None):
         pending = self.pending if pending is None else pending
@@ -646,6 +667,7 @@ class NextWindow(Adw.ApplicationWindow):
         self.pending_retry.set_tooltip_text('Still waiting for an answer' if failed and pending['inflight'] else None)
         self.show_details(self.pending_details, pending.get('details', '') if failed else '')
         self.play.set_sensitive(not (self.offline or connecting))
+        self.mix.show_connecting(pending['name'] if connecting else None, self.cancel_pending)  # O11-CONTROL
         if not pending:
             return
         if connecting:

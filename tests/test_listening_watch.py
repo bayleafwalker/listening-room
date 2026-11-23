@@ -113,7 +113,9 @@ class WatchController(Environment):
         self.assertEqual(snapshot['video']['url'], VIDEO)
         self.assertEqual(sorted(snapshot['resume_offer']['layers']), ['atmosphere', 'music'])
         self.assertEqual(snapshot['resume_offer']['session_id'], snapshot['active']['id'])
-        self.assertEqual(next_model.room_state(snapshot), 'paused')
+        # O11: the watched video is part of the room, so the room button shows Pause while it plays
+        # (2.5.0 showed Play here, and Play would have resumed the room under the video).
+        self.assertEqual(next_model.room_state(snapshot), 'playing')
 
     def test_stopping_offers_resume_and_never_resumes(self):
         self.enter()
@@ -195,6 +197,159 @@ class WatchController(Environment):
         offer = self.controller.snapshot()['resume_offer']
         self.watch()
         self.assertEqual(self.controller.snapshot()['resume_offer'], offer)
+
+
+class VideoTransport(WatchController):
+    """O11: room transport (window, MPRIS, media keys, roomctl) pauses and resumes the watched video."""
+
+    def setUp(self):
+        super().setUp()
+        backend = self.backend
+
+        def extra_video_control(action):
+            backend.calls.append(('owned_video', action))
+            if backend.video and action in ('pause', 'play'):
+                backend.video['status'] = 'Paused' if action == 'pause' else 'Playing'
+            elif action == 'stop':
+                backend.video = None
+        backend.extra_video_control = extra_video_control
+
+    def transport(self, action='toggle'):
+        result = self.service.execute('transport', {'action': action})
+        self.controller.refresh()
+        return result
+
+    def statuses(self):
+        snapshot = self.controller.snapshot()
+        return (snapshot['layers']['music']['status'], snapshot['layers']['atmosphere']['status'],
+                (snapshot['video'] or {}).get('status'))
+
+    def test_transport_pauses_the_video_and_play_brings_back_only_the_video(self):
+        self.enter()
+        self.watch()
+        self.assertEqual(self.statuses(), ('Paused', 'Paused', 'Playing'))
+        self.assertTrue(self.controller.audible())
+        self.assertEqual(session_service.room_status(self.controller.snapshot()), 'Playing')
+        self.transport()
+        self.assertEqual(self.statuses(), ('Paused', 'Paused', 'Paused'))
+        self.assertTrue(self.controller.snapshot()['video']['transport_paused'])
+        self.assertEqual(session_service.room_status(self.controller.snapshot()), 'Paused')
+        offer = self.controller.snapshot()['resume_offer']
+        self.assertEqual(offer.get('reason'), 'video', 'Quiet while watching keeps the video offer')
+        self.transport()
+        self.assertEqual(self.statuses(), ('Paused', 'Paused', 'Playing'))
+        self.assertNotIn(('music', 'play', None), self.backend.calls)
+        self.assertEqual(sorted(self.controller.snapshot()['resume_offer']['layers']), ['atmosphere', 'music'])
+        # After the video, the room's own Resume is still offered and works.
+        self.service.execute('video', {'action': 'stop'})
+        self.controller.refresh()
+        self.transport('play')
+        self.assertEqual(self.statuses()[:2], ('Playing', 'Playing'))
+
+    def test_quiet_then_stop_watching_then_resume_plays_the_room(self):
+        self.enter()
+        self.watch()
+        self.controller.quiet()
+        self.service.execute('video', {'action': 'stop'})
+        self.controller.refresh()
+        self.controller.resume()
+        self.assertEqual(self.statuses()[:2], ('Playing', 'Playing'))
+
+    def test_a_room_playing_beside_the_video_pauses_and_resumes_together(self):
+        self.enter()
+        self.watch()
+        self.controller.resume()        # the listener resumed the room under the video
+        self.controller.refresh()
+        self.assertEqual(self.statuses(), ('Playing', 'Playing', 'Playing'))
+        self.transport('pause')
+        self.assertEqual(self.statuses(), ('Paused', 'Paused', 'Paused'))
+        self.transport('play')
+        self.assertEqual(self.statuses(), ('Playing', 'Playing', 'Playing'))
+
+    def test_with_no_room_transport_pauses_and_plays_the_video(self):
+        self.watch()
+        self.transport()
+        self.assertEqual(self.statuses()[2], 'Paused')
+        self.assertIsNone(self.controller.snapshot()['resume_offer'])
+        self.transport()
+        self.assertEqual(self.statuses()[2], 'Playing')
+        self.assertEqual([c for c in self.backend.calls if c[0] in ('music', 'atmosphere')], [])
+
+    def test_a_video_paused_in_its_own_window_plays_again_from_room_play(self):
+        self.enter()
+        self.watch()
+        self.backend.video['status'] = 'Paused'
+        self.controller.refresh()
+        self.assertFalse(self.controller.audible())
+        self.transport()
+        self.assertEqual(self.statuses(), ('Paused', 'Paused', 'Playing'))
+
+    def interleave(self, action):
+        """A refresh that reads the player, then ``action`` runs before the refresh writes what it read."""
+        backend, original = self.backend, self.backend.video_state
+        def video_state():
+            state = original()          # the stale read
+            backend.video_state = original
+            action()
+            return state
+        backend.video_state = video_state
+        self.controller.refresh()
+
+    def test_a_refresh_read_before_quiet_does_not_undo_the_video_pause(self):
+        """V18: resume under the video, room Pause, room Play: the video always plays again."""
+        self.enter()
+        self.watch()
+        self.controller.resume()
+        self.controller.refresh()
+        self.assertEqual(self.statuses(), ('Playing', 'Playing', 'Playing'))
+        self.interleave(lambda: self.service.execute('transport', {'action': 'pause'}))
+        snapshot = self.controller.snapshot()
+        self.assertEqual(snapshot['video']['status'], 'Paused', 'a stale read overwrote the pause')
+        self.assertTrue(snapshot['video'].get('transport_paused'))
+        self.service.execute('transport', {'action': 'play'})
+        self.controller.refresh()
+        self.assertEqual(self.statuses(), ('Playing', 'Playing', 'Playing'))
+        self.assertEqual(self.backend.video['status'], 'Playing')
+
+    def test_a_refresh_read_before_resume_does_not_undo_the_video_play(self):
+        self.enter()
+        self.watch()
+        self.controller.resume()
+        self.controller.refresh()
+        self.transport('pause')
+        self.interleave(lambda: self.service.execute('transport', {'action': 'play'}))
+        self.assertEqual(self.controller.snapshot()['video']['status'], 'Playing', 'a stale read overwrote the play')
+        self.transport('pause')      # so the next Pause still pauses the video
+        self.assertEqual(self.statuses(), ('Paused', 'Paused', 'Paused'))
+        self.assertEqual(self.backend.video['status'], 'Paused')
+
+    def test_a_stale_read_after_stop_watching_does_not_bring_the_video_back(self):
+        self.enter()
+        self.watch()
+        self.interleave(lambda: self.service.execute('video', {'action': 'stop'}))
+        self.assertIsNone(self.controller.snapshot()['video'])
+
+    def test_leave_stops_the_video(self):
+        self.enter()
+        self.watch()
+        self.controller.leave(0)
+        self.assertIsNone(self.controller.snapshot()['video'])
+        self.assertIn(('owned_video', 'stop'), self.backend.calls)
+        self.assertIsNone(self.backend.video)
+
+    def test_waybar_and_mpris_say_what_the_video_does(self):
+        import roomctl
+        self.enter()
+        self.watch()
+        line = roomctl.status(self.controller.snapshot())
+        self.assertEqual(line['class'], 'playing')
+        self.assertIn('Watching Rain on a tin roof', line['text'])
+        self.assertNotIn('paused', line['text'])
+        values = session_service.mpris_values(self.controller.snapshot())
+        self.assertEqual((values['PlaybackStatus'], values['Metadata']['xesam:title']), ('Playing', 'Rain on a tin roof'))
+        self.transport()
+        line = roomctl.status(self.controller.snapshot())
+        self.assertEqual((line['class'], line['text']), ('paused', 'Midnight library · Video paused'))
 
 
 class ShowAsScene(unittest.TestCase):

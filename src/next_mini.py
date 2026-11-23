@@ -70,6 +70,27 @@ class MiniPlayer(Gtk.Overlay):
         self.name = label('Listening room', ['mini-name'], ellipsize=True)
         self.line = label('', ['mini-line'], ellipsize=True)
         text.append(self.name)
+        # The popover only (Proposal E): one tappable control per sounding layer under the name, "Music ▮▮ ·
+        # Ambience ▶": each shows its layer's state (▮▮ paused, ▶ playing) and a tap flips it; the room keeps
+        # one Pause/Play.
+        self.layer_line = Gtk.Box(spacing=4, visible=False)
+        self.layer_buttons = {}
+        if extras:
+            for index, (layer, word) in enumerate((('music', model.MUSIC), ('atmosphere', model.AMBIENCE))):
+                if index:
+                    self.layer_line.append(label('·', ['mini-line']))
+                button = Gtk.Button(visible=False)
+                button.add_css_class('flat')
+                button.add_css_class('mini-layer')
+                inner = Gtk.Box(spacing=6)
+                inner.append(label(word, ['mini-line']))
+                inner.append(Gtk.Image(icon_name='media-playback-start-symbolic'))
+                button.set_child(inner)
+                button.action = 'pause'
+                button.connect('clicked', lambda *_, name=layer: self.layer_clicked(name))
+                self.layer_buttons[layer] = button
+                self.layer_line.append(button)
+            text.append(self.layer_line)
         text.append(self.line)
         top.append(text)
         self.expand_button = icon_button('view-fullscreen-symbolic',
@@ -161,6 +182,35 @@ class MiniPlayer(Gtk.Overlay):
         ticket = self.host.return_room() if self.state == 'return' else self.host.actions.toggle()
         when_finished(ticket, restore)
 
+    def layer_clicked(self, layer):
+        button = self.layer_buttons[layer]
+        self.host.send('layer', {'layer': layer, 'action': button.action}, urgent=button.action == 'pause')
+
+    def update_layers(self, snapshot):
+        """The popover's per-layer line: a control for each layer that has a source, showing its state."""
+        shown = []
+        for row in model.mix_rows(snapshot) if self.layer_buttons else ():
+            button = self.layer_buttons.get(row['layer'])
+            if button is None:
+                continue
+            visible = row['state'] in ('playing', 'paused') and not row['closed']
+            button.set_visible(visible)
+            if not visible:
+                continue
+            shown.append(button)
+            paused = row['state'] == 'paused'
+            button.action = 'play' if paused else 'pause'
+            icon = button.get_child().get_last_child()
+            icon.set_from_icon_name('media-playback-pause-symbolic' if paused else 'media-playback-start-symbolic')
+            word = model.LAYER_WORDS[row['layer']]
+            name_it(button, ('Play ' if paused else 'Pause ') + word.lower(),
+                    word + (' is paused. Play it' if paused else ' is playing. Pause it'))
+        # The separator shows only between two shown controls.
+        separator = self.layer_line.get_first_child().get_next_sibling() if self.layer_buttons else None
+        if separator is not None:
+            separator.set_visible(len(shown) == 2)
+        self.layer_line.set_visible(bool(shown))
+
     def volume_changed(self, scale):
         if self.updating:
             return
@@ -218,6 +268,10 @@ class MiniPlayer(Gtk.Overlay):
                 self.return_button.get_child().set_ellipsize(Pango.EllipsizeMode.END)
                 self.return_button.set_tooltip_text(hero.get('button', 'Return'))
             self.play.set_visible(bool(info))
+            if info:
+                self.update_layers(snapshot)
+            else:
+                self.layer_line.set_visible(False)
             self.return_button.set_visible(self.state == 'return')
             self.browse_button.set_visible(not info)
             for widget in (self.volume_box, self.timer_button if not self.extras else self.pills):

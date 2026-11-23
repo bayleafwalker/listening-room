@@ -59,7 +59,8 @@ class Watching:
         before, self.shown = self.shown, video
         self.chip.set_visible(bool(video))
         if video:
-            self.text.set_text('Watching · ' + (video.get('name') or 'YouTube video'))
+            self.text.set_text('Watching · ' + (video.get('name') or 'YouTube video')
+                               + (' · Paused' if video.get('status') == 'Paused' else ''))
             self.text.set_tooltip_text(video.get('name') or '')
         self.render_without_room(snapshot, video)
         error = (snapshot.get('errors') or {}).get('video')
