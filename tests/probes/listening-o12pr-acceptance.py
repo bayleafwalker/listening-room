@@ -342,16 +342,36 @@ def mpris_bus():
     return _mpris
 
 
-def mpris_status():
+def _mpris_playback_status(bus):
+    """One D-Bus Get, made on the pool thread while the main loop is pumped.
+
+    The Mpris service answers on this process's GLib main loop, so a call_sync from the main thread
+    would block the loop that must answer it and time out (the coordinator's merged run 2 saw None).
+    """
     from gi.repository import Gio, GLib
-    bus = mpris_bus()
+    future = bus['pool'].submit(lambda: bus['connection'].call_sync(bus['module'].MPRIS_NAME, bus['module'].MPRIS_PATH,
+        'org.freedesktop.DBus.Properties', 'Get', GLib.Variant('(ss)', (bus['module'].PLAYER_INTERFACE, 'PlaybackStatus')),
+        GLib.VariantType.new('(v)'), Gio.DBusCallFlags.NONE, 3000, None))
+    while not future.done():
+        env.pump(.03)
     try:
-        reply = bus['connection'].call_sync(bus['module'].MPRIS_NAME, bus['module'].MPRIS_PATH,
-            'org.freedesktop.DBus.Properties', 'Get', GLib.Variant('(ss)', (bus['module'].PLAYER_INTERFACE, 'PlaybackStatus')),
-            GLib.VariantType.new('(v)'), Gio.DBusCallFlags.NONE, 3000, None)
-        return reply.unpack()[0]
+        return future.result().unpack()[0]
     except GLib.Error:
         return None
+
+
+def mpris_status():
+    bus = mpris_bus()
+    # Wait for the name to appear on the private bus, as the O10 probe does, before reading the status.
+    found = []
+
+    def answered():
+        status = _mpris_playback_status(bus)
+        if status is not None:
+            found.append(status)
+        return status is not None
+    wait(answered, 6)
+    return found[-1] if found else None
 
 
 def presenter_data():
