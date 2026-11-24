@@ -792,15 +792,20 @@ class Victim:
         self.pid = self.truth = None
         self.kids, self.holders = [], None
         deadline = time.monotonic() + 420
+        fd, buffer = self.process.stdout.fileno(), ''
         while time.monotonic() < deadline and self.pid is None:
-            ready, _, _ = select.select([self.process.stdout], [], [], 1.)
-            if ready:
-                line = self.process.stdout.readline()
-                if not line:
-                    break
+            ready, _, _ = select.select([fd], [], [], 1.)
+            if not ready:
+                continue
+            chunk = os.read(fd, 65536)       # not readline(): its buffer would hold a second line select cannot see
+            if not chunk:
+                break
+            buffer += chunk.decode(errors='replace')
+            while '\n' in buffer and self.pid is None:
+                line, buffer = buffer.split('\n', 1)
                 if line.startswith('HOLDERS '):
                     self.holders = json.loads(line[8:])
-                if line.startswith('READY '):
+                elif line.startswith('READY '):
                     _, shed_, renew_, pid, *kids = line.split()
                     self.truth, self.pid, self.kids = (int(shed_), int(renew_)), int(pid), [int(k) for k in kids]
 
