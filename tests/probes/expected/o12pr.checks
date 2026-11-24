@@ -3,44 +3,58 @@ P0 existing saved stations are Presenter-off by default and their detail visibly
 P0b an existing room stays silent between tracks: no presenter object is enabled before opt-in
 P0c an untouched saved station contains references/preferences only, never audio, prepared stream or token
 P1 station detail exposes a Presenter switch and a visible adjustable budget
-P1e-R1 tuning starts music at once but does not create an opening presenter slot
+# P1e-R1 [SUPERSEDED by P1e-R2] compared record counts taken after tuning, so a record made during tuning went unseen.
+P1e-R2 tuning starts music at once and creates no opening slot: the speech layer never sounds
+P1f a prepared segment is not reported as played before its slot
 # P1b [ORIGINAL, superseded by P1b-R1] still prints as a SUPERSEDED line, not counted: persistence alone did not prove a lower budget.
 # P1b-R1 [SUPERSEDED by P1b-R2] read the active snapshot after editing an inactive station, which reports the default budget.
 P1b-R2 Less talking leaves Presenter enabled and persists a strictly sparser saved-station budget
 P1c Music only is station feedback: it turns Presenter off without changing station
-P2 the Mix exposes a Presenter row with its own level and Mute
+# P2 [ORIGINAL, superseded by P2-R1] still prints as a SUPERSEDED line, not counted: it never opened the Mix and passed on a label match of the window itself.
+P2-R1 the open Mix exposes a Presenter row with its own mapped level and Mute
 # P2b [ORIGINAL, superseded by P2b-R1] still prints as a SUPERSEDED line, not counted: whole layer equality hid a moving clock.
 # P2b-R1 [SUPERSEDED by P2b-R2] did not first prove an eligible slot boundary.
-P2b-R2 muting Presenter while it is playing keeps music identity and advancing clock
+# P2b-R2 [SUPERSEDED by P2b-R3] never opened the Mix and observed a music clock that cannot advance while a slot holds the transition.
+P2b-R3 muting Presenter in the open Mix leaves the music state alone and the slot as long as its segment
 P3 listening-roomctl inspect reports presenter enabled, budget, quiet status and recent sourced outcomes
 # P3b [SUPERSEDED by P3b-R1] queried an unowned bus name rather than starting the probe's private MPRIS service.
 P3b-R1 MPRIS remains music playback while an optional presenter layer is enabled on the private bus
 # P4 [ORIGINAL, superseded by P4-R1] still prints as SUPERSEDED lines, not counted: snapshot-only failures could leave a visible error card.
 # P4-R1 [SUPERSEDED by P4-R2] did not first prove an eligible slot boundary.
-P4-R2 LLM timeout drops quietly with no window error card
-P4-R2 malformed LLM output drops quietly with no window error card
-P4-R2 missing speech endpoint drops quietly with no window error card
-P4-R2 failing speech endpoint drops quietly with no window error card
+# P4-R2 [SUPERSEDED by P4-R3] tuned one station four times, so the queue ran out; its window was already closed, so the error-card test was vacuous.
+P4-R3 LLM timeout drops quietly with no window error card
+P4-R3 malformed LLM output drops quietly with no window error card
+P4-R3 missing speech endpoint drops quietly with no window error card
+P4-R3 failing speech endpoint drops quietly with no window error card
 # P5 [ORIGINAL, superseded by P5-R1] still prints as a SUPERSEDED line, not counted: requests and an empty list passed vacuously.
 # P5-R1 [SUPERSEDED by P5-R2] did not first prove an eligible slot boundary.
 # P5-R2 [SUPERSEDED by P5-R3] accepted any non-empty source; ruling 5-R1 requires the captured record and library tag field.
-P5-R3 the captured-metadata positive control cites the captured record and a library tag field
+# P5-R3 [SUPERSEDED by P5-R4] required track-1, but the queue is shuffled, and tuned a station whose tracks were already used.
+P5-R4 the captured-metadata positive control cites a captured record of the played fixture and a library tag field
 # P5b [ORIGINAL, superseded by P5b-R1] still prints as a SUPERSEDED line, not counted: a status alone did not prove a missed slot.
 # P5b-R1 [SUPERSEDED by P5b-R2] did not first prove an eligible slot boundary.
-P5b-R2 a slow slot drops, with music continuously playing and no played segment for that slot
+# P5b-R2 [SUPERSEDED by P5b-R3] shared a station with earlier scenarios, and did not show that the music moved on at once.
+P5b-R3 a slow slot drops, with the music moving on at once and no played segment for that slot
 # P6 [ORIGINAL, superseded by P6-R1] still prints as a SUPERSEDED line, not counted: no presenter implementation passed it.
 # P6-R1 [SUPERSEDED by P6-R2] did not first prove an eligible slot boundary.
-P6-R2 primary speech suppresses slots after the positive control proved a slot can play
+# P6-R2 [SUPERSEDED by P6-R3] tuned a station whose tracks were used up, and did not prove the saved station keeps its speech declaration.
+P6-R3 primary speech suppresses slots after the positive control proved a slot can play
 # P7 [ORIGINAL, superseded by P7-R1] still prints as a SUPERSEDED line, not counted: no segments passed it.
 # P7-R1 [SUPERSEDED by P7-R2] did not first prove an eligible slot boundary.
-P7-R2 no captured provenance suppresses factual segments after the positive control
+# P7-R2 [SUPERSEDED by P7-R3] the no-metadata reference still played captured fixture tracks (the shared queue ignores the reference).
+P7-R3 no captured provenance suppresses factual segments after the positive control
 # P8 [ORIGINAL, superseded by P8-R1] still prints as a SUPERSEDED line, not counted: zero/one slots passed it.
 # P8-R1 [SUPERSEDED by P8-R2] required endpoint requests although repeat suppression may happen before speech.
 # P8-R2 [SUPERSEDED by P8-R3] did not drive two verified eligible slot boundaries on one station.
-P8-R3 identical text in two eligible slots plays exactly once within the history window
+# P8-R3 [SUPERSEDED by P8-R4] the fixture had two tracks, so the second slot (1 + every_tracks ends) could not be reached.
+P8-R4 identical text in two eligible slots plays exactly once within the history window
 # P1d-R1 [SUPERSEDED by P1d-R2] did not first prove an eligible slot boundary.
-P1d-R2 an over-budget fake segment is dropped or publicly trimmed to the budget maximum
+# P1d-R2 [SUPERSEDED by P1d-R3] shared a station whose tracks were used up, so no track end could happen.
+P1d-R3 an over-budget fake segment is dropped or publicly trimmed to the budget maximum
 # P9-R1 [SUPERSEDED by P9-R2] did not first prove an eligible slot boundary.
-P9-R2 prerecorded clips use the slot scheduler, preserve source/placement, and honour expiry
-P10 room Pause and Play pause and resume a presenter slot with its remaining duration
-P11 Leave during a presenter slot stops speech immediately
+# P9-R2 [SUPERSEDED by P9-R3] took no account of the speech layer sounding, and its one-second clip was too short to observe.
+P9-R3 prerecorded clips use the slot scheduler, preserve source/placement, and honour expiry
+# P10 [ORIGINAL, superseded by P10-R1] still prints as a SUPERSEDED line, not counted: it looked for speech after the next track had started, when the slot was over.
+P10-R1 room Pause and Play pause and resume a presenter slot with its remaining duration
+# P11 [ORIGINAL, superseded by P11-R1] still prints as a SUPERSEDED line, not counted: it looked for speech after the next track had started, when the slot was over.
+P11-R1 Leave during a presenter slot stops speech immediately and discards prepared work
