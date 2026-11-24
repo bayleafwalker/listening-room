@@ -1,0 +1,48 @@
+# O11F-OBSERVE acceptance (tests/probes/listening-o11fo-acceptance.py), written by the independent acceptance author.
+# This is the TARGET: every check passes on the finished outcome. On main 6f9c7a3 (2.7.0) the report does not exist, so
+# N1, A1-A4, N2, G1-G4, L1-L4, R1-R6, P1, T1-T4 and C1 fail; N1b, A0, A7, A8 (the probe's own ground truth and the
+# no-side-effect checks), the child-health checks and T5-T8 (source_tree behaviours that already hold) pass.
+# Author-set limits (flagged for a coordinator ruling): 20 s shed wait, 4 rounds x 3 loops, 10 bounces, reference count 1..64.
+# Open interface choices the oracles read by meaning: field names, "how many loops have shed" as events or distinct loops.
+N1 with no window ever opened, inspect is readable (exit 0, one JSON line) and has a shedding report that does not claim shedding is active
+N1b inspect did not start the shedding machinery: the GStreamer calls it would load are untouched
+A0 fixture: at least 3 catalogue loop rooms with distinct loop files
+A1 with a loop on screen and nothing refused, inspect reports scene-loop shedding active
+A8 under constant inspect polling the loops still shed once per leave and resume once per show (the probe's own count of real sheds and resumes matches the workload)
+A2 the report counts the loops that have shed, and the count matches real sheds at every checkpoint over 4 rounds of 3 loops
+A3 the report counts the loops that have resumed, and the count matches real resumes at every checkpoint (a first show is not a resume)
+A4 after 10 quick show/leave pairs the report follows the real sheds and resumes, not the clicks
+A7 inspect never changes shedding: 40 inspects with loops shed leave every loop's state, the shed and resume calls and the shedding hooks as they were, and nothing wakes afterwards
+N2 with the window closed, inspect is still readable (exit 0, one JSON line) and has a shedding report whose counts, if it gives them, are not above what really happened
+active: the child finished without a crash or hang
+active: the child reported all its oracles and exited 0
+G1 gate: with a different GTK version, inspect reports shedding not active and the reason names GTK
+G2 gate: the counts are there and zero (no loop shed or resumed), and the loops still play
+G3 gate: after loops are shown and left again the report is unchanged: not active, same reason, counts zero
+G4 gate: the report is plain language
+gate: the child finished without a crash or hang
+gate: the child reported all its oracles and exited 0
+L1 gl: with libgstgl missing, inspect reports shedding not active and the reason names libgstgl
+L2 gl: the counts are there and zero (no loop shed or resumed), and the loops still play
+L3 gl: after loops are shown and left again the report is unchanged: not active, same reason, counts zero
+L4 gl: the report is plain language
+gl: the child finished without a crash or hang
+gl: the child reported all its oracles and exited 0
+R1 refs: before the release is refused, inspect does not say shedding is off
+R2 refs: after the refused release, inspect reports shedding not active and the reason names references
+R3 refs: the report shows the observed reference count (a whole number from 1 to 64)
+R4 refs: the counts agree with what happened (at most the loop whose release was refused shed; resumes never above sheds)
+R5 refs: the loops still play and resume, and afterwards shedding is still reported off for the same reason
+R6 refs: the report is plain language
+refs: the child finished without a crash or hang
+refs: the child reported all its oracles and exited 0
+P1 the three "not active" reasons are all given and differ from each other (another GTK version, no libgstgl, refused release)
+T1 source_tree: the --source tree is also on PYTHONPATH and LISTENING_HUB_SOURCE names another tree: the --source tree wins (and LISTENING_HUB_SOURCE follows it)
+T2 source_tree: the --source tree is also on PYTHONPATH and LISTENING_HUB_SOURCE is unset: the --source tree is used, not the default tree
+T3 source_tree: the same when --source is spelled differently from the PYTHONPATH entry (trailing slash)
+T4 source_tree: the same when PYTHONPATH lists the --source tree after the default tree
+T5 source_tree: the dev loop's PYTHONPATH export alone is not a choice: LISTENING_HUB_SOURCE names another tree and that tree wins
+T6 source_tree: the PYTHONPATH export alone, no LISTENING_HUB_SOURCE: the default tree
+T7 source_tree: another tree only exported on PYTHONPATH (never put first on sys.path by the caller) is not a choice either: LISTENING_HUB_SOURCE wins
+T8 source_tree: control, a --source tree that is not on PYTHONPATH still wins over LISTENING_HUB_SOURCE
+C1 the CHANGELOG [Unreleased] section records the inspect addition: scene-loop shedding status
