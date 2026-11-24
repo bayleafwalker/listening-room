@@ -58,7 +58,10 @@ class PresenterTests(unittest.TestCase):
         value = presenter.Presenter()
         with patch.dict('os.environ', {'XDG_RUNTIME_DIR': '/tmp'}, clear=False), \
                 patch.object(value, '_chat', return_value='A short link.'), patch.object(value, '_speech', return_value=self.wav()):
-            self.assertEqual(value.prepare(self.STATION, self.TRACK, self.RECORD)['outcome'], 'played')
+            first = value.prepare(self.STATION, self.TRACK, self.RECORD)
+            self.assertEqual(first['outcome'], 'played')
+            self.assertEqual(value.snapshot()['segments'], [])      # prepared is not played
+            value.record_played(first)
             self.assertIsNone(value.prepare(self.STATION, self.TRACK, self.RECORD))
         segment = value.snapshot()['segments'][-1]
         self.assertEqual(segment['reason'], 'repeated segment')
@@ -94,11 +97,43 @@ class PresenterTests(unittest.TestCase):
                 patch.object(value, '_chat', return_value='Same words.'), \
                 patch.object(value, '_speech', return_value=self.wav()):
             first = value.prepare(dict(self.STATION, id='a'), self.TRACK, self.RECORD)
+            value.record_played(first)
             again = value.prepare(dict(self.STATION, id='a'), self.TRACK, self.RECORD)
             other = value.prepare(dict(self.STATION, id='b'), self.TRACK, self.RECORD)
+            value.record_played(other)
         self.assertTrue(first and other)
         self.assertIsNone(again)
         self.assertEqual([x.get('reason') for x in value.snapshot()['segments']], [None, 'repeated segment', None])
+
+    def test_discarded_segment_leaves_no_record_and_keeps_its_text_free(self):
+        value = presenter.Presenter()
+        with patch.dict('os.environ', {'XDG_RUNTIME_DIR': '/tmp'}, clear=False), \
+                patch.object(value, '_chat', return_value='Same words.'), \
+                patch.object(value, '_speech', return_value=self.wav()):
+            value.discard(value.prepare(self.STATION, self.TRACK, self.RECORD))
+            self.assertTrue(value.prepare(self.STATION, self.TRACK, self.RECORD))
+        self.assertEqual(value.snapshot()['segments'], [])
+
+    def test_oversized_response_is_voice_unavailable_not_truncated(self):
+        value = presenter.Presenter()
+
+        class Response:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self, size): return b'\0' * min(size, presenter.MAX_AUDIO_BYTES + 10)
+
+        with patch.dict('os.environ', {'XDG_RUNTIME_DIR': '/tmp'}, clear=False), \
+                patch.object(value, '_chat', return_value='Words.'), \
+                patch('presenter.online_services._request_context',
+                      return_value={'settings': {'endpoint': 'http://127.0.0.1:1'}, 'token': ''}), \
+                patch('presenter.online_services.connection', return_value={}), \
+                patch('urllib.request.urlopen', return_value=Response()):
+            self.assertIsNone(value.prepare(self.STATION, self.TRACK, self.RECORD))
+        self.assertEqual(value.snapshot()['segments'][-1]['reason'], 'voice unavailable')
+
+    def test_a_ninety_second_cd_quality_segment_fits_the_limit(self):
+        self.assertGreater(presenter.MAX_AUDIO_BYTES, 90 * 48000 * 2 * 2)
 
 
 if __name__ == '__main__':

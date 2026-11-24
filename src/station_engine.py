@@ -11,6 +11,7 @@ import re
 import urllib.parse
 
 import listening_hub as hub
+import presenter
 
 MAX_QUEUE = 8
 MAX_RECENT = 40
@@ -69,7 +70,6 @@ def normalize(value):
                 raise ValueError('Invalid station preference')
             clean_prefs[key] = val
     # Presenter preferences stay with the station's intent, never with prepared audio.
-    import presenter
     presenter_settings = presenter.preferences(value.get('presenter'))
     clips = prefs.get('presenter_clips', value.get('presenter_clips')) or []
     if not isinstance(clips, list) or len(clips) > 20:

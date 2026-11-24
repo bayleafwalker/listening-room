@@ -17,6 +17,18 @@ import wave
 import online_services
 
 DEFAULT_BUDGET = {'every_tracks': 4, 'max_seconds': 18}
+# The longest legitimate segment: 90 s of 48 kHz 16-bit stereo, plus header room.
+MAX_AUDIO_BYTES = 90 * 48000 * 2 * 2 + 4096
+
+
+def runtime_dir():
+    """The private runtime directory for prepared voice files and presenter players."""
+    root = os.environ.get('XDG_RUNTIME_DIR')
+    if not root:
+        raise ValueError('Presenter voice unavailable; music only')
+    directory = Path(root) / 'listening-hub' / 'presenter'
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return directory
 
 
 def budget(value=None):
@@ -120,7 +132,7 @@ class Presenter:
             if text in self._texts.get(station.get('id'), ()):
                 return None, ('repeated segment', sources)
         try:
-            if clip and Path(clip['audio']).stat().st_size > 2 * 1024 * 1024:
+            if clip and Path(clip['audio']).stat().st_size > MAX_AUDIO_BYTES:
                 raise ValueError('Presenter voice unavailable; music only')
             audio = Path(clip['audio']).read_bytes() if clip else self._speech(text, timeout)
             if cancel is not None and cancel.is_set():
@@ -139,33 +151,26 @@ class Presenter:
             segment.update(source=clip['source'], placement=clip['allowed_placement'])
         with self._lock:
             self.status = ''
-            self.segments.append(segment)
-            recent = self._texts.setdefault(station.get('id'), [])
-            recent.append(text)
-            del self.segments[:-self.records]; del recent[:-self.history]
         return segment, None
 
-    def discard(self, segment, remove=False):
-        """Remove the ephemeral voice file once its one scheduled slot is over."""
+    def record_played(self, segment):
+        """The slot started: this is the segment's one record, and its text joins the repeat window."""
+        with self._lock:
+            self.segments.append(segment)
+            recent = self._texts.setdefault(segment.get('_station_id'), [])
+            recent.append(segment['text'])
+            del self.segments[:-self.records]; del recent[:-self.history]
+
+    def discard(self, segment):
+        """Remove the ephemeral voice file; a segment never recorded leaves no trace."""
         if isinstance(segment, dict):
             try: Path(segment.get('_audio_path', '')).unlink(missing_ok=True)
             except (OSError, TypeError): pass
-            if remove:
-                with self._lock:
-                    if segment in self.segments:
-                        self.segments.remove(segment)
-                    recent = self._texts.get(segment.get('_station_id'), [])
-                    if segment.get('text') in recent:
-                        recent.remove(segment.get('text'))
 
     def _runtime_audio(self, audio):
         if not isinstance(audio, bytes) or not audio:
             raise ValueError('Presenter voice unavailable; music only')
-        root = os.environ.get('XDG_RUNTIME_DIR')
-        if not root:
-            raise ValueError('Presenter voice unavailable; music only')
-        directory = Path(root) / 'listening-hub' / 'presenter'
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory = runtime_dir()
         fd, name = tempfile.mkstemp(prefix='segment-', suffix='.audio', dir=directory)
         try:
             with os.fdopen(fd, 'wb') as output:
@@ -195,7 +200,10 @@ class Presenter:
             request = urllib.request.Request(endpoint, data=json.dumps(payload).encode(), headers=headers, method='POST')
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 if response.status != 200: raise ValueError('presenter service unavailable')
-                return response.read(2 * 1024 * 1024)
+                data = response.read(MAX_AUDIO_BYTES + 1)
+                if len(data) > MAX_AUDIO_BYTES:
+                    raise ValueError('presenter response too large')
+                return data
         except (online_services.ConnectionError, urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
             raise ValueError('Presenter unavailable; music only') from error
 

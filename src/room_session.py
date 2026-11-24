@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 import threading
 import time
+import traceback
 
 import listening_hub as hub
 import ambience
@@ -2361,14 +2362,19 @@ class Controller:
     def _prepare_presenter(self, station, item, generation, cancel, ticket):
         """Provider work stays on the controller worker, outside the session lock."""
         try:
-            record = self._presenter_metadata(station, item)
-            segment, drop = self.presenter.prepare_slot(station, item, metadata_record=record,
-                primary_speech=self._primary_speech(station, self.active), clip=self._presenter_clip(station),
-                cancel=cancel)
+            try:
+                record = self._presenter_metadata(station, item)
+                segment, drop = self.presenter.prepare_slot(station, item, metadata_record=record,
+                    primary_speech=self._primary_speech(station, self.active), clip=self._presenter_clip(station),
+                    cancel=cancel)
+            except Exception:
+                # Whatever preparation did not anticipate is still just this slot's one dropped record.
+                traceback.print_exc()
+                segment, drop = None, ('presenter error', ())
             with self.lock:
                 if ticket is not self.presenter_slot or self.closed or cancel.is_set():
                     # The slot already ended (late) or the session moved on: record nothing.
-                    self.presenter.discard(segment, remove=True)
+                    self.presenter.discard(segment)
                 elif drop:
                     self.presenter.record_drop(*drop)
                     ticket['state'] = 'dropped'
@@ -2382,7 +2388,7 @@ class Controller:
     def _presenter_release_slot(self):
         ticket, self.presenter_slot = self.presenter_slot, None
         if ticket and ticket['segment']:
-            self.presenter.discard(ticket['segment'], remove=True)
+            self.presenter.discard(ticket['segment'])
         return ticket
 
     @staticmethod
@@ -2410,7 +2416,7 @@ class Controller:
         self.presenter_ends += 1
         if not due:
             if ticket and ticket['segment']:
-                self.presenter.discard(ticket['segment'], remove=True)
+                self.presenter.discard(ticket['segment'])
             self.queue_step(1, automatic=True)
             return
         segment = ticket and ticket['segment']
@@ -2420,6 +2426,12 @@ class Controller:
                 self.presenter.record_drop('late')
             self.queue_step(1, automatic=True)
             return
+        if self._primary_speech(station, self.active):
+            # Speech began on another layer since preparation (ruling 8).
+            self.presenter.discard(segment)
+            self.presenter.record_drop('primary speech source', segment.get('sources', ()))
+            self.queue_step(1, automatic=True)
+            return
         self.presenter_slot_pending = True
         duration, level_value, muted = min(segment['duration'], segment['_max_seconds']), self.presenter.level, self.presenter.muted
         slot_cancel = self.cancel
@@ -2427,11 +2439,12 @@ class Controller:
             unit = None
             try:
                 if slot_cancel.is_set():
-                    self.presenter.discard(segment, remove=True)
+                    self.presenter.discard(segment)
                     return
                 unit = self.backend.start_presenter(segment, level_value, muted)
                 with self.lock:
                     if generation == self.generation:
+                        self.presenter.record_played(segment)
                         with self.presenter_pause:
                             self.presenter_unit = unit
                             self.presenter_pause.notify_all()
@@ -2453,7 +2466,7 @@ class Controller:
                             remaining = max(0., remaining - (time.monotonic() - started))
                         self.presenter_remaining = remaining
             except (OSError, ValueError, hub.HubError, AttributeError):
-                self.presenter.discard(segment, remove=True)
+                self.presenter.discard(segment)
                 self.presenter.record_drop('audio unavailable', segment.get('sources', ()))
             finally:
                 try: self.backend.stop_presenter(unit)

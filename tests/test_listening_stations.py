@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import wave
 from unittest import mock
@@ -208,6 +209,46 @@ class StationTests(unittest.TestCase):
         self.assertEqual(len(late), 20)       # ends 1, 6, 11 ... 96, well past the station history cap
         self.assertEqual(controller.presenter_ends, 100)
 
+    def test_unexpected_preparation_error_is_the_slots_one_drop(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        with mock.patch.object(controller.presenter, 'prepare_slot', side_effect=KeyError('presenter_llm')), \
+                mock.patch('traceback.print_exc'):
+            self.start_presenter_station(controller)
+        backend.media = {'eof_reached': True}
+        controller.refresh()
+        controller.worker.submit(lambda: None).result(timeout=2)
+        self.assertEqual([x['reason'] for x in controller.snapshot()['presenter']['segments']], ['presenter error'])
+
+    def test_primary_speech_starting_after_preparation_drops_the_slot(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        segment = {'text': 'Link', 'sources': [{'record': '1'}], 'outcome': 'played',
+                   'duration': .15, '_max_seconds': 5, '_audio_path': '/fixture.wav'}
+        with mock.patch.object(controller.presenter, 'prepare_slot', return_value=(segment, None)):
+            self.start_presenter_station(controller)
+            with mock.patch.object(controller, '_primary_speech', return_value=True):
+                backend.media = {'eof_reached': True}
+                controller.refresh()
+                controller.worker.submit(lambda: None).result(timeout=2)
+        self.assertFalse(backend.presenter_started.is_set())
+        self.assertEqual([x['reason'] for x in controller.snapshot()['presenter']['segments']], ['primary speech source'])
+
+    def test_prepared_segment_is_recorded_only_when_its_slot_starts(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        segment = {'text': 'Link', 'sources': [], 'outcome': 'played', 'duration': .1,
+                   '_max_seconds': 5, '_audio_path': '/fixture.wav'}
+        with mock.patch.object(controller.presenter, 'prepare_slot', return_value=(segment, None)):
+            self.start_presenter_station(controller)
+            self.assertTrue(controller.snapshot()['presenter']['ready'])
+            self.assertEqual(controller.snapshot()['presenter']['segments'], [])
+            controller.dispatch('music', {'item': {'id': 'other', 'name': 'Other', 'url': 'https://example.test/music'}})
+            self.assertEqual(controller.snapshot()['presenter']['segments'], [])
+
     def test_snapshot_ready_tracks_prepared_segment(self):
         controller = room_session.Controller(FakeBackend(), self.temp.name)
         self.addCleanup(controller.close)
@@ -227,6 +268,9 @@ class StationTests(unittest.TestCase):
         backend.media = {'eof_reached': True}
         controller.refresh()
         self.assertTrue(backend.presenter_started.wait(1))
+        deadline = time.monotonic() + 2
+        while not controller.presenter.segments and time.monotonic() < deadline:
+            time.sleep(.01)
         played = controller.snapshot()['presenter']['segments'][0]
         self.assertEqual((played['source'], played['placement']), ('Local ident', 'between_tracks'))
 
