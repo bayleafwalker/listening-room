@@ -39,13 +39,14 @@ Parts (each child is a subprocess, so a segfault is a result):
   churn   criterion 2, the sink-shedding workaround (coordinator ruling on dd4985e): 140 preview cycles across the
           loops, a fifth of them racing back to the loop just left around its release and shed; at least 100 resumes
           of a shed loop; GL context/display threads and settled fds never beyond one per loop file; motion sampled;
-          nice-19 load helpers for at most its first 60 s, up to load 16.
+          nice-19 load helpers for at most 60 s up to load 16, starting up to 40 s before the child (C6 ruling on
+          326a4eb; originally they started with the child).
   fallback-gate / fallback-refs   the workaround's fallback: its GTK version gate patched not to match, or its
           reference-count check refused for real (an extra reference on the first loop's video sink): shedding off,
           GL threads one per loop and flat across resumes, loops play, resume, loop past their clip and stay paused.
   warm-idle / warm-browse / warm-pages   the idle warm-up (coordinator request on 3e937b9): after the first shed,
           nothing, previews clicked through, or page switches back to back; the download must never touch a preview,
-          a resume or two actions <= 1 s apart, runs once, and holds the GTK thread at most 500 ms (PROPOSED).
+          a resume or two actions <= 1 s apart, runs once, and holds the GTK thread at most 500 ms (ruled).
   token   the weak-ref token (coordinator request on 3e937b9): late notifies fired by hand with old sinks' tokens and
           the next sink's addresses must not authorise releasing the context of that sink, kept alive.
   stress  criterion 2: tests/probes/listening-scene-media-stress.py, 10 children x 30 cycles = 300 cycles,
@@ -262,7 +263,7 @@ def run_parent(args):
     def note_load(label):
         summary['load_samples'].append((label, round(time.time()), os.getloadavg()))
 
-    def child(mode, timeout=900, load_done=None, help_load=None):
+    def child(mode, timeout=900, load_done=None, help_load=None, help_left=60.):
         log = output / ('%s.log' % mode)
         gst = output / ('%s.gst' % mode)
         environment = dict(os.environ, PYTHONFAULTHANDLER='1', GST_DEBUG='GST_ELEMENT_FACTORY:4',
@@ -277,7 +278,7 @@ def run_parent(args):
                                        preexec_fn=no_core_dumps)
             marker = output / mode / 'load-done'
             peak = os.getloadavg()[0]
-            if help_load is not None:        # coordinator ruling: nice-19 helpers for at most 60 s, up to load 16
+            if help_load is not None and not help_load.procs:   # ruling: nice-19 helpers for at most 60 s, up to load 16
                 help_load.start(STRESS_LOAD + 1)
             while True:
                 try:
@@ -286,7 +287,7 @@ def run_parent(args):
                 except subprocess.TimeoutExpired:
                     peak = max(peak, os.getloadavg()[0])
                     if help_load is not None and help_load.procs and (
-                            os.getloadavg()[0] >= STRESS_LOAD + 1 or time.monotonic() - started > 60):
+                            os.getloadavg()[0] >= STRESS_LOAD + 1 or time.monotonic() - started > help_left):
                         help_load.stop()
                         info('load helpers stopped after %.0f s of the %s child (load 1m %.1f)' % (
                             time.monotonic() - started, mode, os.getloadavg()[0]))
@@ -361,7 +362,18 @@ def run_parent(args):
         # resume churn across loops (part of it at load > 15), and the fallback when its version gate or its
         # reference count check does not match.
         if 'churn' in parts:
-            summary['churn'] = churned = child('churn', timeout=1200, help_load=load)
+            # C6 setup [ORIGINAL, superseded by the coordinator's ruling on 326a4eb]: the helpers started with the
+            # churn child, for at most 60 s up to load 16; on a quiet host the 1-minute load peaked at 12.8-15.7.
+            # Now they start up to CHURN_PREWARM_S before it, within the same 60 s budget and load-16 cap; C6's
+            # limit (> 15) is unchanged.
+            prewarm = time.monotonic()
+            load.start(STRESS_LOAD + 1)
+            while time.monotonic() - prewarm < CHURN_PREWARM_S and os.getloadavg()[0] < STRESS_LOAD + 1:
+                time.sleep(1)
+            prewarm = time.monotonic() - prewarm
+            info('load helpers: %.0f s before the churn child (load 1m %.1f); at most %.0f s more with it' % (
+                prewarm, os.getloadavg()[0], 60 - prewarm))
+            summary['churn'] = churned = child('churn', timeout=1200, help_load=load, help_left=60 - prewarm)
             check('C6 churn: the host load was above %d for part of the churn (peak @@)' % STRESS_LOAD,
                   churned.get('load_peak', 0) > STRESS_LOAD, churned.get('load_peak'),
                   measured=float(churned.get('load_peak', 0)))
@@ -1162,6 +1174,7 @@ def _quiet(env, limit=20., at_least=0.):
 
 
 CHURN_CYCLES = 140
+CHURN_PREWARM_S = 40.        # C6 ruling on 326a4eb: helpers may start this long before the churn child (60 s in all)
 CHURN_RESUMES = 100          # coordinator ruling: >= 100 release -> resume cycles across loops
 
 
@@ -1391,7 +1404,7 @@ def fallback(env, step, check, info, mode):
 # while idle instead of on the first resume. It must never land inside a preview, a resume or back-to-back user
 # actions; its idle stall is bounded. The probe wraps next_widgets._warm_download (the timeout looks the name up when
 # it is armed) to record when each call ran, how long it held the GTK thread and whether it did the download.
-WARM_STALL_MS = 500.     # PROPOSED, flagged: no brief number covers idle work; about 2x the implementer's 245 ms
+WARM_STALL_MS = 500.     # coordinator ruling on 326a4eb (accepted, logged); about 2x the implementer's 245 ms
 BACK_TO_BACK_S = 1.      # two user actions this close are back to back (the product's own WARM_MS quiet)
 
 
@@ -1490,7 +1503,7 @@ def warm(env, step, check, info, scenario):
     label = {'idle': 'idle', 'browse': 'previews clicked through', 'pages': 'page switches back to back'}[scenario]
     if scenario == 'idle':
         check('W1 warm-up, idle: it runs once per process after the first shed, at least 1 s after the last action, and '
-              'holds the GTK thread at most %.0f ms (@@ ms without run-queue wait) [limit PROPOSED]' % WARM_STALL_MS,
+              'holds the GTK thread at most %.0f ms (@@ ms without run-queue wait) [limit ruled]' % WARM_STALL_MS,
               exercised and len(downloads) == 1 and not touching and since_last[0] >= BACK_TO_BACK_S
               and downloads[0]['stall_ms'] <= WARM_STALL_MS,
               (hooked, moved, shed, armed, len(done_before), downloads, since_last),

@@ -54,6 +54,8 @@ C4-R2 churn: open files other than dmabuf do not grow beyond one per loop file 1
 C5 churn: loops still move when shown, during the churn and after it (@@ of @@ sampled)
 churn: the child finished without a crash or hang
 churn: the child reported all its oracles and exited 0
+# C6 setup [ORIGINAL, superseded by the ruling on 326a4eb]: helpers started with the churn child (peak 12.8-15.7 on a
+# quiet host). They now start up to 40 s before it, within the same 60 s budget and load-16 cap; the limit is unchanged.
 C6 churn: the host load was above 15 for part of the churn (peak @@)
 B1 gate: with the GTK version gate not matching, shedding is off for the process (@@ loops shed)
 B2 gate: with the GTK version gate not matching, GL context threads stay at one per loop and do not grow across resumes (@@ after release, @@ after 6 resumes, for 8 loops)
@@ -69,9 +71,9 @@ fallback-refs: the child finished without a crash or hang
 fallback-refs: the child reported all its oracles and exited 0
 # Coordinator request on 3e937b9. W: the idle warm-up of GDK's download set-up must never touch a preview, a resume
 # or two user actions <= 1 s apart (previews clicked through, page switches), runs once, and holds the GTK thread at
-# most 500 ms when it runs (PROPOSED limit, flagged). T: late weak-ref notifies (old sinks' tokens, the next sink's
+# most 500 ms when it runs (limit ruled on 326a4eb). T: late weak-ref notifies (old sinks' tokens, the next sink's
 # addresses) must never authorise releasing the GL context of a newer sink still alive.
-W1 warm-up, idle: it runs once per process after the first shed, at least 1 s after the last action, and holds the GTK thread at most 500 ms (@@ ms without run-queue wait) [limit PROPOSED]
+W1 warm-up, idle: it runs once per process after the first shed, at least 1 s after the last action, and holds the GTK thread at most 500 ms (@@ ms without run-queue wait) [limit ruled]
 W4 idle: a loop shown again after the warm-up still moves
 warm-idle: the child finished without a crash or hang
 warm-idle: the child reported all its oracles and exited 0
