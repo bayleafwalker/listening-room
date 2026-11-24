@@ -10,8 +10,9 @@ The reader never imports GTK, so any tool can use it. State names are stable:
   active       shedding is on: an off-screen loop gives up its video sink and takes a new one when shown
   gtk          this GTK version is not the one whose sink leaks (loops keep their sink; nothing is wrong)
   no_libgstgl  GStreamer's GL library is missing (loops keep their sink)
-  refused      a sink release found other than the expected references (`refs_observed`) and shedding
-               switched itself off for the rest of this process (safe; loops keep their sink from now on)
+  refused      a sink release found other than the expected state (`refs_observed` GL context references,
+               2 expected; `sink_finalized` false when the sink was still held) and shedding switched
+               itself off for the rest of this process (safe; loops keep their sink from now on)
   no_player    the loops' players cannot be reached, so off-screen loops are only paused
   unreported   no running window has reported (the window is closed, or no scene loop has played yet)
 """
@@ -27,13 +28,13 @@ SUMMARIES = {
     'active': 'Shedding is active: an off-screen scene loop frees its video output and gets a new one when shown.',
     'gtk': 'Shedding is not used with GTK %(gtk)s; off-screen scene loops keep their video output (about 42-49 MB each).',
     'no_libgstgl': 'Shedding is off: GStreamer GL (libgstgl) is missing, so off-screen scene loops keep their video output (about 42-49 MB each).',
-    'refused': ('Shedding switched itself off for this window after a release found %(refs_observed)s references '
-                'where 2 were expected; off-screen scene loops keep their video output from now on (about 42-49 MB each).'),
+    'refused': ('Shedding switched itself off for this window after a release found %(why)s; off-screen scene '
+                'loops keep their video output from now on (about 42-49 MB each).'),
     'no_player': 'Shedding is off: the scene loops\' players cannot be reached, so off-screen loops are only paused.',
     'unreported': 'No open window has reported scene-loop shedding yet (the window is closed, or no scene loop has played).',
 }
 
-_status = {'state': None, 'gtk': None, 'refs_observed': None, 'shed': 0, 'resumed': 0}
+_status = {'state': None, 'gtk': None, 'refs_observed': None, 'sink_finalized': None, 'shed': 0, 'resumed': 0}
 
 
 def _directory():
@@ -73,9 +74,10 @@ def decided(state, gtk=None):
     _write()
 
 
-def refused(refs_observed):
-    """A sink release found `refs_observed` references on the GL context instead of the expected two."""
-    _status.update(state='refused', refs_observed=refs_observed)
+def refused(refs_observed, sink_finalized):
+    """A sink release was refused: the GL context had `refs_observed` references (2 expected) and the
+    video sink was (`sink_finalized`) or was not gone."""
+    _status.update(state='refused', refs_observed=refs_observed, sink_finalized=bool(sink_finalized))
     _write()
 
 
@@ -118,8 +120,11 @@ def status():
     shed, resumed = count('shed'), count('resumed')
     refs = count('refs_observed')
     gtk = record.get('gtk') if isinstance(record.get('gtk'), str) else None
-    summary = SUMMARIES[record['state']] % {'gtk': gtk or 'this version', 'refs_observed': refs if refs is not None else 'other'}
+    finalized = record.get('sink_finalized') if isinstance(record.get('sink_finalized'), bool) else None
+    why = ('the video sink still held by something else'
+           if finalized is False else '%s GL context references where 2 were expected' % (refs if refs is not None else 'other'))
+    summary = SUMMARIES[record['state']] % {'gtk': gtk or 'this version', 'why': why}
     if shed is not None:
         summary += ' %d shed and %d resumed in this window.' % (shed, resumed or 0)
-    return {'state': record['state'], 'summary': summary, 'gtk': gtk, 'refs_observed': refs,
+    return {'state': record['state'], 'summary': summary, 'gtk': gtk, 'refs_observed': refs, 'sink_finalized': finalized,
             'shed': shed, 'resumed': resumed, 'windows': len(found)}

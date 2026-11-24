@@ -18,7 +18,7 @@ source_tree.use_source(Path(__file__).resolve().parents[1] / 'src/listening_hub.
 import roomctl  # noqa: E402
 import scene_shedding  # noqa: E402
 
-KEYS = {'state', 'summary', 'gtk', 'refs_observed', 'shed', 'resumed', 'windows'}
+KEYS = {'state', 'summary', 'gtk', 'refs_observed', 'sink_finalized', 'shed', 'resumed', 'windows'}
 
 
 class SceneSheddingStatus(unittest.TestCase):
@@ -32,7 +32,7 @@ class SceneSheddingStatus(unittest.TestCase):
         patch = mock.patch.dict(scene_shedding._status, {}, clear=False)
         patch.start()
         self.addCleanup(patch.stop)
-        scene_shedding._status.update(state=None, gtk=None, refs_observed=None, shed=0, resumed=0)
+        scene_shedding._status.update(state=None, gtk=None, refs_observed=None, sink_finalized=None, shed=0, resumed=0)
         patch = mock.patch('atexit.register')
         patch.start()
         self.addCleanup(patch.stop)
@@ -67,12 +67,21 @@ class SceneSheddingStatus(unittest.TestCase):
     def test_a_refused_release_reports_the_observed_reference_count_and_keeps_counting(self):
         scene_shedding.decided('active', '4.24.0')
         scene_shedding.shed()
-        scene_shedding.refused(3)
+        scene_shedding.refused(3, True)
         scene_shedding.resumed()
         status = scene_shedding.status()
         self.assertEqual((status['state'], status['refs_observed'], status['shed'], status['resumed']), ('refused', 3, 1, 1))
-        self.assertIn('3 references', status['summary'])
+        self.assertIn('3 GL context references where 2 were expected', status['summary'])
         self.assertIn('switched itself off', status['summary'])
+        self.assertIs(status['sink_finalized'], True)
+
+    def test_a_refusal_because_the_sink_was_still_held_says_so(self):
+        scene_shedding.decided('active', '4.24.0')
+        scene_shedding.refused(2, False)
+        status = scene_shedding.status()
+        self.assertIs(status['sink_finalized'], False)
+        self.assertIn('still held by something else', status['summary'])
+        self.assertNotIn('where 2 were expected', status['summary'])
 
     def test_a_window_that_is_gone_is_not_reported(self):
         gone = subprocess.Popen([sys.executable, '-c', 'pass'])

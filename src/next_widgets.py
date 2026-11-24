@@ -737,7 +737,7 @@ def _load_shed(ctypes, gobject, gst, play, pointer, pointers):
                     gst.gst_object_unref(context)                          # GTK 4.24.0's leaked reference
                 else:
                     _PLAY['shed'] = None                                   # not the known case: stop shedding
-                    scene_shedding.refused(refs(context))
+                    scene_shedding.refused(refs(context), token in finalized)
                 gst.gst_object_unref(context)
             finalized.discard(token)
         gst.gst_object_unref(pipeline)
