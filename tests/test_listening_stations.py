@@ -180,6 +180,34 @@ class StationTests(unittest.TestCase):
                 controller.worker.submit(lambda: None).result(timeout=3)
         self.assertGreaterEqual(len(calls), 2)
 
+    def test_manual_skip_is_not_a_slot_boundary(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        with mock.patch.object(controller.presenter, 'prepare_slot', return_value=(None, ('no captured metadata', ()))):
+            self.start_presenter_station(controller)
+            controller.queue_step(1)
+            controller.worker.submit(lambda: None).result(timeout=3)
+            self.assertEqual(controller.presenter_ends, 0)
+            backend.media = {'eof_reached': True}
+            controller.refresh()
+            controller.worker.submit(lambda: None).result(timeout=3)
+        self.assertEqual(controller.presenter_ends, 1)
+
+    def test_slots_keep_counting_beyond_the_recent_track_cap(self):
+        controller = room_session.Controller(FakeBackend(), self.temp.name)
+        self.addCleanup(controller.close)
+        station = self.presenter_station()
+        station['presenter']['budget']['every_tracks'] = 5
+        controller.active = {'id': 'room', 'music': {'station': station}}
+        controller.program = mock.Mock(station=station)
+        controller.queue_step = mock.Mock()
+        for _ in range(100):
+            controller._presenter_then_next(controller.generation)
+        late = [x for x in controller.presenter.segments if x.get('reason') == 'late']
+        self.assertEqual(len(late), 20)       # ends 1, 6, 11 ... 96, well past the station history cap
+        self.assertEqual(controller.presenter_ends, 100)
+
     def test_snapshot_ready_tracks_prepared_segment(self):
         controller = room_session.Controller(FakeBackend(), self.temp.name)
         self.addCleanup(controller.close)

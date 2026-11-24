@@ -623,6 +623,7 @@ class Controller:
         # One ticket per upcoming slot: {'state': pending|ready|dropped, 'segment': ...}.
         self.presenter_slot = None
         self.presenter_slot_pending = False
+        self.presenter_ends = 0  # verified track ends since the station was tuned; skips never count
         self.presenter_unit = None
         self.presenter_pause = threading.Condition()
         self.presenter_paused = False
@@ -1505,6 +1506,8 @@ class Controller:
                 elif not station or used_fallback or not continuation:
                     self.program = None
                 if station:
+                    if not continuation:
+                        self.presenter_ends = 0
                     if not continuation or not self.station_history:
                         self.station_history.insert(0, {'id': hashlib.sha256((station['id'] + str(self.clock()) + str(generation)).encode()).hexdigest()[:16],
                                                         'station': _copy(station), 'time': self.clock(), 'source_index': recipe['music'].get('station_source_index', 0), 'tracks': []})
@@ -2383,14 +2386,14 @@ class Controller:
         return ticket
 
     @staticmethod
-    def _presenter_due(station, tracks, setting):
-        return bool(setting['enabled'] and tracks and (tracks == 1 or (tracks - 1) % setting['budget']['every_tracks'] == 0))
+    def _presenter_due(ends, setting):
+        """The next verified end is a slot: the first one, then every `every_tracks` ends."""
+        return bool(setting['enabled'] and ends % setting['budget']['every_tracks'] == 0)
 
     def _schedule_presenter(self, station, item, generation, cancel):
         """Prepare for the slot at the end of this track, if that end is a slot."""
         setting = presenter.preferences(station.get('presenter'))
-        tracks = len((self.station_history[0].get('tracks') if self.station_history else []) or [])
-        if not item or not self._presenter_due(station, tracks, setting):
+        if not item or not self._presenter_due(self.presenter_ends, setting):
             return
         with self.lock:
             if self.presenter_slot is not None:
@@ -2401,10 +2404,11 @@ class Controller:
     def _presenter_then_next(self, generation):
         """Use only prepared slots; late work is dropped and music continues at once."""
         station = self.program.station if self.program else ((self.active or {}).get('music', {}).get('station') or {})
-        tracks = len((self.station_history[0].get('tracks') if self.station_history else []) or [])
         setting = presenter.preferences(station.get('presenter'))
         ticket, self.presenter_slot = self.presenter_slot, None
-        if not self._presenter_due(station, tracks, setting):
+        due = self._presenter_due(self.presenter_ends, setting)
+        self.presenter_ends += 1
+        if not due:
             if ticket and ticket['segment']:
                 self.presenter.discard(ticket['segment'], remove=True)
             self.queue_step(1, automatic=True)
