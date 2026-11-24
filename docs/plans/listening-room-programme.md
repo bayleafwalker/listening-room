@@ -77,6 +77,8 @@ station streams (below) add a composed mix that leaves the desktop.
 
 ### P1: a presenter in the desktop app
 
+Status: landed on main 2026-11-24, unreleased (outcome O12-PRESENTER, probe o12pr).
+
 - Existing stations and rooms stay silent between tracks. A station with the presenter
   on follows a budget: segments every few tracks at most, each with a maximum length.
   The budget is visible and adjustable. "Less talking" lowers it, and Music only turns
@@ -160,5 +162,9 @@ station streams (below) add a composed mix that leaves the desktop.
 
 ## Open questions
 
-- **Text-to-speech engine for P1.** It must run locally and not block preparation.
-  The model choice belongs to the implementer, within that constraint.
+- **Text-to-speech engine for P1.** Resolved 2026-11-24: the app speaks through an
+  OpenAI-compatible speech endpoint (`/v1/audio/speech`, WAV), set in Preferences >
+  Connections as Presenter voice, just as Presenter writing points at a chat endpoint.
+  Preparation runs off the session lock, so a slow engine drops a slot rather than
+  blocking. Which engine serves the endpoint is set up on the workstation's inference
+  stack, outside this repository.
