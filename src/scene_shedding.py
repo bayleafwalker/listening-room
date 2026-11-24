@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 
 FILE = 'scene-loops-%d.json'
 PREFIX, SUFFIX = 'scene-loops-', '.json'
@@ -42,7 +43,41 @@ def _directory():
     return Path(runtime) / 'listening-hub' if runtime else None
 
 
+_lock = threading.Condition()
+_asked = _done = 0           # writes asked for and written (the window never waits for the disk)
+_worker = None
+
+
 def _write():
+    """Ask for the status to be saved; a worker thread does it, so the GTK thread never touches a file."""
+    global _asked, _worker
+    with _lock:
+        _asked += 1
+        if _worker is None:
+            _worker = threading.Thread(target=_run, name='scene-shedding-status', daemon=True)
+            _worker.start()
+        _lock.notify_all()
+
+
+def flush(timeout=5.):
+    """Wait until every status change asked for so far is saved (tests; the window never calls it)."""
+    with _lock:
+        _lock.wait_for(lambda: _done >= _asked, timeout)
+
+
+def _run():
+    global _done
+    while True:
+        with _lock:
+            _lock.wait_for(lambda: _done < _asked)
+            target, snapshot = _asked, dict(_status, pid=os.getpid())
+        _save(snapshot)
+        with _lock:
+            _done = target
+            _lock.notify_all()
+
+
+def _save(snapshot):
     directory = _directory()
     if directory is None:
         return
@@ -50,13 +85,14 @@ def _write():
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor, name = tempfile.mkstemp(dir=directory, prefix='.scene-loops-')
         with os.fdopen(descriptor, 'w') as handle:
-            json.dump(dict(_status, pid=os.getpid()), handle)
+            json.dump(snapshot, handle)
         os.replace(name, directory / (FILE % os.getpid()))
     except OSError:
         pass                      # a status file is never worth disturbing the window
 
 
 def _remove():
+    flush(1.)
     directory = _directory()
     if directory is not None:
         try:
