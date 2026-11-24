@@ -85,7 +85,7 @@ o11m = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(o11m)       # definitions only (_hold_video_sink, _quiet); its main is guarded
 uptime, no_core_dumps = o10p.uptime, o10p.no_core_dumps
 
-MODES = ('active', 'gate', 'gl', 'refs')
+MODES = ('active', 'gate', 'gl', 'refs', 'junk', 'stale')
 LOOPS = 3             # author: loops used for the count checkpoints
 ROUNDS = 4            # author: show-all / leave-all rounds
 BOUNCES = 10          # author: quick show/leave pairs (each far under the product's 1 s release wait)
@@ -154,7 +154,10 @@ def status_of(snapshot):
         for path, value in view:
             if path[-1] in ACTIVE_KEYS and isinstance(value, str):
                 text = value.strip().lower()
-                if re.match(r'(not active|inactive|off|disabled|no\b|not\b|unavailable|stopped|switched off)', text):
+                # [ORIGINAL, superseded by the ruled interface (phase 2): only the first alternatives, no state names]
+                # The ruled `state` values: active | gtk | no_libgstgl | refused | no_player | unreported.
+                if re.match(r'(not active|inactive|off|disabled|no\b|not\b|unavailable|stopped|switched off|gtk|no_libgstgl|'
+                            r'refused|no_player|unreported)', text):
                     active = False
                 elif re.match(r'(active|on\b|enabled|engaged|working|yes)', text):
                     active = True
@@ -352,6 +355,12 @@ def run_child(mode, args):
         env.remote = Remote(env)
         if mode == 'active':
             result = active(env, step, check, info)
+        elif mode == 'victim':
+            result = victim(env, step)
+        elif mode == 'junk':
+            result = junk(env, step, check, info)
+        elif mode == 'stale':
+            result = stale(env, step, check, info, args)
         else:
             result = fallback(env, step, check, info, mode)
         print('RESULT ' + json.dumps(result, default=str), flush=True)
@@ -647,6 +656,256 @@ def fallback(env, step, check, info, mode):
             'truth': (events, distinct), 'uptime': uptime()}
 
 
+
+# ---------------------------------------------------------------------------- adversarial status files (phase 2)
+# Coordinator request, phase 2: the ruled interface is a per-window file $XDG_RUNTIME_DIR/listening-hub/
+# scene-loops-<pid>.json read by inspect (files whose pid is dead ignored, the newest window reported). These children
+# plant and kill real windows and files. The planted files carry only pid, state, shed and resumed (distinctive 7 / 5).
+
+def status_dir():
+    path = Path(os.environ['XDG_RUNTIME_DIR']) / 'listening-hub'
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return path
+
+
+def plant(name, content, pid=None, newer=True):
+    path = status_dir() / name
+    data = content if isinstance(content, (bytes, str)) else json.dumps(content)
+    path.write_bytes(data if isinstance(data, bytes) else data.encode())
+    if newer:
+        os.utime(path, (time.time() + 5, time.time() + 5))
+    return path
+
+
+def record(pid, state='active', shed=7, resumed=5):
+    return {'pid': pid, 'state': state, 'gtk': None, 'refs_observed': None, 'sink_finalized': None,
+            'shed': shed, 'resumed': resumed}
+
+
+def dead_pid():
+    process = subprocess.Popen(['true'])
+    process.wait()
+    return process.pid
+
+
+def both(env):
+    """The report as the window process reads it and as a separate roomctl process reads it."""
+    return {'in': look(), 'out': env.remote.look()}
+
+
+def claims_active(reports):
+    return any(r['active'] is True for r in reports.values())
+
+
+def counts_of(reports, key):
+    return {name: sorted(set(r[key].values())) for name, r in reports.items()}
+
+
+def victim(env, step):
+    """A window in its own process: two loops shown and left until shed, then idle until killed."""
+    import next_widgets as nw
+    step('victim window')
+    window = env.launch(page='rooms')
+    window.show_rooms()
+    env.pump(2.)
+    rooms = o10p.Rooms(env, window)
+    truth = Truth(nw)
+    for card in rooms.loop_cards()[:2]:
+        rooms.click(card)
+        rooms.moves(6.)
+        for _ in range(20):
+            truth.arm()
+            if getattr(nw, '_PLAY', {}).get('shed'):
+                break
+            env.pump(.25)
+        rooms.escape()
+        env.pump(.5)
+    wait(env, lambda: sum(bool(l.shed) for l in loops_of(nw)) >= 2, SHED_WAIT_S)
+    env.pump(1.)
+    print('READY %d %d %d' % (truth.shed, truth.renew, os.getpid()), flush=True)
+    while True:
+        env.pump(.5)
+
+
+class Victim:
+    def __init__(self, args, output, name):
+        import select
+        self.select = select
+        log = open(Path(output) / ('victim-%s.log' % name), 'w')
+        self.process = subprocess.Popen(
+            ['dbus-run-session', '--', sys.executable, str(HERE), '--child', 'victim', '--source', args.source,
+             '--output', str(Path(output) / ('victim-' + name))], stdout=subprocess.PIPE, stderr=log, text=True,
+            env=dict(os.environ, PYTHONFAULTHANDLER='1'), start_new_session=True, preexec_fn=no_core_dumps)
+        self.pid = self.truth = None
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline and self.pid is None:
+            ready, _, _ = select.select([self.process.stdout], [], [], 1.)
+            if ready:
+                line = self.process.stdout.readline()
+                if not line:
+                    break
+                if line.startswith('READY '):
+                    _, shed_, renew_, pid = line.split()
+                    self.truth, self.pid = (int(shed_), int(renew_)), int(pid)
+
+    def kill(self):
+        if self.pid:
+            try:
+                os.kill(self.pid, 9)
+            except OSError:
+                pass
+        try:
+            self.process.wait(20)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def cleanup(self):
+        self.kill()
+        try:
+            os.killpg(self.process.pid, 9)
+        except OSError:
+            pass
+
+
+def stale(env, step, check, info, args):
+    import next_widgets as nw
+    pump = env.pump
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    directory = status_dir()
+    victims = []
+    try:
+        step('a window in another process')
+        v1 = Victim(args, output, 'one')
+        victims.append(v1)
+        r1 = both(env)
+        file1 = directory / ('scene-loops-%s.json' % v1.pid)
+        check('K1 a window running in another process: inspect (in the window process and as a separate roomctl process) '
+              'reports it active with its real counts', v1.pid is not None and not any(
+                  not r['readable'] or r['active'] is not True for r in r1.values())
+              and all(v1.truth[0] in c and v1.truth[1] in counts_of(r1, 'resumed')[n]
+                      for n, c in counts_of(r1, 'shed').items()),
+              (v1.truth, v1.pid, {n: (r['readable'], r['active'], r['view']) for n, r in r1.items()}))
+        step('SIGKILL it')
+        v1.kill()
+        left = file1.exists()
+        check('K0 harness precondition: a window killed with SIGKILL leaves its status file behind', left, (v1.pid, left))
+        r2 = both(env)
+        check('K2 after the window was killed, inspect does not claim shedding is active and reports none of the dead '
+              'window\'s counts', all(r['readable'] for r in r2.values()) and not claims_active(r2)
+              and all(v1.truth[0] not in c for c in counts_of(r2, 'shed').values() if v1.truth[0] not in (0,)),
+              {n: (r['readable'], r['active'], r['view']) for n, r in r2.items()})
+        step('a new window starts')
+        window = env.launch(page='rooms')
+        window.show_rooms()
+        pump(2.)
+        rooms = o10p.Rooms(env, window)
+        truth = Truth(nw)
+        cards = rooms.loop_cards()
+        rooms.click(cards[0])
+        rooms.moves(6.)
+        for _ in range(20):
+            truth.arm()
+            if getattr(nw, '_PLAY', {}).get('shed'):
+                break
+            pump(.25)
+        rooms.escape()
+        wait(env, lambda: sum(bool(l.shed) for l in loops_of(nw)) >= 1, SHED_WAIT_S)
+        rooms.click(cards[0])
+        pump(1.5)
+        mine = truth.now()[0]       # one shed, one resume
+        rooms.escape()
+        pump(.2)
+        r3 = both(env)
+        check('K3 a new window after the kill: inspect reports the new window (active, its own real counts), not the dead '
+              'one\'s', mine == (1, 1) and all(r['readable'] and r['active'] is True for r in r3.values()) and all(
+                  c == [mine[0]] for c in counts_of(r3, 'shed').values()) and all(
+                  c == [mine[1]] for c in counts_of(r3, 'resumed').values()),
+              (mine, v1.truth, {n: (r['active'], r['view']) for n, r in r3.items()}))
+        step('a second window at once')
+        v2 = Victim(args, output, 'two')
+        victims.append(v2)
+        r4 = both(env)
+        check('K4 two windows at once: inspect reports one window, the newest, with its own counts (not a sum or a mix)',
+              v2.pid is not None and all(r['readable'] and r['active'] is True for r in r4.values()) and all(
+                  c == [v2.truth[0]] for c in counts_of(r4, 'shed').values()) and all(
+                  c == [v2.truth[1]] for c in counts_of(r4, 'resumed').values()),
+              (v2.truth, mine, {n: (r['active'], r['view']) for n, r in r4.items()}))
+        step('stale and garbage files beside live windows')
+        gone = dead_pid()
+        plant('scene-loops-%d.json' % gone, record(gone, shed=9, resumed=9))
+        plant('scene-loops-garbage.json', '{not json')
+        plant('scene-loops-1.json', b'\xff\xfe\x00binary')
+        r5 = both(env)
+        check('K5 files from a dead pid (newer than the live windows\') and corrupt files beside live windows do not hide or '
+              'replace the newest live window\'s report', all(r['readable'] and r['active'] is True for r in r5.values())
+              and all(c == [v2.truth[0]] for c in counts_of(r5, 'shed').values()) and all(
+                  c == [v2.truth[1]] for c in counts_of(r5, 'resumed').values()),
+              {n: (r['active'], r['view']) for n, r in r5.items()})
+        return {'v1': v1.truth, 'mine': mine, 'v2': v2.truth, 'uptime': uptime()}
+    finally:
+        for v in victims:
+            v.cleanup()
+
+
+def junk(env, step, check, info):
+    """No window: planted files only. Nothing may read as active, and inspect must stay readable."""
+    directory = status_dir()
+    for old in directory.glob('scene-loops-*'):
+        old.unlink()
+    live = subprocess.Popen(['sleep', '300'])
+    try:
+        gone = dead_pid()
+        plant('scene-loops-%d.json' % gone, record(gone))
+        r = both(env)
+        check('J1 a status file whose pid is dead, alone: inspect is readable, does not claim shedding is active and reports '
+              'none of its counts', all(x['readable'] for x in r.values()) and not claims_active(r) and all(
+                  not ({7, 5} & set(c)) for c in counts_of(r, 'shed').values()) and all(
+                  not ({7, 5} & set(c)) for c in counts_of(r, 'resumed').values()),
+              {n: (x['active'], x['view']) for n, x in r.items()})
+        for old in directory.glob('scene-loops-*'):
+            old.unlink()
+        plant('scene-loops-%d.json' % live.pid, record(live.pid))
+        r = both(env)
+        check('J2 a stale file whose pid was reused by an unrelated live process (not a Listening Room window): inspect is '
+              'readable and makes no false active claim and reports none of its counts',
+              all(x['readable'] for x in r.values()) and not claims_active(r) and all(
+                  not ({7, 5} & set(c)) for c in counts_of(r, 'shed').values()) and all(
+                  not ({7, 5} & set(c)) for c in counts_of(r, 'resumed').values()),
+              {n: (x['active'], x['view']) for n, x in r.items()})
+        for old in directory.glob('scene-loops-*'):
+            old.unlink()
+        own = os.getpid()
+        junk_files = {
+            'scene-loops-%d.json' % own: '{"pid": %d, "state": "active", "shed": ' % own,         # truncated JSON
+            'scene-loops-empty.json': '',
+            'scene-loops-binary.json': b'\x00\xff\xfe garbage \x80',
+            'scene-loops-list.json': '[1, 2, 3]',
+            'scene-loops-null.json': 'null',
+            'scene-loops-string-pid.json': json.dumps({'pid': 'abc', 'state': 'active', 'shed': 7, 'resumed': 5}),
+            'scene-loops-negative-pid.json': json.dumps(record(-5)),
+            'scene-loops-huge-pid.json': json.dumps(record(10 ** 30)),
+            'scene-loops-zero-pid.json': json.dumps(record(0)),
+            'scene-loops-bool-pid.json': json.dumps(record(True)),
+            'scene-loops-state-unknown.json': json.dumps(record(live.pid, state='bogus')),
+            'scene-loops-state-number.json': json.dumps(record(live.pid, state=3)),
+            'scene-loops-counts-wrong.json': json.dumps(dict(record(gone, state='unreported'), shed='many', resumed=[])),
+            'scene-loops-big.json': ('{"pid": %d, "pad": "%s"}' % (gone, 'x' * 3_000_000)),
+        }
+        for name, content in junk_files.items():
+            plant(name, content)
+        (directory / 'scene-loops-dir.json').mkdir(exist_ok=True)
+        r = both(env)
+        check('J3 corrupt, truncated, empty, binary, wrong-typed, unknown-state, oversized and odd-named status files '
+              '(and a directory named like one): inspect stays readable (exit 0, one JSON line) and makes no active claim',
+              all(x['readable'] for x in r.values()) and not claims_active(r),
+              {n: (x['readable'], x['code'], x['err'], x['active'], x['view']) for n, x in r.items()})
+        return {'uptime': uptime()}
+    finally:
+        live.kill()
+        live.wait()
+
+
 # ---------------------------------------------------------------------------- parent
 
 TREE_SCRIPT = r'''
@@ -777,7 +1036,7 @@ def run_parent(args):
 
     print('source: %s  renderer: %s' % (summary['source'], os.environ.get('GSK_RENDERER')), flush=True)
     print('uptime at start: %s' % summary['uptime_start'], flush=True)
-    parts = set(filter(None, args.only.split(','))) or {'active', 'gate', 'gl', 'refs', 'tree', 'notes'}
+    parts = set(filter(None, args.only.split(','))) or {'active', 'gate', 'gl', 'refs', 'junk', 'stale', 'tree', 'notes'}
     results = {mode: child(mode) for mode in MODES if mode in parts}
     if {'gate', 'gl', 'refs'} <= set(results):
         reasons = [str(results[m].get('reason', '')).strip() for m in ('gate', 'gl', 'refs')]
