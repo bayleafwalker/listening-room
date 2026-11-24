@@ -5,6 +5,8 @@
 # Author-set limits (flagged for a coordinator ruling): 20 s shed wait, 4 rounds x 3 loops, 10 bounces, reference count 1..64.
 # Open interface choices the oracles read by meaning: field names, "how many loops have shed" as events or distinct loops.
 # X1-X5 (coordinator ruling, phase 1): roomctl run as a separate process through the shipped script and a real socket.
+# Phase 2 (60d5b63 merged): K0-K5 (SIGKILLed window, new window, two windows, stale/garbage files beside live ones) and J1-J3 (planted files, no window) added at the coordinator's request.
+# Revisions: the parser reads the ruled `state` names (gtk, no_libgstgl, refused, no_player, unreported are "not active"); checkpoint reads wait up to 3 s (author-set) for the report to catch up with the real counts, the status being saved on a worker thread.
 N1 with no window ever opened, inspect is readable (exit 0, one JSON line) and has a shedding report that does not claim shedding is active
 N1b inspect did not start the shedding machinery: the GStreamer calls it would load are untouched
 X3 as a separate process (shipped roomctl.py over the real socket) with no window open, inspect is readable and has a shedding report that does not claim shedding is active
@@ -42,6 +44,19 @@ R6 refs: the report is plain language
 X4 refs: as a separate process (shipped roomctl.py over the real socket), inspect reports shedding not active, the reason names references and shows the observed count (a whole number from 1 to 64)
 refs: the child finished without a crash or hang
 refs: the child reported all its oracles and exited 0
+J1 a status file whose pid is dead, alone: inspect is readable, does not claim shedding is active and reports none of its counts
+J2 a stale file whose pid was reused by an unrelated live process (not a Listening Room window): inspect is readable and makes no false active claim and reports none of its counts
+J3 corrupt, truncated, empty, binary, wrong-typed, unknown-state, oversized, impossible-pid and odd-named status files (and a directory named like one), each alone: inspect stays readable (exit 0, one JSON line) and makes no active claim
+junk: the child finished without a crash or hang
+junk: the child reported all its oracles and exited 0
+K1 a window running in another process: inspect (in the window process and as a separate roomctl process) reports it active with its real counts
+K0 harness precondition: a window killed with SIGKILL leaves its status file behind
+K2 after the window was killed, inspect does not claim shedding is active and reports none of the dead window's counts
+K3 a new window after the kill: inspect reports the new window (active, its own real counts), not the dead one's
+K4 two windows at once: inspect reports one window, the newest, with its own counts (not a sum or a mix)
+K5 files from a dead pid (newer than the live windows') and corrupt files beside live windows do not hide or replace the newest live window's report
+stale: the child finished without a crash or hang
+stale: the child reported all its oracles and exited 0
 P1 the three "not active" reasons are all given and differ from each other (another GTK version, no libgstgl, refused release)
 T1 source_tree: the --source tree is also on PYTHONPATH and LISTENING_HUB_SOURCE names another tree: the --source tree wins (and LISTENING_HUB_SOURCE follows it)
 T2 source_tree: the --source tree is also on PYTHONPATH and LISTENING_HUB_SOURCE is unset: the --source tree is used, not the default tree
