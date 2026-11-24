@@ -1,16 +1,26 @@
 # Changelog
 
-## Unreleased
-
-- Added an optional station presenter with a bounded budget, captured-metadata receipts,
-  quiet failure status and separate Mix controls. Prepared voice is now played from an
-  ephemeral speech layer for the WAV's actual bounded duration; late and unavailable
-  slots fall straight through to music. Local, expiring clips use the same scheduler.
-
 All notable changes are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+### Added
+- An optional presenter for saved stations. Turn on Presenter in a station's detail and it
+  speaks a short link at most once every few tracks, within a budget you can see and
+  change. "Less talking" spaces it out and "Music only" turns it off, without changing
+  the station. Speech has its own Mix row with a level and Mute; muting never moves the
+  music on or holds it back.
+- Presenter links use OpenAI-compatible writing and speech endpoints, set in
+  Preferences > Connections as Presenter writing and Presenter voice. Facts come only from the track's
+  captured metadata, a line is not repeated within the station's recent history, and
+  podcasts, live channels and speech stations keep it quiet. A link that is not ready in
+  time is left out and the music carries on; an unavailable endpoint means music only,
+  with a quiet status.
+- Stations can carry short prerecorded clips (`preferences.presenter_clips`) with a
+  source, placement and expiry; they play in the same slots.
+- `listening-roomctl inspect` reports the presenter: whether it is on, its budget,
+  readiness, status, and recent outcomes with their sources.
 
 ## [2.6.0] - 2026-11-23
 

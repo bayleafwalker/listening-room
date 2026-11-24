@@ -162,9 +162,34 @@ Everything works without an account. Each provider adds a little:
 | Twitch | Live channels as music or ambience (Music and ASMR) and a review of channels you follow. Saved channel names work without an account; seeing who is live needs a sign-in (Preferences > Connections > Twitch) |
 | MusicBrainz / Chromaprint | Recording metadata and optional review of tracks |
 | Voice/instrumental models (MTG) | Optional estimates of voice vs instrumental; weights are CC BY-NC-SA 4.0 |
+| Presenter (OpenAI-compatible writing and speech endpoints) | Short spoken links between tracks on stations where you turn Presenter on |
 
 Set them up under Menu > Preferences > Connections (all start as "Not set up"). See
 [`docs/runbooks/`](docs/runbooks) for each one.
+
+### Presenter
+
+A saved station can have a presenter: turn on **Presenter** in the station's detail. It
+speaks at most once every few tracks, for no longer than the budget shown there. **Less
+talking** spaces it out further and **Music only** turns it off; neither changes the
+station. Speech has its own row in the Mix, with a level and Mute, and muting it never
+moves the music on or holds it back.
+
+The first link comes after the first track that ends on its own; skipping a track never
+makes room for one. A link that is not ready in time is left out, and the music carries
+on. Links only state facts from the track's captured metadata, and a track without any
+gets none. While a podcast, live channel or speech station plays, the presenter stays
+quiet. A station can also carry short prerecorded clips
+(`preferences.presenter_clips`: a local `audio` file, its `source`,
+`allowed_placement: "between_tracks"` and an optional `expires_at`), which use the same
+slots.
+
+Set two connections in Preferences > Connections: **Presenter writing**, an
+OpenAI-compatible `/v1/chat/completions` endpoint, and **Presenter voice**, an
+OpenAI-compatible `/v1/audio/speech` endpoint that returns WAV. In `connections.json`
+they are `presenter_llm` and `presenter_voice`, each with an `endpoint` and an optional
+`token_file`. If either is unavailable, the
+station plays music only and says so quietly.
 
 ## Keyboard
 
@@ -189,6 +214,10 @@ Set them up under Menu > Preferences > Connections (all start as "Not set up"). 
   (mode 600) and are not shown in the window.
 - **No telemetry.** The app talks only to services you use (stations, your
   servers, the providers you connect) and never to its authors.
+- **The presenter sends only captured metadata.** With Presenter on, the playing
+  track's tags (title, artist, album) and any identifiers or features recorded for it go
+  to your writing endpoint, and the written line goes to your speech endpoint. Prepared speech is kept in your runtime directory and
+  deleted when its slot ends; stations never store it.
 - Your listening state lives in `~/.local/state/listening-hub/`. Delete it to
   start over.
 
@@ -234,19 +263,3 @@ The code is GPL-3.0-or-later ([LICENSE](LICENSE)). The room art and scene
 inputs (`src/artwork/`, `src/scene_tuning/`) are CC0-1.0, AI-generated. The
 optional MTG model weights fetched at build time are CC BY-NC-SA 4.0 and
 separately attributed in [`src/models/README.md`](src/models/README.md).
-# Presenter (optional)
-
-Saved stations can enable **Presenter** in their detail view. Its visible budget limits
-brief links between tracks; “Less talking” reduces that budget and “Music only” switches
-it off without changing stations. Configure loopback OpenAI-compatible endpoints in
-Preferences → Connections: `presenter_llm` serves `/v1/chat/completions` and
-`presenter_voice` serves `/v1/audio/speech`. Entries in `connections.json` accept an
-`endpoint` and optional private `token_file`. If either endpoint is unavailable, the
-station continues with music only. Voice is prepared off the interface before its
-budgeted slot, played from a short-lived runtime file on its own Mix layer, and removed
-when that slot ends. A slot lasts the WAV's actual duration (never beyond the chosen
-maximum), even when Presenter is muted, so muting speech never changes the music
-programme clock. The first slot is the first natural track end, then the configured
-number of naturally ended tracks apart; skips do not create slots. Eligible unexpired
-`preferences.presenter_clips` use the same slots before generated links (local `audio`, provenance
-`source`, `allowed_placement: "between_tracks"`, and optional Unix `expires_at`).
