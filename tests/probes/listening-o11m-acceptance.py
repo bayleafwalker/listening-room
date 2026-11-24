@@ -1558,11 +1558,13 @@ def token(env, step, check, info):
     moved.append(rooms.moves(6.)[0])
     # The target's own shared MediaFile, not the on-screen scene: runs 1 and 3 on 3e937b9 held nothing (the scene
     # found mid-transition was not the target's), so T1 was not exercised. Setup only; the judgement is unchanged.
-    loop = getattr(next_widgets, '_LOOPS', {}).get(rooms.loop_of(target))
+    # The loop the preview wants (the scene attaches the hub's asset path, which need not be the preset's url key).
+    wanted_loop = lambda: next((l for l in getattr(next_widgets, '_LOOPS', {}).values() if l.wanted), None)
     deadline = time.monotonic() + 5.
-    while loop is not None and not loop.wanted and time.monotonic() < deadline:
+    while wanted_loop() is None and time.monotonic() < deadline:
         pump(.1)
-    target_wanted = bool(loop is not None and loop.wanted)
+    loop = wanted_loop()
+    target_wanted = loop is not None
     held = _hold_video_sink(next_widgets, loop.media) if loop is not None else None
     gobject = ctypes.CDLL('libgobject-2.0.so.0')
     gobject.g_type_name_from_instance.argtypes, gobject.g_type_name_from_instance.restype = [ctypes.c_void_p], ctypes.c_char_p
