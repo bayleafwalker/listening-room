@@ -28,6 +28,39 @@ MIX_SHORTCUTS = (('m', 'M', 'Pause or play music, in the Mix'),
 LEVEL_STEP = 5
 
 
+class PresenterRow(Gtk.Box):
+    """Speech has controls of its own; it never borrows music transport."""
+    def __init__(self, send):
+        # Title and status, then the controls wrapping beneath, like the layer rows: the Mix fits a narrow window.
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12)
+        self.send, self.updating = send, False
+        top = Gtk.Box(spacing=14)
+        top.append(label('Presenter', ['layer-title']))
+        self.status = label('', ['dim-label'], ellipsize=True); self.status.set_hexpand(True); top.append(self.status)
+        self.append(top)
+        controls = Adw.WrapBox(child_spacing=16, line_spacing=8)
+        self.level = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.level.set_size_request(160, -1)
+        name_it(self.level, 'Presenter level', None)
+        self.level.connect('value-changed', lambda w: None if self.updating else send('presenter.configure', {'level': round(w.get_value(), 1)}))
+        controls.append(self.level)
+        self.mute = Gtk.ToggleButton(label='Mute')
+        self.mute.connect('toggled', lambda b: None if self.updating else send('presenter.configure', {'muted': b.get_active()}))
+        controls.append(self.mute)
+        self.less = Gtk.Button(label='Less talking')
+        self.less.connect('clicked', lambda *_: send('presenter.feedback', {'action': 'less'})); controls.append(self.less)
+        self.music_only = Gtk.Button(label='Music only')
+        self.music_only.connect('clicked', lambda *_: send('presenter.feedback', {'action': 'music_only'})); controls.append(self.music_only)
+        self.append(controls)
+
+    def update(self, value):
+        self.updating = True
+        self.status.set_text(value.get('status') or ('On' if value.get('enabled') else 'Off'))
+        self.mute.set_active(bool(value.get('muted')))
+        self.level.set_value(float(value.get('level', 50)))
+        self.updating = False
+
+
 class LayerRow(Gtk.Box):
     """One layer: tile, source and state, then its contextual controls.
 
@@ -349,6 +382,8 @@ class MixSheet(Gtk.Box):
         self.rows = {name: LayerRow(name, send, choose_other, options) for name in next_model.LAYER_ORDER}
         for row in self.rows.values():
             self.append(row)
+        self.presenter = PresenterRow(send)
+        self.append(self.presenter)
         # While a room connects the Mix shows only progress and Cancel (N9): nothing it shows could act yet.
         self.connecting = Gtk.Box(spacing=14, margin_top=18, margin_bottom=18, visible=False)
         self.connecting.add_css_class('layer-row')
@@ -372,7 +407,7 @@ class MixSheet(Gtk.Box):
         self.on_cancel = cancel if connecting else None
         self.connecting.set_visible(connecting)
         self.connecting_spinner.set_spinning(connecting)
-        for widget in list(self.rows.values()) + [self.save_button]:
+        for widget in list(self.rows.values()) + [self.presenter, self.save_button]:
             widget.set_visible(not connecting)
         if connecting:
             self.room.set_text('')
@@ -393,6 +428,7 @@ class MixSheet(Gtk.Box):
         self.rows['picture'].current_scene = ((snapshot.get('active') or {}).get('picture') or {}).get('preset_id')
         for row in next_model.mix_rows(snapshot):
             self.rows[row['layer']].update(row)
+        self.presenter.update(snapshot.get('presenter') or {})
 
     # ---- keys -----------------------------------------------------------------------------
 

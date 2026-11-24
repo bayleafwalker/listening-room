@@ -395,6 +395,30 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
         self.end_row = end_row
         right.append(moods)
 
+        # Title and switch, then the budget and feedback wrapping beneath: the card fits a narrow window.
+        presenter_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        presenter_box.add_css_class('mood-card')
+        presenter_head = Gtk.Box(spacing=12)
+        presenter_title = label('Presenter', ['listen-title'])
+        presenter_title.set_hexpand(True)
+        presenter_head.append(presenter_title)
+        self.presenter_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
+        name_it(self.presenter_switch, 'Presenter', 'Presenter · add brief links between tracks')
+        self.presenter_switch.connect('notify::active', lambda *_: self.presenter_changed())
+        presenter_head.append(self.presenter_switch)
+        presenter_box.append(presenter_head)
+        self.presenter_budget = label('', ['section-note'], wrap=True)
+        presenter_box.append(self.presenter_budget)
+        presenter_actions = Adw.WrapBox(child_spacing=12, line_spacing=8)
+        self.presenter_less = Gtk.Button(label='Less talking')
+        self.presenter_less.connect('clicked', lambda *_: self.presenter_feedback('less'))
+        presenter_actions.append(self.presenter_less)
+        self.presenter_music_only = Gtk.Button(label='Music only')
+        self.presenter_music_only.connect('clicked', lambda *_: self.presenter_feedback('music_only'))
+        presenter_actions.append(self.presenter_music_only)
+        presenter_box.append(presenter_actions)
+        right.append(presenter_box)
+
         fallbacks = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         fallbacks.add_css_class('mood-card')
         fallbacks.append(label('If it can’t play, try', ['listen-title']))
@@ -1765,6 +1789,11 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
                 self.hold_switch.set_tooltip_text('Hold this mood')
                 if self.hold_switch.get_active() != held:
                     self.hold_switch.set_active(held)
+            presenter_value = station.get('presenter') or {}
+            self.presenter_switch.set_active(bool(presenter_value.get('enabled')))
+            budget = presenter_value.get('budget') or {}
+            self.presenter_budget.set_text('At most every %s tracks · up to %s seconds' %
+                                           (budget.get('every_tracks', 4), budget.get('max_seconds', 18)))
         finally:
             self.syncing = False
         self.render_learned(station)
@@ -2038,6 +2067,29 @@ class ListenPage(TwitchShelfMixin, ServicesMixin, SourcesMixin):
         held = self.hold_switch.get_active()
         self.window.command('station.hold', {'hold': held},
                             done=lambda _result: self.window.toast(next_station.toast_text('hold', held)))
+
+    def presenter_changed(self):
+        if getattr(self, 'syncing', False) or not self.station:
+            return
+        present = dict(self.station.get('presenter') or {})
+        present['enabled'] = self.presenter_switch.get_active()
+        self.save_station(dict(self.station, presenter=present),
+                          toast='Presenter on' if present['enabled'] else 'Music only')
+
+    def presenter_feedback(self, action):
+        if getattr(self, 'syncing', False) or not self.station:
+            return
+        present = dict(self.station.get('presenter') or {})
+        budget = dict(present.get('budget') or {'every_tracks': 4, 'max_seconds': 18})
+        if action == 'music_only':
+            present['enabled'] = False
+        elif budget.get('every_tracks', 4) < 20:
+            budget['every_tracks'] = min(20, budget.get('every_tracks', 4) + 2)
+        elif budget.get('max_seconds', 18) > 5:
+            budget['max_seconds'] -= 1
+        present['budget'] = budget
+        self.save_station(dict(self.station, presenter=present),
+                          toast='Music only' if action == 'music_only' else 'Less talking')
 
     def save_station(self, station, toast=None, undo=None):
         """Show the change now and save it. Saves go through one worker, so the last choice lands last."""

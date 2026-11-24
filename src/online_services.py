@@ -45,6 +45,8 @@ SERVICES = {
                   'capabilities': ['server_health', 'sonic_mix', 'generated_jellyfin_playlists']},
     'listenbrainz': {'name': 'ListenBrainz', 'endpoint': 'https://api.listenbrainz.org',
                     'env': 'LISTENBRAINZ_TOKEN', 'capabilities': ['history', 'recommendations', 'submit_listen']},
+    'presenter_llm': {'name': 'Presenter writing', 'endpoint': '', 'env': 'PRESENTER_LLM_TOKEN', 'capabilities': ['presenter']},
+    'presenter_voice': {'name': 'Presenter voice', 'endpoint': '', 'env': 'PRESENTER_VOICE_TOKEN', 'capabilities': ['presenter']},
 }
 _lock = threading.RLock()
 _lighting_lock = threading.RLock()
@@ -105,18 +107,21 @@ def _endpoint(value):
     return value.rstrip('/')
 
 
+def connection(service, raw=None):
+    """One service's public settings, read straight from connections.json."""
+    raw = _load(_config_dir() / 'connections.json', {}) if raw is None else raw
+    item = raw.get(service, {}) if isinstance(raw, dict) else {}
+    item = item if isinstance(item, dict) else {}
+    # Imported configuration is data; unknown fields cannot leak tokens.
+    result = {field: item.get(field, '') for field in ('endpoint', 'username', 'user_id', 'token_file')}
+    result['endpoint'] = result['endpoint'] or SERVICES[service]['endpoint']
+    return result
+
+
 def config():
     """Public settings only. This operation does not check account access."""
     raw = _load(_config_dir() / 'connections.json', {})
-    raw = raw if isinstance(raw, dict) else {}
-    result = {}
-    for key, spec in SERVICES.items():
-        item = raw.get(key, {})
-        item = item if isinstance(item, dict) else {}
-        result[key] = {field: item.get(field, '') for field in ('endpoint', 'username', 'user_id', 'token_file')}
-        result[key]['endpoint'] = result[key]['endpoint'] or spec['endpoint']
-        # Imported configuration is data; unknown fields cannot leak tokens.
-    return result
+    return {key: connection(key, raw) for key in SERVICES}
 
 
 def save_connection(service, values):

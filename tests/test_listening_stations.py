@@ -1,11 +1,14 @@
 """Station queue and intent tests; no player, account or real home is used."""
 import copy
+import io
 import os
 from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
+import wave
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
@@ -29,9 +32,254 @@ class StationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         env = mock.patch.dict(os.environ, {'HOME': self.temp.name, 'XDG_CONFIG_HOME': self.temp.name + '/config',
-                              'XDG_STATE_HOME': self.temp.name + '/state', 'XDG_CACHE_HOME': self.temp.name + '/cache'})
+                              'XDG_STATE_HOME': self.temp.name + '/state', 'XDG_CACHE_HOME': self.temp.name + '/cache',
+                              'XDG_RUNTIME_DIR': self.temp.name + '/runtime'})
         env.start()
         self.addCleanup(env.stop)
+
+    @staticmethod
+    def wav(seconds=.05):
+        output = io.BytesIO()
+        with wave.open(output, 'wb') as value:
+            value.setparams((1, 2, 8000, int(8000 * seconds), 'NONE', ''))
+            value.writeframes(b'\0\0' * int(8000 * seconds))
+        return output.getvalue()
+
+    def presenter_station(self, **extra):
+        value = station()
+        value['presenter'] = {'enabled': True, 'budget': {'every_tracks': 2, 'max_seconds': 5}}
+        clips = extra.pop('presenter_clips', None)
+        value.update(extra)
+        if clips is not None:
+            value.setdefault('preferences', {})['presenter_clips'] = clips
+        return value
+
+    def start_presenter_station(self, controller, definition=None):
+        saved = controller.dispatch('station.save', {'station': definition or self.presenter_station()})['station']
+        with mock.patch.object(controller, '_home_action'), mock.patch.object(controller, '_route_preferred'), \
+                mock.patch('online_services.jellyfin_queue', return_value=[track(1), track(2), track(3), track(4)]):
+            controller.dispatch('station.start', {'id': saved['id']})
+            controller.worker.submit(lambda: None).result(timeout=3)
+            controller.presenter_worker.submit(lambda: None).result(timeout=3)
+        return saved
+
+    def test_presenter_plays_actual_duration_muted_without_advancing_music_early(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        segment = {'text': 'Link', 'sources': [{'record': '1'}], 'outcome': 'played',
+                   'duration': .15, '_max_seconds': 5, '_audio_path': '/fixture.wav'}
+        with mock.patch.object(controller.presenter, 'prepare_slot', return_value=(segment, None)):
+            self.start_presenter_station(controller)
+            first = controller.active['music']['reference']['id']
+            controller.presenter.muted = True
+            backend.media = {'eof_reached': True, 'position': 42}
+            controller.refresh()
+            self.assertTrue(backend.presenter_started.wait(1))
+            self.assertEqual(controller.active['music']['reference']['id'], first)
+            self.assertIn(('start_presenter', .15, 50.0, True), backend.calls)
+            self.assertEqual(controller.snapshot()['layers']['music']['position'], 42)
+            controller.presenter_play_worker.submit(lambda: None).result(timeout=2)
+            controller.worker.submit(lambda: None).result(timeout=2)
+            self.assertNotEqual(controller.active['music']['reference']['id'], first)
+            controller.presenter_worker.submit(lambda: None).result(timeout=2)
+
+    def test_station_change_stops_generation_bound_presenter_immediately(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        segment = {'text': 'Long link', 'sources': [], 'outcome': 'played', 'duration': 2,
+                   '_max_seconds': 5, '_audio_path': '/fixture.wav'}
+        with mock.patch.object(controller.presenter, 'prepare_slot', return_value=(segment, None)):
+            self.start_presenter_station(controller)
+            backend.media = {'eof_reached': True}
+            controller.refresh()
+            self.assertTrue(backend.presenter_started.wait(1))
+            controller.dispatch('music', {'item': {'id': 'other', 'name': 'Other', 'url': 'https://example.test/music'}})
+            self.assertTrue(backend.presenter_stopped.wait(.5))
+
+    def test_prepare_failure_is_the_only_drop_at_verified_track_end(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        record = {'origin': 'library', 'item_id': '1', 'identities': [
+            {'provider': 'Jellyfin', 'name': 'title', 'value': 'Track one'}]}
+        with mock.patch.object(controller, '_metadata_cached', return_value=record), \
+                mock.patch.object(controller.presenter, '_chat', side_effect=ValueError('model missing')):
+            self.start_presenter_station(controller)
+        backend.media = {'eof_reached': True}
+        controller.refresh()
+        controller.worker.submit(lambda: None).result(timeout=2)
+        snapshot = controller.snapshot()['presenter']
+        self.assertIn('model missing', snapshot['status'])
+        reasons = [x['reason'] for x in snapshot['segments']]
+        self.assertEqual(reasons, ['language unavailable'])
+        self.assertFalse(backend.presenter_started.is_set())
+
+    def test_pending_preparation_records_only_late_for_its_slot(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        preparing = threading.Event()
+        release = threading.Event()
+
+        def slow_failure(*_args, **_kwargs):
+            preparing.set()
+            release.wait(2)
+            return None, ('language unavailable', ())
+
+        with mock.patch.object(controller.presenter, 'prepare_slot', side_effect=slow_failure):
+            saved = controller.dispatch('station.save', {'station': self.presenter_station()})['station']
+            with mock.patch.object(controller, '_home_action'), mock.patch.object(controller, '_route_preferred'), \
+                    mock.patch('online_services.jellyfin_queue', return_value=[track(1)]):
+                controller.dispatch('station.start', {'id': saved['id']})
+                self.assertTrue(preparing.wait(1))
+                backend.media = {'eof_reached': True}
+                controller.refresh()
+                controller.worker.submit(lambda: None).result(timeout=2)
+                self.assertEqual(controller.presenter.segments[-1]['reason'], 'late')
+                release.set()
+                controller.presenter_worker.submit(lambda: None).result(timeout=3)
+
+        reasons = [item['reason'] for item in controller.snapshot()['presenter']['segments']]
+        self.assertEqual(reasons, ['late'])
+
+    def test_late_slot_does_not_block_the_next_tracks_preparation(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        release = threading.Event()
+        calls = []
+
+        def prepare(*_args, **_kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                release.wait(2)
+            return None, ('no captured metadata', ())
+
+        station = self.presenter_station()
+        station['presenter']['budget']['every_tracks'] = 2
+        with mock.patch.object(controller.presenter, 'prepare_slot', side_effect=prepare):
+            saved = controller.dispatch('station.save', {'station': station})['station']
+            with mock.patch.object(controller, '_home_action'), mock.patch.object(controller, '_route_preferred'), \
+                    mock.patch('online_services.jellyfin_queue', return_value=[track(1), track(2), track(3), track(4)]):
+                controller.dispatch('station.start', {'id': saved['id']})
+                controller.worker.submit(lambda: None).result(timeout=3)
+                backend.media = {'eof_reached': True}
+                controller.refresh()          # slot 1 ends while preparation is still running: late
+                controller.worker.submit(lambda: None).result(timeout=3)
+                release.set()
+                controller.presenter_worker.submit(lambda: None).result(timeout=3)
+                self.assertEqual([x['reason'] for x in controller.snapshot()['presenter']['segments']], ['late'])
+                backend.media = {'eof_reached': True}
+                controller.refresh()          # track 2 is not a slot: nothing is recorded
+                controller.worker.submit(lambda: None).result(timeout=3)
+                backend.media = {}
+                controller.refresh()
+                backend.media = {'eof_reached': True}
+                controller.refresh()          # track 3 is the next slot and was prepared for
+                controller.worker.submit(lambda: None).result(timeout=3)
+        self.assertGreaterEqual(len(calls), 2)
+
+    def test_manual_skip_is_not_a_slot_boundary(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        with mock.patch.object(controller.presenter, 'prepare_slot', return_value=(None, ('no captured metadata', ()))):
+            self.start_presenter_station(controller)
+            controller.queue_step(1)
+            controller.worker.submit(lambda: None).result(timeout=3)
+            self.assertEqual(controller.presenter_ends, 0)
+            backend.media = {'eof_reached': True}
+            controller.refresh()
+            controller.worker.submit(lambda: None).result(timeout=3)
+        self.assertEqual(controller.presenter_ends, 1)
+
+    def test_slots_keep_counting_beyond_the_recent_track_cap(self):
+        controller = room_session.Controller(FakeBackend(), self.temp.name)
+        self.addCleanup(controller.close)
+        station = self.presenter_station()
+        station['presenter']['budget']['every_tracks'] = 5
+        controller.active = {'id': 'room', 'music': {'station': station}}
+        controller.program = mock.Mock(station=station)
+        controller.queue_step = mock.Mock()
+        for _ in range(100):
+            controller._presenter_then_next(controller.generation)
+        late = [x for x in controller.presenter.segments if x.get('reason') == 'late']
+        self.assertEqual(len(late), 20)       # ends 1, 6, 11 ... 96, well past the station history cap
+        self.assertEqual(controller.presenter_ends, 100)
+
+    def test_unexpected_preparation_error_is_the_slots_one_drop(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        with mock.patch.object(controller.presenter, 'prepare_slot', side_effect=KeyError('presenter_llm')), \
+                mock.patch('traceback.print_exc'):
+            self.start_presenter_station(controller)
+        backend.media = {'eof_reached': True}
+        controller.refresh()
+        controller.worker.submit(lambda: None).result(timeout=2)
+        self.assertEqual([x['reason'] for x in controller.snapshot()['presenter']['segments']], ['presenter error'])
+
+    def test_primary_speech_starting_after_preparation_drops_the_slot(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        segment = {'text': 'Link', 'sources': [{'record': '1'}], 'outcome': 'played',
+                   'duration': .15, '_max_seconds': 5, '_audio_path': '/fixture.wav'}
+        with mock.patch.object(controller.presenter, 'prepare_slot', return_value=(segment, None)):
+            self.start_presenter_station(controller)
+            with mock.patch.object(controller, '_primary_speech', return_value=True):
+                backend.media = {'eof_reached': True}
+                controller.refresh()
+                controller.worker.submit(lambda: None).result(timeout=2)
+        self.assertFalse(backend.presenter_started.is_set())
+        self.assertEqual([x['reason'] for x in controller.snapshot()['presenter']['segments']], ['primary speech source'])
+
+    def test_prepared_segment_is_recorded_only_when_its_slot_starts(self):
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        segment = {'text': 'Link', 'sources': [], 'outcome': 'played', 'duration': .1,
+                   '_max_seconds': 5, '_audio_path': '/fixture.wav'}
+        with mock.patch.object(controller.presenter, 'prepare_slot', return_value=(segment, None)):
+            self.start_presenter_station(controller)
+            self.assertTrue(controller.snapshot()['presenter']['ready'])
+            self.assertEqual(controller.snapshot()['presenter']['segments'], [])
+            controller.dispatch('music', {'item': {'id': 'other', 'name': 'Other', 'url': 'https://example.test/music'}})
+            self.assertEqual(controller.snapshot()['presenter']['segments'], [])
+
+    def test_snapshot_ready_tracks_prepared_segment(self):
+        controller = room_session.Controller(FakeBackend(), self.temp.name)
+        self.addCleanup(controller.close)
+        self.assertFalse(controller.snapshot()['presenter']['ready'])
+        controller.presenter_slot = {'state': 'ready', 'segment': {'text': 'Ready'}}
+        self.assertTrue(controller.snapshot()['presenter']['ready'])
+
+    def test_clip_uses_same_slot_and_primary_speech_suppresses_generation(self):
+        clip_path = Path(self.temp.name) / 'clip.wav'
+        clip_path.write_bytes(self.wav())
+        clip = {'source': 'Local ident', 'audio': str(clip_path),
+                'allowed_placement': 'between_tracks', 'expires_at': 9999999999}
+        backend = FakeBackend()
+        controller = room_session.Controller(backend, self.temp.name)
+        self.addCleanup(controller.close)
+        self.start_presenter_station(controller, self.presenter_station(presenter_clips=[clip]))
+        backend.media = {'eof_reached': True}
+        controller.refresh()
+        self.assertTrue(backend.presenter_started.wait(1))
+        deadline = time.monotonic() + 2
+        while not controller.presenter.segments and time.monotonic() < deadline:
+            time.sleep(.01)
+        played = controller.snapshot()['presenter']['segments'][0]
+        self.assertEqual((played['source'], played['placement']), ('Local ident', 'between_tracks'))
+
+        other = room_session.Controller(FakeBackend(), Path(self.temp.name) / 'other')
+        self.addCleanup(other.close)
+        with mock.patch.object(other.presenter, '_chat') as chat:
+            self.start_presenter_station(other, self.presenter_station(speech=True))
+        self.assertFalse(chat.called)
+        self.assertEqual(other.snapshot()['presenter']['segments'][-1]['reason'], 'primary speech source')
 
     def test_bounded_queue_excludes_recent_and_stops(self):
         program = station_engine.Program(station(), [track(n) for n in range(20)], seed=1)
