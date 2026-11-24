@@ -85,12 +85,15 @@ o11m = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(o11m)       # definitions only (_hold_video_sink, _quiet); its main is guarded
 uptime, no_core_dumps = o10p.uptime, o10p.no_core_dumps
 
-MODES = ('active', 'gate', 'gl', 'refs', 'junk', 'stale', 'reuse', 'racy')
+MODES = ('active', 'gate', 'gl', 'refs', 'junk', 'stale', 'reuse', 'racy', 'hold', 'hammer', 'exit')
 LOOPS = 3             # author: loops used for the count checkpoints
 ROUNDS = 4            # author: show-all / leave-all rounds
 BOUNCES = 10          # author: quick show/leave pairs (each far under the product's 1 s release wait)
 SHED_WAIT_S = 20.     # author: how long the loops may take to shed after the last leave
 SETTLE_S = 3.         # author: how long a report may lag the real activity (it is saved on a worker thread)
+EXIT_S = 5.           # author: process exit with a retrying status write and a reader holding the lock
+SPIN_MS = 150.        # author: CPU the status thread may use in 6 s of a reader holding the lock (0.2 s retries)
+GAP_S = 1.5           # author: longest the GTK main loop may go without running during the hold
 REFS_RANGE = (1, 64)  # author: a plausible observed reference count
 
 
@@ -386,6 +389,8 @@ def run_child(mode, args):
             result = stale(env, step, check, info, args)
         elif mode in ('reuse', 'racy'):
             result = start(env, step, check, info, mode)
+        elif mode in ('hold', 'hammer', 'exit'):
+            result = retry(env, step, check, info, mode)
         else:
             result = fallback(env, step, check, info, mode)
         print('RESULT ' + json.dumps(result, default=str), flush=True)
@@ -394,6 +399,7 @@ def run_child(mode, args):
         env.pump(.3)
         env.remote.close()
         print('CHECKS-DONE %d failed' % failures[0], flush=True)
+    print('EXITING %f' % time.time(), flush=True)
     step('exiting the process')
 
 
@@ -1052,6 +1058,140 @@ def start(env, step, check, info, mode):
     return {'uptime': uptime()}
 
 
+
+HOLDER = r"""
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+if sys.argv[2] == 'hold':
+    fcntl.flock(fd, fcntl.LOCK_SH)
+    print('held', flush=True)
+    time.sleep(3600)
+else:
+    print('hammer', flush=True)
+    while True:
+        fcntl.flock(fd, fcntl.LOCK_SH)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+"""
+
+
+def reader(path, how):
+    """A status reader as another process: 'hold' keeps LOCK_SH on the window's lock file, 'hammer' keeps taking and dropping it."""
+    process = subprocess.Popen([sys.executable, '-c', HOLDER, str(path), how], stdout=subprocess.PIPE, text=True)
+    process.stdout.readline()
+    return process
+
+
+def status_thread_cpu_ms():
+    total = 0.
+    for tid in os.listdir('/proc/self/task'):
+        try:
+            if open('/proc/self/task/%s/comm' % tid).read().startswith('scene-shedding'):
+                fields = open('/proc/self/task/%s/stat' % tid).read().rsplit(')', 1)[1].split()
+                total += (int(fields[11]) + int(fields[12])) * 1000. / os.sysconf('SC_CLK_TCK')
+        except (OSError, ValueError, IndexError):
+            continue
+    return total
+
+
+def retry(env, step, check, info, mode):
+    """The window's first status write finds a reader holding the lock file (the window retries). hold: a reader holds it
+    through several sheds and resumes, then lets go. hammer: a reader keeps taking and dropping it. exit: a reader holds
+    it as the process exits."""
+    import next_widgets as nw
+    import scene_shedding
+    pump = env.pump
+    lockpath = status_dir() / ('scene-loops-%d.lock' % os.getpid())
+    gaps, last = [], [time.monotonic()]
+
+    def tick():
+        now = time.monotonic()
+        gaps.append(now - last[0])
+        last[0] = now
+        return True
+    helper = reader(lockpath, 'hammer' if mode == 'hammer' else 'hold')
+    try:
+        step('window')
+        window = env.launch(page='rooms')
+        window.show_rooms()
+        pump(2.)
+        rooms = o10p.Rooms(env, window)
+        truth = Truth(nw)
+        cards = rooms.loop_cards()
+        env.GLib.timeout_add(50, tick)
+        cpu0, began = status_thread_cpu_ms(), time.monotonic()
+        rooms.click(cards[0])
+        for _ in range(24):
+            truth.arm()
+            if getattr(nw, '_PLAY', {}).get('shed'):
+                break
+            pump(.25)
+        shown = time.monotonic()
+        if mode == 'hammer':
+            ok = wait(env, lambda: look()['active'] is True, 10.)
+            r = both(env)
+            check('K14 a reader that keeps taking and dropping the window\'s lock does not keep the window unreported: '
+                  'shedding is reported active within 10 s of the loop being on screen',
+                  ok and all(x['readable'] and x['active'] is True for x in r.values()),
+                  {n: (x['active'], x['view']) for n, x in r.items()})
+            return {'uptime': uptime()}
+        if mode == 'exit':
+            pump(1.)
+            before = time.monotonic()
+            scene_shedding._remove()
+            took = time.monotonic() - before
+            daemon = bool(scene_shedding._worker and scene_shedding._worker.daemon)
+            check('K15 with a reader holding the lock and the status write retrying, the exit hook takes at most %.0f s and '
+                  'the status worker is a daemon thread (author-set limit)' % 2., took <= 2. and daemon, (took, daemon))
+            return {'hook_s': round(took, 2), 'uptime': uptime()}
+        # hold: several sheds and resumes while the lock stays held
+        step('events while a reader holds the lock')
+        rooms.escape()
+        pump(.3)
+        for card in (cards[1], cards[0], cards[1]):
+            rooms.click(card)
+            pump(1.2)
+            truth.arm()
+            rooms.escape()
+            pump(.3)
+        wait(env, lambda: sum(bool(l.shed) for l in loops_of(nw)) >= 2, SHED_WAIT_S)
+        held_s = time.monotonic() - shown
+        pump(max(0., 6. - held_s))
+        spin = status_thread_cpu_ms() - cpu0
+        worst = max(gaps) if gaps else 0.
+        during = look()
+        helper.kill()
+        helper.wait()
+        helper = None
+        step('reader let go')
+        r = settle(env, truth, limit=SETTLE_S + 4.)
+        both_now = both(env)
+        events, distinct = truth.now()
+        check('K10 with a reader holding the window\'s lock through %d sheds and %d resumes and then letting go, the report '
+              'catches up to the latest counts and says active (nothing stale or out of order)' % (events[0], events[1]),
+              all(x['readable'] and x['active'] is True and catches_up(x, events, distinct) for x in both_now.values())
+              and events[0] >= 2 and events[1] >= 1,
+              (events, distinct, {n: (x['active'], x['view']) for n, x in both_now.items()}, during['view']))
+        rooms.click(cards[2])
+        pump(1.5)
+        truth.arm()
+        rooms.escape()
+        wait(env, lambda: sum(bool(l.shed) for l in loops_of(nw)) >= 3, SHED_WAIT_S)
+        after = settle(env, truth)
+        events2, distinct2 = truth.now()
+        check('K11 and the report keeps tracking afterwards: a further shed is reported',
+              events2[0] > events[0] and all(catches_up(x, events2, distinct2) for x in after),
+              (events, events2, [x['view'] for x in after]))
+        check('K12 while a reader held the lock for 6 s with the status write retrying, the status thread used at most %d ms '
+              'of CPU: no busy spin (author-set limit)' % SPIN_MS, spin <= SPIN_MS, spin)
+        check('K13 while the status write retried, the GTK main loop kept running: no gap over %.1f s (author-set limit)' % GAP_S,
+              worst <= GAP_S, worst)
+        return {'spin_ms': round(spin, 1), 'worst_gap_s': round(worst, 3), 'uptime': uptime()}
+    finally:
+        if helper is not None:
+            helper.kill()
+            helper.wait()
+
+
 # ---------------------------------------------------------------------------- parent
 
 TREE_SCRIPT = r'''
@@ -1159,14 +1299,17 @@ def run_parent(args):
                 process.kill()
                 process.wait()
                 code = 'timeout'
+        ended = time.time()
         shutil.rmtree(runtime, ignore_errors=True)
         if isinstance(code, int) and code > 128:
             code = -(code - 128)
         text = log.read_text(errors='replace')
         result = {}
+        exiting = [float(l.split()[1]) for l in text.splitlines() if l.startswith('EXITING ')]
         for line in text.splitlines():
             if line.startswith('RESULT '):
                 result = json.loads(line[7:])
+                result['exit_wall_s'] = round(ended - exiting[0], 2) if exiting else None
             elif line.startswith('INFO '):
                 print(line, flush=True)
             elif line.startswith(('PASS ', 'FAIL ')):
@@ -1182,8 +1325,12 @@ def run_parent(args):
 
     print('source: %s  renderer: %s' % (summary['source'], os.environ.get('GSK_RENDERER')), flush=True)
     print('uptime at start: %s' % summary['uptime_start'], flush=True)
-    parts = set(filter(None, args.only.split(','))) or {'active', 'gate', 'gl', 'refs', 'junk', 'stale', 'reuse', 'racy', 'tree', 'notes'}
+    parts = set(filter(None, args.only.split(','))) or {'active', 'gate', 'gl', 'refs', 'junk', 'stale', 'reuse', 'racy', 'hold', 'hammer', 'exit', 'tree', 'notes'}
     results = {mode: child(mode) for mode in MODES if mode in parts}
+    if 'exit' in results:
+        wall = results['exit'].get('exit_wall_s')
+        check('K15b with a reader holding the lock and the status write retrying, the process exits within %.0f s of finishing '
+              '(author-set)' % EXIT_S, wall is not None and wall <= EXIT_S, (wall, results['exit']))
     if {'gate', 'gl', 'refs'} <= set(results):
         reasons = [str(results[m].get('reason', '')).strip() for m in ('gate', 'gl', 'refs')]
         check('P1 the three "not active" reasons are all given and differ from each other (another GTK version, no libgstgl, '
