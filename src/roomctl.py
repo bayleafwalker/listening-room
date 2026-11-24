@@ -213,6 +213,11 @@ metadata-export writes all provenance pages as one JSON document to stdout. meta
             action, params = station_arguments(args.action, args.value)
             print(json.dumps(session_client.request(action, params), ensure_ascii=False))
             return 0
+        if args.action == 'inspect':
+            import scene_shedding
+            # The window's own process reports scene-loop shedding through a runtime status file.
+            print(json.dumps(dict(session_client.request('inspect', {}), scene_loop_shedding=scene_shedding.status()), ensure_ascii=False))
+            return 0
         params = {'room_id': args.value} if args.action == 'enter' else {'name': args.value} if args.action == 'save' else {'minutes': float(args.value)} if args.action == 'quiet' and args.value else {}
         print(json.dumps(session_client.request(args.action, params), ensure_ascii=False))
     except (ValueError, OSError) as error:

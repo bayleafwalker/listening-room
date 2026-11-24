@@ -294,6 +294,16 @@ read and set. Changing it never touches Quiet/Stop epochs or a queued start.
 Controller snapshots also report `timers` (running Break, Wind down and Dim
 timers as end times on the controller clock `now`) and `last_entered_at`.
 
+`inspect` also carries `scene_loop_shedding`, whether an off-screen room loop gives back its video
+output in the open window: `state` (`active`, `gtk`, `no_libgstgl`, `refused`, `no_player` or
+`unreported`), a plain `summary`, `gtk`, `refs_observed` (what a refused release found where 2 were
+expected), and how many times a loop has `shed` and been `resumed` in that window. The window leaves
+a small status file in its runtime directory (`listening-hub/scene-loops-PID.json`); there is no extra
+socket or action, and `unreported` means no open window has reported (it is closed, or no room
+loop has played). Only `active` means shedding is working; `gtk` and `no_libgstgl` are expected
+fallbacks, and `refused` means it switched itself off for that window (safe, but each off-screen loop
+keeps about 42-49 MB).
+
 The window (Rooms, Listen and Now with Mix, Timer and Output) is the only window:
 `listening-room` opens it, and `--ui=next` is accepted and ignored. The classic window and
 `--ui=classic` are removed (the launcher refuses it with exit status 2); the code is in git history,
