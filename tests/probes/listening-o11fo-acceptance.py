@@ -765,11 +765,16 @@ def victim(env, step):
         env.pump(.5)
     wait(env, lambda: sum(bool(l.shed) for l in loops_of(nw)) >= 2, SHED_WAIT_S)
     env.pump(1.)
+    # This process may read its children's /proc/PID/fd (the probe's helpers run non-dumpable, which hides them otherwise).
+    import ctypes
+    ctypes.CDLL(None).prctl(4, 1, 0, 0, 0)
     # Children a window may spawn and that outlive it, by the routes the product uses (Python's subprocess with its default
     # close_fds, and GLib's spawn): neither may keep the window's lock alive after the window is killed.
     from gi.repository import GLib
     kid_a = subprocess.Popen(['sleep', '300'])
     kid_b = GLib.spawn_async([shutil.which('sleep'), '300'], flags=GLib.SpawnFlags.SEARCH_PATH)[0]
+    holders = lock_holders(status_dir() / ('scene-loops-%d.lock' % os.getpid()))
+    print('HOLDERS ' + json.dumps(holders), flush=True)
     print('READY %d %d %d %d %d' % (truth.shed, truth.renew, os.getpid(), kid_a.pid, kid_b), flush=True)
     while True:
         env.pump(.5)
@@ -785,7 +790,7 @@ class Victim:
              '--output', str(Path(output) / ('victim-' + name))], stdout=subprocess.PIPE, stderr=log, text=True,
             env=dict(os.environ, PYTHONFAULTHANDLER='1'), start_new_session=True, preexec_fn=no_core_dumps)
         self.pid = self.truth = None
-        self.kids = []
+        self.kids, self.holders = [], None
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline and self.pid is None:
             ready, _, _ = select.select([self.process.stdout], [], [], 1.)
@@ -793,6 +798,8 @@ class Victim:
                 line = self.process.stdout.readline()
                 if not line:
                     break
+                if line.startswith('HOLDERS '):
+                    self.holders = json.loads(line[8:])
                 if line.startswith('READY '):
                     _, shed_, renew_, pid, *kids = line.split()
                     self.truth, self.pid, self.kids = (int(shed_), int(renew_)), int(pid), [int(k) for k in kids]
@@ -841,7 +848,7 @@ def stale(env, step, check, info, args):
                       for n, c in counts_of(r1, 'shed').items()),
               (v1.truth, v1.pid, {n: (r['readable'], r['active'], r['view']) for n, r in r1.items()}))
         lockfile = directory / ('scene-loops-%s.lock' % v1.pid)
-        holders = lock_holders(lockfile)
+        holders = v1.holders        # taken by the window itself after it spawned its children (it may read their fds)
         kids_alive = lambda: [k for k in v1.kids if Path('/proc/%d' % k).exists()]
         check('K6 the window\'s lock is held by the window process alone and its descriptor is close-on-exec, while the '
               'window has spawned children (Python subprocess and GLib spawn) that stay running', len(v1.kids) == 2
