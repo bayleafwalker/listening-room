@@ -5,6 +5,8 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-24
+
 ### Added
 - An optional presenter for saved stations. Turn on Presenter in a station's detail and it
   speaks a short link at most once every few tracks, within a budget you can see and
