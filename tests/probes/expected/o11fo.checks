@@ -1,19 +1,24 @@
 # O11F-OBSERVE acceptance (tests/probes/listening-o11fo-acceptance.py), written by the independent acceptance author.
 # This is the TARGET: every check passes on the finished outcome. On main 6f9c7a3 (2.7.0) the report does not exist, so
-# N1, A1-A4, N2, G1-G4, L1-L4, R1-R6, P1, T1-T4 and C1 fail; N1b, A0, A7, A8 (the probe's own ground truth and the
+# N1, A1-A4, N2, X1-X5 (cross-process), G1-G4, L1-L4, R1-R6, P1, T1-T4 and C1 fail; N1b, A0, A7, A8 (the probe's own ground truth and the
 # no-side-effect checks), the child-health checks and T5-T8 (source_tree behaviours that already hold) pass.
 # Author-set limits (flagged for a coordinator ruling): 20 s shed wait, 4 rounds x 3 loops, 10 bounces, reference count 1..64.
 # Open interface choices the oracles read by meaning: field names, "how many loops have shed" as events or distinct loops.
+# X1-X5 (coordinator ruling, phase 1): roomctl run as a separate process through the shipped script and a real socket.
 N1 with no window ever opened, inspect is readable (exit 0, one JSON line) and has a shedding report that does not claim shedding is active
 N1b inspect did not start the shedding machinery: the GStreamer calls it would load are untouched
+X3 as a separate process (shipped roomctl.py over the real socket) with no window open, inspect is readable and has a shedding report that does not claim shedding is active
 A0 fixture: at least 3 catalogue loop rooms with distinct loop files
 A1 with a loop on screen and nothing refused, inspect reports scene-loop shedding active
+X1 as a separate process (shipped roomctl.py over the real socket) with a loop on screen, inspect reports scene-loop shedding active
 A8 under constant inspect polling the loops still shed once per leave and resume once per show (the probe's own count of real sheds and resumes matches the workload)
 A2 the report counts the loops that have shed, and the count matches real sheds at every checkpoint over 4 rounds of 3 loops
 A3 the report counts the loops that have resumed, and the count matches real resumes at every checkpoint (a first show is not a resume)
+X2 as a separate process, the shed and resumed counts match real sheds and resumes at every checkpoint over 4 rounds of 3 loops
 A4 after 10 quick show/leave pairs the report follows the real sheds and resumes, not the clicks
 A7 inspect never changes shedding: 40 inspects with loops shed leave every loop's state, the shed and resume calls and the shedding hooks as they were, and nothing wakes afterwards
 N2 with the window closed, inspect is still readable (exit 0, one JSON line) and has a shedding report whose counts, if it gives them, are not above what really happened
+X5 as a separate process with the window closed, inspect is still readable and has a shedding report whose counts, if it gives them, are not above what really happened
 active: the child finished without a crash or hang
 active: the child reported all its oracles and exited 0
 G1 gate: with a different GTK version, inspect reports shedding not active and the reason names GTK
@@ -34,6 +39,7 @@ R3 refs: the report shows the observed reference count (a whole number from 1 to
 R4 refs: the counts agree with what happened (at most the loop whose release was refused shed; resumes never above sheds)
 R5 refs: the loops still play and resume, and afterwards shedding is still reported off for the same reason
 R6 refs: the report is plain language
+X4 refs: as a separate process (shipped roomctl.py over the real socket), inspect reports shedding not active, the reason names references and shows the observed count (a whole number from 1 to 64)
 refs: the child finished without a crash or hang
 refs: the child reported all its oracles and exited 0
 P1 the three "not active" reasons are all given and differ from each other (another GTK version, no libgstgl, refused release)

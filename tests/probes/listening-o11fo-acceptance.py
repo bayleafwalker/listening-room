@@ -23,6 +23,12 @@ The real activity is counted by the probe itself, independently of the report: i
 _PLAY['shed'] (a shed happened when it returned a renderer) and _PLAY['renew'] (a resume), and reads
 _LOOPS[...].shed. The wrappers only observe.
 
+Two ways of reading, both required (coordinator ruling, phase 1): in-process (above), and CROSS-PROCESS: the
+child serves its controller on a real unix socket (session_service.make_server, in a private temp dir named by
+LISTENING_SESSION_SOCKET) and runs the shipped entry point (`python <source>/roomctl.py inspect`, what the
+listening-roomctl wrapper runs) as a separate process against the running window, pumping GTK while it runs.
+That is what the operator does in a terminal. Checks X1-X5 are the cross-process ones.
+
 Children (each a subprocess, so a crash is a result):
 
   active  one window: no window yet (inspect readable, shedding machinery untouched); 3 catalogue loops shown and
@@ -210,7 +216,7 @@ def look():
     return dict(status_of(data if isinstance(data, dict) else {}), readable=ok, code=code, err=err[-300:])
 
 
-def tracking_paths(checkpoints, key):
+def tracking_paths(checkpoints, key, field='st'):
     """The report paths for `key` ('shed' or 'resumed') that match what really happened at every checkpoint, under
     either reading of "how many loops have shed": events (every shed counts) or distinct loops (each loop once)."""
     result = {}
@@ -218,11 +224,48 @@ def tracking_paths(checkpoints, key):
         paths = None
         for cp in checkpoints:
             want = cp[key][reading]
-            here = {p for p, v in cp['st'][key].items() if v == want}
+            here = {p for p, v in cp[field][key].items() if v == want}
             paths = here if paths is None else paths & here
         if paths:
             result[name] = sorted(paths)
     return result
+
+
+class Remote:
+    """The controller on a real socket, and roomctl (the shipped script) run against it as its own process."""
+    def __init__(self, env):
+        import threading
+        import session_service
+        self.env = env
+        self.dir = tempfile.mkdtemp(prefix='o11fo-sock-')
+        self.path = Path(self.dir) / 'session.sock'
+        self.server, self.lock = session_service.make_server(self.path, env.service)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def look(self, limit=30.):
+        environment = {k: v for k, v in os.environ.items() if k not in ('WAYLAND_DISPLAY', 'HYPRLAND_INSTANCE_SIGNATURE')}
+        environment['LISTENING_SESSION_SOCKET'] = str(self.path)
+        process = subprocess.Popen([sys.executable, str(self.env.source / 'roomctl.py'), 'inspect'], env=environment,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=self.dir)
+        deadline = time.monotonic() + limit
+        while process.poll() is None and time.monotonic() < deadline:
+            self.env.pump(.1)       # the window's main loop keeps running while the other process asks
+        if process.poll() is None:
+            process.kill()
+        out, err = process.communicate()
+        try:
+            data = json.loads(out)
+        except ValueError:
+            data = None
+        ok = process.returncode == 0 and isinstance(data, dict) and len(out.strip().splitlines()) == 1
+        return dict(status_of(data if isinstance(data, dict) else {}), readable=ok, code=process.returncode, err=err[-300:])
+
+    def close(self):
+        try:
+            self.server.shutdown()
+            self.server.server_close()
+        finally:
+            shutil.rmtree(self.dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------- ground truth
@@ -306,6 +349,7 @@ def run_child(mode, args):
         print('INFO ' + text, flush=True)
 
     with env:
+        env.remote = Remote(env)
         if mode == 'active':
             result = active(env, step, check, info)
         else:
@@ -314,6 +358,7 @@ def run_child(mode, args):
         for window in list(env.app.get_windows()):
             window.close()
         env.pump(.3)
+        env.remote.close()
         print('CHECKS-DONE %d failed' % failures[0], flush=True)
     step('exiting the process')
 
@@ -333,6 +378,11 @@ def active(env, step, check, info):
     check('N1b inspect did not start the shedding machinery: the GStreamer calls it would load are untouched',
           play_before.keys() == play_after.keys() and all(play_before[k] is play_after[k] for k in play_before),
           (sorted(play_before), sorted(play_after)))
+    rst0 = env.remote.look()
+    check('X3 as a separate process (shipped roomctl.py over the real socket) with no window open, inspect is readable and '
+          'has a shedding report that does not claim shedding is active',
+          rst0['readable'] and rst0['found'] and rst0['active'] is not True,
+          (rst0['readable'], rst0['code'], rst0['err'], rst0['view']))
     step('launch')
     window = env.launch(page='rooms')
     window.show_rooms()
@@ -354,8 +404,9 @@ def active(env, step, check, info):
     def checkpoint(label, expect_shed, expect_resumed):
         """Read the report; record it with what the wrappers counted and what the workload implies (None: unknowable)."""
         st = look()
+        rst = env.remote.look()
         events, distinct = truth.now()
-        checkpoints.append({'label': label, 'st': st, 'truth': (events, distinct), 'expect': (expect_shed, expect_resumed),
+        checkpoints.append({'label': label, 'st': st, 'rst': rst, 'truth': (events, distinct), 'expect': (expect_shed, expect_resumed),
                             'currently': sum(bool(l.shed) for l in loops_of(nw)),
                             'shed': (events[0], distinct[0]), 'resumed': (events[1], distinct[1])})
         return st
@@ -387,6 +438,10 @@ def active(env, step, check, info):
     st1 = checkpoint('round 1 shown once', None, 0)
     check('A1 with a loop on screen and nothing refused, inspect reports scene-loop shedding active',
           st1['readable'] and st1['found'] and st1['active'] is True, (st1['readable'], st1['view']))
+    check('X1 as a separate process (shipped roomctl.py over the real socket) with a loop on screen, inspect reports '
+          'scene-loop shedding active', checkpoints[-1]['rst']['readable'] and checkpoints[-1]['rst']['found']
+          and checkpoints[-1]['rst']['active'] is True, (checkpoints[-1]['rst']['readable'], checkpoints[-1]['rst']['code'],
+                                                         checkpoints[-1]['rst']['err'], checkpoints[-1]['rst']['view']))
     rooms.escape()
     pump(.3)
     shed_ok = [shed_all()]
@@ -423,6 +478,12 @@ def active(env, step, check, info):
     check('A3 the report counts the loops that have resumed, and the count matches real resumes at every checkpoint '
           '(a first show is not a resume)', bool(resumed_paths) and readable,
           ([(c['label'], c['resumed'], c['st']['resumed']) for c in checkpoints], resumed_paths))
+    rshed, rresumed = tracking_paths(checkpoints, 'shed', 'rst'), tracking_paths(checkpoints, 'resumed', 'rst')
+    rreadable = all(c['rst']['readable'] for c in checkpoints)
+    check('X2 as a separate process, the shed and resumed counts match real sheds and resumes at every checkpoint over %d '
+          'rounds of %d loops' % (ROUNDS, LOOPS), bool(rshed) and bool(rresumed) and rreadable,
+          ([(c['label'], c['truth'][0], c['rst']['shed'], c['rst']['resumed'], c['rst']['err']) for c in checkpoints],
+           rshed, rresumed))
     # ---- quick bounces on a loop that is shed now
     step('quick bounces')
     before = truth.now()
@@ -469,6 +530,12 @@ def active(env, step, check, info):
           st_end['readable'] and st_end['found'] and all(v <= truth_end[0][0] for v in st_end['shed'].values())
           and all(v <= truth_end[0][1] for v in st_end['resumed'].values()),
           (st_end['readable'], st_end['view'], truth_end))
+    rst_end = env.remote.look()
+    check('X5 as a separate process with the window closed, inspect is still readable and has a shedding report whose '
+          'counts, if it gives them, are not above what really happened',
+          rst_end['readable'] and rst_end['found'] and all(v <= truth_end[0][0] for v in rst_end['shed'].values())
+          and all(v <= truth_end[0][1] for v in rst_end['resumed'].values()),
+          (rst_end['readable'], rst_end['code'], rst_end['err'], rst_end['view'], truth_end))
     return {'checkpoints': [(c['label'], c['truth'], c['currently'], c['st']['active'], c['st']['shed'],
                              c['st']['resumed']) for c in checkpoints],
             'shed_paths': shed_paths, 'resumed_paths': resumed_paths, 'bounce': bounce,
@@ -529,6 +596,7 @@ def fallback(env, step, check, info, mode):
             pump(1.5)
         o11m._quiet(env)
         st2 = look()
+        rst = env.remote.look() if mode == 'refs' else None
     finally:
         ctypes.CDLL = real_cdll
     events, distinct = truth.now()
@@ -555,6 +623,11 @@ def fallback(env, step, check, info, mode):
               all(moved) and all(resumed_moves) and st2['active'] is False and bool(re.search(word, st2['text']))
               and digits_off(st2['text']) == digits_off(st1['text']), (moved, resumed_moves, st1['text'], st2['text']))
         check('R6 refs: the report is plain language', plain(st1), st1['texts'])
+        rcounts = [n for n in rst['refs'] if REFS_RANGE[0] <= n <= REFS_RANGE[1]]
+        check('X4 refs: as a separate process (shipped roomctl.py over the real socket), inspect reports shedding not '
+              'active, the reason names references and shows the observed count (a whole number from %d to %d)' % REFS_RANGE,
+              rst['readable'] and rst['found'] and rst['active'] is False and bool(re.search('ref', rst['text']))
+              and bool(rcounts) and plain(rst), (rst['readable'], rst['code'], rst['err'], rst['view']))
     else:
         letter, names, thing = ('G', 'with a different GTK version', 'GTK') if mode == 'gate' else (
             'L', 'with libgstgl missing', 'libgstgl')
