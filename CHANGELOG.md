@@ -12,7 +12,7 @@ All notable changes are recorded here. The format follows
   2.3.2 crash guarantee holds. Freed memory goes back to the system. Shown again, the loop gets a
   new video sink and starts over while the picture keeps its last frame. With all 8 catalogue loops
   shown and left, the window holds 16 media threads instead of 80, and a loop off screen keeps
-  about 15 MB instead of 42-49 (software GL).
+  about 9 MB instead of 42-49 (software GL).
 
 ## [2.5.0] - 2026-11-22
 

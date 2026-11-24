@@ -379,8 +379,10 @@ DECODER_THREADS = 1
 LOOP_LIMIT = 12           # loop files that may hold a pipeline: the catalogue's, plus a few of your own
 RELEASE_MS = 1000         # an unwanted loop waits this long before it stops (leaving a preview to enter keeps it)
 TRIM_MS = 500             # after a release: close old sources' files and trim the heap (looked at again until done)
+WARM_MS = 1000            # after the first shed: GDK's download set-up waits until no loop has played for this long
 SWEEP_TRIES = 20          # ... at most this many times (10 s)
 _LOOPS = {}               # loop path -> _Loop
+_QUIET = [0]              # when a loop was last wanted (GLib monotonic microseconds)
 SHED_GTK = (4, 24, 0)      # the GTK whose video sink leaks its GL context (see _load_shed); others keep the sink
 GST_MEDIA_FILE_FIELDS = 5  # GtkGstMediaFile's own fields after its parent (GTK 4.24), the GstPlay first
 _PLAY = {}                # GstPlay/GStreamer calls through ctypes (_load_play) and the release sweep's work, or 'off'
@@ -469,6 +471,7 @@ class _Loop:
     def want(self, scene, playing):
         (self.wanted.add if playing else self.wanted.discard)(id(scene))
         if self.wanted:
+            _QUIET[0] = GLib.get_monotonic_time()
             if self.releasing:
                 GLib.source_remove(self.releasing)
                 self.releasing = 0
@@ -666,7 +669,7 @@ def _load_shed(ctypes, gobject, gst, play, pointer, pointers):
     gst.gst_query_parse_context.argtypes = [pointer, pointer]
     gst.gst_context_get_structure.argtypes, gst.gst_context_get_structure.restype = pointers, pointer
     gst.gst_mini_object_unref.argtypes = pointers
-    finalized = set()
+    finalized, tokens = set(), iter(range(1, 1 << 62))   # weak-ref tokens of finalized sinks; one new token per shed
     gone = ctypes.CFUNCTYPE(None, pointer, pointer)(lambda data, _where: finalized.add(data))
     gobject.g_object_weak_ref.argtypes = [pointer, type(gone), pointer]
     held = [gone]       # the callback lives as long as the process (a weak ref may fire late)
@@ -713,7 +716,8 @@ def _load_shed(ctypes, gobject, gst, play, pointer, pointers):
             renderer = None
         context = own_context(sink) if renderer else None
         if renderer:
-            gobject.g_object_weak_ref(sink, gone, sink)
+            token = next(tokens)     # never an address: a late notify for an old sink cannot vouch for a new one
+            gobject.g_object_weak_ref(sink, gone, token)
         for instance in (sink, outer):
             if instance:
                 gobject.g_object_unref(instance)
@@ -721,12 +725,12 @@ def _load_shed(ctypes, gobject, gst, play, pointer, pointers):
             gobject.g_object_set(pointer(pipeline), b'video-sink', pointer(None), None)
             gst.gst_element_set_state(pipeline, 1)                         # GST_STATE_NULL
             if context:
-                if sink in finalized and refs(context) == 2:
+                if token in finalized and refs(context) == 2:
                     gst.gst_object_unref(context)                          # GTK 4.24.0's leaked reference
                 else:
                     _PLAY['shed'] = None                                   # not the known case: stop shedding
                 gst.gst_object_unref(context)
-            finalized.discard(sink)
+            finalized.discard(token)
         gst.gst_object_unref(pipeline)
         return renderer
 
@@ -740,6 +744,21 @@ def _load_shed(ctypes, gobject, gst, play, pointer, pointers):
 def _after_release():
     if not _PLAY.get('sweep'):
         _PLAY['sweep'] = GLib.timeout_add(TRIM_MS, _sweep)
+
+
+def _warm_download(media):
+    """Once, after the first loop gives up its sink: download its last frame, while nothing is being shown.
+
+    GDK sets up its dmabuf download path (with software GL, 150-270 ms on the GTK thread) the first time a
+    frame needs it. Before sinks were dropped and renewed, the loops never needed it; a renewed sink's frames
+    do, so without this the first loop shown again after a release paid for it as a stall. It waits until
+    no loop has played for WARM_MS (nothing is being looked at, and no preview is being clicked through)."""
+    if any(loop.wanted for loop in _LOOPS.values()) or GLib.get_monotonic_time() - _QUIET[0] < WARM_MS * 1000:
+        return True
+    image = media.get_current_image()
+    if isinstance(image, Gdk.Texture) and image.get_width() > 0:
+        image.download(bytearray(image.get_width() * image.get_height() * 4), image.get_width() * 4)
+    return False
 
 
 def _sweep():
@@ -766,6 +785,8 @@ def _sweep():
             elif renderer:
                 loop.renderer = renderer
             loop.shed = bool(renderer)
+            if loop.shed and not _PLAY.get('warmed'):
+                _PLAY['warmed'] = GLib.timeout_add(WARM_MS, _warm_download, loop.media, priority=GLib.PRIORITY_LOW)
     _PLAY['stopping'] = stopping
     if _PLAY['sources'] or _PLAY['stopping']:
         _PLAY['tries'] += 1

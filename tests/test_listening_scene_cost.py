@@ -396,7 +396,8 @@ class StoppedLoopsDropTheirSink(unittest.TestCase):
                          'stopped': lambda player: player in self.ready,
                          'shed': lambda player: self.calls.append(('shed', player)) or 'renderer:%s' % player,
                          'renew': lambda player, renderer: self.calls.append(('renew', player, renderer)),
-                         'unref': lambda renderer: self.calls.append(('unref', renderer))}, clear=True)]:
+                         'unref': lambda renderer: self.calls.append(('unref', renderer)),
+                         'warmed': 1}, clear=True)]:
             item.start()
             self.addCleanup(item.stop)
 
@@ -445,6 +446,31 @@ class StoppedLoopsDropTheirSink(unittest.TestCase):
         self.ready.add('player:lake.mp4')
         next_widgets._sweep()
         self.assertEqual(self.calls, [])
+
+
+class DownloadSetUpWaitsForQuiet(unittest.TestCase):
+    """GDK's dmabuf download set-up is paid once after the first shed, never while a loop plays."""
+    def test_it_waits_while_a_loop_plays_and_downloads_the_last_frame_once_quiet(self):
+        texture = mock.Mock(spec=next_widgets.Gdk.Texture)
+        texture.get_width.return_value, texture.get_height.return_value = 4, 2
+        media = mock.Mock(get_current_image=mock.Mock(return_value=texture))
+        playing = mock.Mock(wanted={'scene'})
+        with mock.patch.dict(next_widgets._LOOPS, {'drive.mp4': playing}, clear=True), \
+                mock.patch.object(next_widgets, '_QUIET', [0]):
+            self.assertTrue(next_widgets._warm_download(media), 'asks again later while a loop plays')
+            playing.wanted = set()
+            next_widgets._QUIET[0] = next_widgets.GLib.get_monotonic_time()
+            self.assertTrue(next_widgets._warm_download(media), 'and until none has played for WARM_MS')
+            texture.download.assert_not_called()
+            next_widgets._QUIET[0] -= next_widgets.WARM_MS * 1000
+            self.assertFalse(next_widgets._warm_download(media))
+        args = texture.download.call_args[0]
+        self.assertEqual((len(args[0]), args[1]), (4 * 2 * 4, 4 * 4))
+
+    def test_a_still_that_is_not_a_texture_is_left_alone(self):
+        media = mock.Mock(get_current_image=mock.Mock(return_value=mock.Mock(spec=[])))
+        with mock.patch.dict(next_widgets._LOOPS, clear=True), mock.patch.object(next_widgets, '_QUIET', [0]):
+            self.assertFalse(next_widgets._warm_download(media))
 
 
 class GStreamerPlayer(unittest.TestCase):
