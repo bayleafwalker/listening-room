@@ -55,7 +55,9 @@ C5 churn: loops still move when shown, during the churn and after it (@@ of @@ s
 churn: the child finished without a crash or hang
 churn: the child reported all its oracles and exited 0
 # C6 setup [ORIGINAL, superseded by the ruling on 326a4eb]: helpers started with the churn child (peak 12.8-15.7 on a
-# quiet host). They now start up to 40 s before it, within the same 60 s budget and load-16 cap; the limit is unchanged.
+# quiet host). [e23a98f, superseded by ruling part 2]: they started up to 40 s before it, sized as before (14.2 at the
+# end of the budget). Now as many start as the 1-minute load needs to pass 17 within the 60 s from a quiet host; the
+# 60 s budget, the load-16 cap and the limit (> 15) are unchanged.
 C6 churn: the host load was above 15 for part of the churn (peak @@)
 B1 gate: with the GTK version gate not matching, shedding is off for the process (@@ loops shed)
 B2 gate: with the GTK version gate not matching, GL context threads stay at one per loop and do not grow across resumes (@@ after release, @@ after 6 resumes, for 8 loops)

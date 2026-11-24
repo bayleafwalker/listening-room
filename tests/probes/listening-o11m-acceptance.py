@@ -236,6 +236,18 @@ class Load:
         self.info('load helpers: %d started (load 1m %.1f, target %.0f)' % (
             len(self.procs), os.getloadavg()[0], target))
 
+    def start_for(self, target, within_s):
+        """Start enough helpers that the 1-minute load average is expected to pass `target` within `within_s` even
+        from a quiet host: it moves toward the runnable count as 1 - exp(-t/60), so from load L it needs
+        (target - L) / (1 - exp(-within_s/60)) more runnable processes (at most 32)."""
+        import math
+        load = os.getloadavg()[0]
+        want = int(math.ceil((target - load) / (1 - math.exp(-within_s / 60.))))
+        for _ in range(max(0, min(want - len(self.procs), 32 - len(self.procs)))):
+            self.procs.append(subprocess.Popen([sys.executable, '-c', 'while True: pass'], preexec_fn=die_with_parent))
+        self.info('load helpers: %d started (load 1m %.1f, sized to pass %.0f within %.0f s)' % (
+            len(self.procs), load, target, within_s))
+
     def stop(self):
         for proc in self.procs:
             proc.kill()
@@ -364,10 +376,13 @@ def run_parent(args):
         if 'churn' in parts:
             # C6 setup [ORIGINAL, superseded by the coordinator's ruling on 326a4eb]: the helpers started with the
             # churn child, for at most 60 s up to load 16; on a quiet host the 1-minute load peaked at 12.8-15.7.
-            # Now they start up to CHURN_PREWARM_S before it, within the same 60 s budget and load-16 cap; C6's
-            # limit (> 15) is unchanged.
+            # [e23a98f, superseded by ruling part 2]: they started up to CHURN_PREWARM_S before it, within the same
+            # 60 s budget and load-16 cap, sized as before (target 16 + 4 - load: 17 helpers from load 2.4 reached
+            # only 14.2 at the end of the budget). Now (ruling part 2) as many start as the 1-minute average needs to
+            # pass 17 within the 60 s even from a quiet host; the budget, the load-16 cap (they stop once it is
+            # reached) and C6's limit (> 15) are unchanged.
             prewarm = time.monotonic()
-            load.start(STRESS_LOAD + 1)
+            load.start_for(STRESS_LOAD + 2, 60.)
             while time.monotonic() - prewarm < CHURN_PREWARM_S and os.getloadavg()[0] < STRESS_LOAD + 1:
                 time.sleep(1)
             prewarm = time.monotonic() - prewarm
