@@ -102,6 +102,8 @@ starve-browse: the child finished without a crash or hang
 starve-browse: the child reported all its oracles and exited 0
 X1 stress: at least 300 scene-media stress cycles ran with scene loops (@@ attempted, @@ completed)
 X2 stress: zero crashes over those cycles (@@ crashed children)
+# X3 sizing [ORIGINAL phase-1 sizing (16 + 4 - load helpers), superseded by the ruling on 2b6ce8b]: now sized like C6
+# (decaying-load model, target 17 within the 60 s); the 60 s budget, the load-16 cap and the limit (> 15) are unchanged.
 X3 stress: the host load was above 15 for part of the run (peak @@)
 X4 stress: every stress child finished all its cycles without raising
 N1 the CHANGELOG records the change: the section above 2.5.0 says what happens to loops off screen

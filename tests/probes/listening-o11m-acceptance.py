@@ -418,7 +418,10 @@ def run_parent(args):
             # Coordinator ruling (phase 1, X3): nice-19 helpers for a bounded part of the stress run only: until the
             # 1-minute load reaches 16 or for at most 60 s, whichever comes first; then they stop.
             STRESS_HELP_S = 60
-            load.start(STRESS_LOAD + 1)
+            # X3 sizing [ORIGINAL phase-1 sizing, superseded by the coordinator's ruling on 2b6ce8b]:
+            # load.start(STRESS_LOAD + 1), target 16 + 4 - load helpers (peaked at 14.7 once on 3ae4a1f, run 3).
+            # Now sized like C6 (decaying-load model, target 17 within the 60 s); budget, cap and limit unchanged.
+            load.start_for(STRESS_LOAD + 2, STRESS_HELP_S)
 
             def launch(seed):
                 log = open(stress_out / ('stress-%d.log' % seed), 'w')
