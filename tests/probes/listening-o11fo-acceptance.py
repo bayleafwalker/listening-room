@@ -1126,6 +1126,10 @@ def retry(env, step, check, info, mode):
                 break
             pump(.25)
         shown = time.monotonic()
+        # [ORIGINAL, superseded by this reset: the gaps counted the first loop's start-up (GStreamer load, first scene), 5.4 s at
+        # load 11-20 with a baseline of 0.1 s; that cost is not the status write's]
+        gaps.clear()
+        last[0] = time.monotonic()
         if mode == 'hammer':
             ok = wait(env, lambda: look()['active'] is True, 10.)
             r = both(env)
