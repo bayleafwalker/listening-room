@@ -101,8 +101,14 @@ R1 R a probe child raises, scene loops playing: every run reached that scene sta
 R2 R a probe child raises, scene loops playing: no Listening Room process ended in a native crash (10 runs)
 R3 R a probe child raises, scene loops playing: every process ended as its path expects, on its own within 15 s (10 runs; slowest @@ s)
 R4 R a probe child raises, scene loops playing: no scene loop is torn down on the way out: no Gtk.MediaFile cleared, re-opened or finalized and no GstPlay thread ended, up to the last Python atexit handler (10 runs)
-S1 every session service stopped by SIGTERM removed its socket and left a readable session.json (360 stops)
-S2 after a room was entered, the stopped service's session.json names it as the last session (200 stops)
+# S1 [ORIGINAL, superseded by the line below in phase 2]: generated from the main run made with 120 Ctrl+C runs; with
+# the ruled 200 there are 80 more stops (and 80 more entered rooms), so the stop counts are 440 and 280.
+# [ORIGINAL] S1 every session service stopped by SIGTERM removed its socket and left a readable session.json (360 stops)
+S1 every session service stopped by SIGTERM removed its socket and left a readable session.json (440 stops)
+# S2 [ORIGINAL, superseded by the line below in phase 2]: generated from the main run made with 120 Ctrl+C runs; with
+# the ruled 200 there are 80 more stops (and 80 more entered rooms), so the stop counts are 440 and 280.
+# [ORIGINAL] S2 after a room was entered, the stopped service's session.json names it as the last session (200 stops)
+S2 after a room was entered, the stopped service's session.json names it as the last session (280 stops)
 N3 the CHANGELOG records the fix under [Unreleased]: users could hit it (Ctrl+C on the shipped window with a room playing crashed on main), so the section names the crash and the quit or exit
 N1 negative control: a deliberate SIGSEGV in the window while its room plays is reported as a crash
 N2 negative control: a deliberate SIGSEGV in a probe child where it would return is reported as a crash through xvfb-run and dbus-run-session

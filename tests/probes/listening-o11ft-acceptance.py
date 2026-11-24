@@ -62,6 +62,13 @@ OUTPUT/o11ft-summary.json with every run (exit statuses, timings, load). Ends wi
   LISTENING_O11FT_ARGS='--only quit,sigterm --runs 5' for a focused look (names then carry the run counts used)
 
 Criterion revisions are made in place, keeping the original visible as "[ORIGINAL, superseded by ...]".
+
+Revision in phase 2 (harness, not a criterion): concurrent `xvfb-run -a` starts can share one display (the number is
+picked by looking for a free lock file, then the second Xvfb fails on it). A child on another run's display loses it
+when that run ends and exits 1 through GDK before interpreter teardown, which can hide a teardown crash. Display
+start-up is now serialized across runs, every probe child records whether its Xvfb is its own (display.json), and a
+run without its own display is retried, at most twice, then counts as not reached.
+[ORIGINAL, superseded by the above] runs started their displays concurrently and nothing checked display ownership.
 """
 import argparse
 import atexit
@@ -163,6 +170,18 @@ def thread_names(pid='self'):
         except OSError:
             pass
     return names
+
+
+def own_display():
+    """Whether this process's X display is served by an Xvfb in its own process group (xvfb-run -a can hand two
+    concurrent runs the same display: the second Xvfb fails on the lock and its command runs on the first's)."""
+    number = os.environ.get('DISPLAY', '').lstrip(':').split('.')[0]
+    try:
+        owner = int(Path('/tmp/.X%s-lock' % number).read_text().strip())
+        own = os.getpgid(owner) == os.getpgrp()
+    except (OSError, ValueError):
+        owner, own = None, False
+    return {'display': os.environ.get('DISPLAY'), 'owner': owner, 'own': own}
 
 
 def write_json(path, data):
@@ -436,6 +455,7 @@ def role_child():
     no_network()
     args = env.args
     output = Path(args.output)
+    write_json(output / 'display.json', own_display())
     watch = TeardownWatch(output / 'teardown.json')
     facts = {}
     with env:
@@ -614,6 +634,7 @@ class Shipped:
         started = time.monotonic()
         try:
             # private display and bus
+            self.ctx.display_lock.acquire()
             read_fd, write_fd = os.pipe()
             xvfb = subprocess.Popen([self.ctx.xvfb, '-displayfd', str(write_fd), '-screen', '0', '1440x1000x24',
                                      '-nolisten', 'tcp'], pass_fds=(write_fd,), stdout=subprocess.DEVNULL,
@@ -628,6 +649,7 @@ class Shipped:
                     break
                 number += part
             os.close(read_fd)
+            self.ctx.display_lock.release()
             display = ':' + number.decode().strip()
             bus = subprocess.Popen(['dbus-daemon', '--session', '--nofork', '--print-address=1'],
                                    stdout=subprocess.PIPE, stderr=open(d / 'dbus.log', 'w'), text=True,
@@ -780,7 +802,21 @@ class Child:
         self.result = {'path': path, 'state': state, 'index': index, 'kind': 'child', 'end': self.end}
 
     def run(self):
-        d, r = self.dir, self.result
+        """A run whose child did not get a display of its own is not a run: it is retried (at most twice)."""
+        for attempt in range(3):
+            r = self.run_once()
+            r['attempts'] = attempt + 1
+            if (r.get('display') or {}).get('own'):
+                break
+            r['reached'] = False
+            r.setdefault('error', 'the child did not get a display of its own: %s' % r.get('display'))
+        write_json(self.dir / 'result.json', r)
+        return r
+
+    def run_once(self):
+        d = self.dir
+        r = self.result = {'path': self.path, 'state': self.state, 'index': self.index, 'kind': 'child',
+                           'end': self.end}
         if d.exists():
             shutil.rmtree(d)
         d.mkdir(parents=True)
@@ -795,9 +831,14 @@ class Child:
         r['load_start'] = os.getloadavg()[0]
         started = time.monotonic()
         log = d / 'child.log'
-        with open(log, 'w') as handle:
-            process = subprocess.Popen(command, env=env, stdout=handle, stderr=subprocess.STDOUT,
-                                       stdin=subprocess.DEVNULL, preexec_fn=no_core_dumps, start_new_session=True)
+        with self.ctx.display_lock:      # no other run starts a display until this child has its own
+            with open(log, 'w') as handle:
+                process = subprocess.Popen(command, env=env, stdout=handle, stderr=subprocess.STDOUT,
+                                           stdin=subprocess.DEVNULL, preexec_fn=no_core_dumps, start_new_session=True)
+            deadline = time.monotonic() + 60
+            while not (d / 'display.json').exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(.05)
+        r['display'] = load_json(d / 'display.json')
         ready_at = None
         code = None
         while True:
@@ -870,6 +911,7 @@ def main():
     ctx.runs.mkdir(exist_ok=True)
     ctx.runtime_root = tempfile.mkdtemp(prefix='o11ft-runtime-', dir=os.environ.get('XDG_RUNTIME_DIR'))
     ctx.xvfb = find_xvfb()
+    ctx.display_lock = threading.Lock()
     results, summary = [], {'uptime_start': uptime(), 'source': str(ctx.source), 'runs': []}
     only = set(filter(None, args.only.split(',')))
     states = [s for s in args.states.split(',') if s]
