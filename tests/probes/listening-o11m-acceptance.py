@@ -1556,9 +1556,14 @@ def token(env, step, check, info):
     target = catalogue[3]
     rooms.click(target)
     moved.append(rooms.moves(6.)[0])
-    scene = rooms.scene_widget()
-    _, paintable = o10p.largest_paintable(scene) if scene else (None, None)
-    held = _hold_video_sink(next_widgets, paintable) if isinstance(paintable, env.Gtk.MediaFile) else None
+    # The target's own shared MediaFile, not the on-screen scene: runs 1 and 3 on 3e937b9 held nothing (the scene
+    # found mid-transition was not the target's), so T1 was not exercised. Setup only; the judgement is unchanged.
+    loop = getattr(next_widgets, '_LOOPS', {}).get(rooms.loop_of(target))
+    deadline = time.monotonic() + 5.
+    while loop is not None and not loop.wanted and time.monotonic() < deadline:
+        pump(.1)
+    target_wanted = bool(loop is not None and loop.wanted)
+    held = _hold_video_sink(next_widgets, loop.media) if loop is not None else None
     gobject = ctypes.CDLL('libgobject-2.0.so.0')
     gobject.g_type_name_from_instance.argtypes, gobject.g_type_name_from_instance.restype = [ctypes.c_void_p], ctypes.c_char_p
     gobject.g_object_unref.argtypes = [ctypes.c_void_p]
@@ -1574,12 +1579,15 @@ def token(env, step, check, info):
         for data in fired:
             gone(data, None)
     rooms.escape()
-    player = getattr(getattr(next_widgets, '_LOOPS', {}).get(rooms.loop_of(target)), 'player', None)
+    player = getattr(loop, 'player', None)
     deadline = time.monotonic() + 20.
     while not any(p == player for p, _ in calls) and time.monotonic() < deadline:
         pump(.2)
     _quiet(env)
     target_shed = [ok for p, ok in calls if p == player]
+    info('token: target loop found %s (wanted when shown %s), player %s, released %s, shed %s, wanted %s' % (
+        loop is not None, target_wanted, bool(player), getattr(loop, 'released', None), getattr(loop, 'shed', None),
+        bool(getattr(loop, 'wanted', None))))
     refused = not getattr(next_widgets, '_PLAY', {}).get('shed')
     gl_held = _gl()
     step('drop the extra reference, carry on')
