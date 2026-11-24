@@ -6,11 +6,12 @@ All notable changes are recorded here. The format follows
 ## [Unreleased]
 
 ### Fixed
-- The window could crash on its way out when a room loop was still handing over a frame: with the
-  main loop gone, GTK's video sink ran the frame update on GStreamer's own thread, into Python while
-  it was shutting down. The window's thread now keeps the main context for the life of the process,
-  so a late frame waits there and is dropped at exit. Test harnesses that drive the window by hand
-  (and that exited with a segfault after their last check) get the same guarantee.
+- Stopping the window with Ctrl+C in the terminal that started it, while a room played on Now,
+  could end in a crash (segfault) as the process exited: with the main loop gone, GTK's video sink
+  ran the loop's next frame update on GStreamer's own thread, into Python while it was shutting
+  down. The window's thread now keeps the main context for the life of the process, so a late frame
+  waits there and is dropped at exit; the loops themselves are left as they are. Test harnesses that
+  drive the window by hand, and exited with a segfault after their last check, are covered too.
 
 ## [2.7.0] - 2026-11-24
 

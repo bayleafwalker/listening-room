@@ -8,6 +8,7 @@ Then the process ends one way:
   quit      the real main loop (Gtk.Application.run, as `listening-room` runs it) until the user
             closes the window; run() returns and the process exits with its status
   sigterm   the real main loop until SIGTERM arrives
+  sigint    the real main loop, back on Now with the entered room's loop playing, until Ctrl+C (SIGINT)
   display   the real main loop until the X server goes away
   bus       the real main loop until the session bus goes away
   finish    a probe-style child (the main loop pumped by hand) that finishes and exits 0
@@ -33,7 +34,7 @@ import threading
 import time
 
 HERE = Path(__file__).resolve().parent
-MODES = ('quit', 'sigterm', 'display', 'bus', 'finish', 'raise', 'service')
+MODES = ('quit', 'sigterm', 'sigint', 'display', 'bus', 'finish', 'raise', 'service')
 CRASHES = {signal.SIGSEGV, signal.SIGABRT, signal.SIGBUS, signal.SIGILL, signal.SIGFPE, signal.SIGTRAP}
 READY_SECONDS = 90      # set-up until loops play, generous for a loaded host
 EXIT_SECONDS = 60       # from the exit trigger until the process is gone
@@ -134,6 +135,8 @@ def run_one(mode, index, args):
         trigger = time.monotonic()
         if mode in ('sigterm', 'service'):
             os.kill(pids['child'], signal.SIGTERM)
+        elif mode == 'sigint':
+            os.kill(pids['child'], signal.SIGINT)
         elif mode == 'display':
             os.kill(pids['xvfb'], signal.SIGTERM)
         elif mode == 'bus':
@@ -273,6 +276,10 @@ def child(mode):
             window.show_rooms()
             yield .6
             click(rooms[1 % len(rooms)])
+            if mode == 'sigint':     # Ctrl+C in a terminal while the room plays on Now
+                yield 1.5
+                window.rooms.close_preview(animate=False)
+                window.show_now()
             deadline = time.monotonic() + 20
             while True:
                 yield .5
@@ -334,6 +341,8 @@ def child(mode):
 if __name__ == '__main__':
     if '--child' in sys.argv:
         no_core_dumps()
+        # A background job starts with SIGINT ignored; a terminal launch has Python's KeyboardInterrupt.
+        signal.signal(signal.SIGINT, signal.default_int_handler)
         sys.exit(child(sys.argv[sys.argv.index('--child') + 1]))
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--source', default=str(HERE.parents[1] / 'src'))
