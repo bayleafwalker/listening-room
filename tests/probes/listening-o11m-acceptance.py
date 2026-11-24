@@ -43,6 +43,11 @@ Parts (each child is a subprocess, so a segfault is a result):
   fallback-gate / fallback-refs   the workaround's fallback: its GTK version gate patched not to match, or its
           reference-count check refused for real (an extra reference on the first loop's video sink): shedding off,
           GL threads one per loop and flat across resumes, loops play, resume, loop past their clip and stay paused.
+  warm-idle / warm-browse / warm-pages   the idle warm-up (coordinator request on 3e937b9): after the first shed,
+          nothing, previews clicked through, or page switches back to back; the download must never touch a preview,
+          a resume or two actions <= 1 s apart, runs once, and holds the GTK thread at most 500 ms (PROPOSED).
+  token   the weak-ref token (coordinator request on 3e937b9): late notifies fired by hand with old sinks' tokens and
+          the next sink's addresses must not authorise releasing the context of that sink, kept alive.
   stress  criterion 2: tests/probes/listening-scene-media-stress.py, 10 children x 30 cycles = 300 cycles,
           3 at a time; host load above 15 for part of the run (nice-19 helpers for at most its first 60 s, up to
           load 16, then stopped); every signal is a crash.
@@ -326,7 +331,8 @@ def run_parent(args):
     print('uptime at start: %s' % summary['uptime_start'], flush=True)
     if args.inject:
         print('DIAGNOSTIC RUN: --inject %s (not an acceptance run)' % args.inject, flush=True)
-    parts = set(filter(None, args.only.split(','))) or {'setup', 'pages', 'media', 'churn', 'fallback', 'stress', 'notes'}
+    parts = set(filter(None, args.only.split(','))) or {'setup', 'pages', 'media', 'churn', 'fallback', 'warm', 'token',
+                                                              'stress', 'notes'}
     media_ready = subprocess.call([sys.executable, '-c', GST_READY], stderr=subprocess.DEVNULL) == 0
     if 'setup' in parts:
         check('S1 the dev shell provides GStreamer playbin3 to the window (scene loops can play)', media_ready,
@@ -362,6 +368,11 @@ def run_parent(args):
         if 'fallback' in parts:
             for mode in ('fallback-gate', 'fallback-refs'):
                 summary[mode] = child(mode, timeout=600)
+        if 'warm' in parts:            # coordinator request on 3e937b9: the idle warm-up
+            for mode in ('warm-idle', 'warm-browse', 'warm-pages'):
+                summary[mode] = child(mode, timeout=300)
+        if 'token' in parts:           # coordinator request on 3e937b9: the weak-ref token
+            summary['token'] = child('token', timeout=300)
 
         # ------------------------------------------------------------ criterion 2: stress, zero crashes
         if 'stress' in parts:
@@ -505,6 +516,10 @@ def run_child(mode, args):
             result = churn(env, step, check, info)
         elif mode.startswith('fallback-'):
             result = fallback(env, step, check, info, mode.split('-', 1)[1])
+        elif mode.startswith('warm-'):
+            result = warm(env, step, check, info, mode.split('-', 1)[1])
+        elif mode == 'token':
+            result = token(env, step, check, info)
         else:
             result = media(env, step, check, info)
         print('RESULT ' + json.dumps(result, default=str), flush=True)
@@ -1368,6 +1383,234 @@ def fallback(env, step, check, info, mode):
         label, o10p.IDLE_MEDIA_CPU_MS), idle <= o10p.IDLE_MEDIA_CPU_MS, idle, measured=round(idle))
     return {'mode': mode, 'held': bool(held), 'released_gl': released_gl, 'resumed_gl': resumed_gl,
             'shed_loops': shed_loops, 'shedding_on': shedding_on, 'idle_ms': idle, 'late': late, 'uptime': uptime()}
+
+
+# ---------------------------------------------------------------------------- child: the idle warm-up (3e937b9)
+# Coordinator request on 3e937b9: after the first shed the product downloads that loop's last frame once, from a
+# low-priority timeout, so GDK's dmabuf download set-up (about 245 ms of GTK-thread CPU with software GL) is paid
+# while idle instead of on the first resume. It must never land inside a preview, a resume or back-to-back user
+# actions; its idle stall is bounded. The probe wraps next_widgets._warm_download (the timeout looks the name up when
+# it is armed) to record when each call ran, how long it held the GTK thread and whether it did the download.
+WARM_STALL_MS = 500.     # PROPOSED, flagged: no brief number covers idle work; about 2x the implementer's 245 ms
+BACK_TO_BACK_S = 1.      # two user actions this close are back to back (the product's own WARM_MS quiet)
+
+
+def _record_warm(next_widgets):
+    runs = []
+    original = getattr(next_widgets, '_warm_download', None)
+    if original is None:
+        return runs, False
+
+    def recorded(media):
+        t0, w0, c0 = time.monotonic(), schedstat_wait_s(), time.thread_time()
+        wanted = any(loop.wanted for loop in getattr(next_widgets, '_LOOPS', {}).values())
+        again = original(media)
+        t1, w1, c1 = time.monotonic(), schedstat_wait_s(), time.thread_time()
+        runs.append({'start': t0, 'end': t1, 'again': bool(again), 'wanted': wanted, 'wall_ms': (t1 - t0) * 1000,
+                     'stall_ms': ((t1 - t0) - (w1 - w0)) * 1000, 'cpu_ms': (c1 - c0) * 1000})
+        return again
+    next_widgets._warm_download = recorded
+    return runs, True
+
+
+def _busy_spans(acts):
+    """Spans a warm-up must not touch: every preview (click to its Esc) and every pair of actions <= 1 s apart."""
+    spans = []
+    for (kind, t0, t1), (kind2, u0, u1) in zip(acts, acts[1:]):
+        if kind == 'click' and kind2 == 'escape' or u0 - t1 <= BACK_TO_BACK_S:
+            spans.append((t0, u1))
+    return spans
+
+
+def warm(env, step, check, info, scenario):
+    """scenario 'idle': nothing after the first shed, so the warm-up runs (bounded stall, once). 'browse': previews
+    clicked through right after the first shed (1.2-2 s each, 0.3-0.7 s apart). 'pages': page switches 0.4-0.7 s
+    apart (Listen, Rooms) right after it. In all three the warm-up must not touch a preview or a back-to-back pair."""
+    import random
+    import next_widgets
+    pump, rng = env.pump, random.Random(37)
+    runs, hooked = _record_warm(next_widgets)
+    window = env.launch(page='rooms')
+    window.show_rooms()
+    pump(2.)
+    rooms = o10p.Rooms(env, window)
+    catalogue = rooms.loop_cards()
+    acts = []
+
+    def act(kind, fn, *a):
+        t0 = time.monotonic()
+        fn(*a)
+        acts.append((kind, t0, time.monotonic()))
+
+    step('a long preview, then the first shed')
+    act('click', rooms.click, catalogue[0])
+    moved = rooms.moves(6.)[0]
+    while time.monotonic() - acts[0][1] < 4.:
+        pump(.1)
+    act('escape', rooms.escape)
+    path, deadline = rooms.loop_of(catalogue[0]), time.monotonic() + 15.
+    while not _loop_state(next_widgets, path)[0] and time.monotonic() < deadline:
+        pump(.05)
+    shed_at, shed = time.monotonic(), _loop_state(next_widgets, path)[0]
+    armed = bool(getattr(next_widgets, '_PLAY', {}).get('warmed'))
+    done_before = [r for r in runs if not r['again']]
+    step('scenario ' + scenario)
+    start = time.monotonic()
+    index = 1
+    while time.monotonic() - start < 10.:
+        if scenario == 'browse':
+            act('click', rooms.click, catalogue[index % len(catalogue)])
+            pump(rng.uniform(1.2, 2.))
+            act('escape', rooms.escape)
+            pump(rng.uniform(.3, .7))
+            index += 1
+        elif scenario == 'pages':
+            act('page', window.show_listen)
+            pump(rng.uniform(.4, .7))
+            act('page', window.show_rooms)
+            pump(rng.uniform(.4, .7))
+        else:
+            pump(.5)
+    step('idle afterwards')
+    pump(6.)
+    act('click', rooms.click, catalogue[0])
+    resumed = rooms.moves(6.)[0]
+    act('escape', rooms.escape)
+    pump(1.)
+    downloads = [r for r in runs if not r['again']]
+    spans = _busy_spans(acts)
+    touching = [r for r in downloads if r['wanted'] or any(r['start'] < b and r['end'] > a for a, b in spans)]
+    since_last = [min([r['start'] - t1 for _, _, t1 in acts if t1 <= r['start']] or [1e9]) for r in downloads]
+    info('warm %s: shed %s (%.1f s after Esc), armed %s, downloads before the scenario %d; %d calls, downloads %s; '
+         'seconds since the last action at each %s; %d actions, %d busy spans' % (
+             scenario, shed, shed_at - acts[1][2], armed, len(done_before), len(runs),
+             [{k: (round(v - start, 2) if k in ('start', 'end') else round(v, 1) if isinstance(v, float) else v)
+               for k, v in r.items()} for r in downloads], [round(x, 2) for x in since_last], len(acts), len(spans)))
+    exercised = hooked and moved and shed and armed and not done_before
+    label = {'idle': 'idle', 'browse': 'previews clicked through', 'pages': 'page switches back to back'}[scenario]
+    if scenario == 'idle':
+        check('W1 warm-up, idle: it runs once per process after the first shed, at least 1 s after the last action, and '
+              'holds the GTK thread at most %.0f ms (@@ ms without run-queue wait) [limit PROPOSED]' % WARM_STALL_MS,
+              exercised and len(downloads) == 1 and not touching and since_last[0] >= BACK_TO_BACK_S
+              and downloads[0]['stall_ms'] <= WARM_STALL_MS,
+              (hooked, moved, shed, armed, len(done_before), downloads, since_last),
+              measured=round(downloads[0]['stall_ms'], 1) if downloads else -1)
+    else:
+        check('W%d warm-up, %s right after the first shed: it never lands inside a preview, a resume or two actions '
+              '<= 1 s apart (@@ of @@ downloads touching), and still runs once when idle' % (
+                  2 if scenario == 'browse' else 3, label),
+              exercised and len(downloads) == 1 and not touching,
+              (hooked, moved, shed, armed, len(done_before), downloads, since_last), measured=(len(touching), len(downloads)))
+    check('W4 %s: a loop shown again after the warm-up still moves' % label, resumed, resumed)
+    return {'scenario': scenario, 'hooked': hooked, 'shed': shed, 'armed': armed, 'downloads': downloads,
+            'calls': len(runs), 'since_last': since_last, 'acts': len(acts), 'uptime': uptime()}
+
+
+# ---------------------------------------------------------------------------- child: the weak-ref token (3e937b9)
+# Coordinator request on 3e937b9: a late finalize notify for an old sink must never authorise releasing a reference
+# on a newer sink. The probe lets three loops shed normally, then fires the workaround's own weak-ref callback by hand
+# as late notifies: with every token an old sink could carry (one per shed so far) and with the addresses of the next
+# sink (what dd4985e keyed on, so address reuse is covered). That next sink is kept alive by an extra reference, so its
+# shed must be refused: the GL context stays (its thread lives) and shedding stops. Then the reference is dropped and
+# the window must carry on (no crash; loops still play).
+
+def token(env, step, check, info):
+    import ctypes
+    import next_widgets
+    pump = env.pump
+    window = env.launch(page='rooms')
+    window.show_rooms()
+    pump(2.)
+    rooms = o10p.Rooms(env, window)
+    catalogue = rooms.loop_cards()
+    calls, originals = [], []
+
+    def wrap():
+        current = getattr(next_widgets, '_PLAY', {}).get('shed')
+        if current and not getattr(current, 'o11m', False):
+            def recorded(player):
+                renderer = current(player)
+                calls.append((player, bool(renderer)))
+                return renderer
+            recorded.o11m = True
+            next_widgets._PLAY['shed'] = recorded
+            originals.append(current)
+
+    step('three loops shed normally')
+    moved = []
+    for card in catalogue[:3]:
+        rooms.click(card)
+        moved.append(rooms.moves(6.)[0])
+        wrap()
+        rooms.escape()
+        pump(.4)
+    deadline = time.monotonic() + 20.
+    while not all(_loop_state(next_widgets, rooms.loop_of(c))[0] for c in catalogue[:3]) and time.monotonic() < deadline:
+        pump(.2)
+    used = sum(ok for _, ok in calls)
+    original = originals[0] if originals else None
+    cells = [c.cell_contents for c in (original.__closure__ or ())] if original else []
+    finalized = next((c for c in cells if isinstance(c, set)), None)
+    gone = next((c for c in cells if isinstance(c, ctypes._CFuncPtr)), None)
+    step('hold the next sink, fire late notifies')
+    target = catalogue[3]
+    rooms.click(target)
+    moved.append(rooms.moves(6.)[0])
+    scene = rooms.scene_widget()
+    _, paintable = o10p.largest_paintable(scene) if scene else (None, None)
+    held = _hold_video_sink(next_widgets, paintable) if isinstance(paintable, env.Gtk.MediaFile) else None
+    gobject = ctypes.CDLL('libgobject-2.0.so.0')
+    gobject.g_type_name_from_instance.argtypes, gobject.g_type_name_from_instance.restype = [ctypes.c_void_p], ctypes.c_char_p
+    gobject.g_object_unref.argtypes = [ctypes.c_void_p]
+    inner = None
+    if held and gobject.g_type_name_from_instance(held) == b'GstGLSinkBin':
+        out = ctypes.c_void_p()
+        gobject.g_object_get(ctypes.c_void_p(held), b'sink', ctypes.byref(out), None)
+        inner = out.value
+        if inner:
+            gobject.g_object_unref(inner)       # the bin we hold keeps it alive; only its address is wanted
+    fired = list(range(1, used + 1)) + [a for a in (held, inner) if a]
+    if gone:
+        for data in fired:
+            gone(data, None)
+    rooms.escape()
+    player = getattr(getattr(next_widgets, '_LOOPS', {}).get(rooms.loop_of(target)), 'player', None)
+    deadline = time.monotonic() + 20.
+    while not any(p == player for p, _ in calls) and time.monotonic() < deadline:
+        pump(.2)
+    _quiet(env)
+    target_shed = [ok for p, ok in calls if p == player]
+    refused = not getattr(next_widgets, '_PLAY', {}).get('shed')
+    gl_held = _gl()
+    step('drop the extra reference, carry on')
+    if held:
+        gobject.g_object_unref(held)
+    pump(2.)
+    gc.collect()
+    after = []
+    for card in (target, catalogue[0], catalogue[5]):
+        rooms.click(card)
+        after.append(rooms.moves(6.)[0])
+        rooms.escape()
+        pump(.5)
+    _quiet(env)
+    gl_end = _gl()
+    info('token: %d normal sheds before (tokens 1..%d), callback found %s, late notifies %d (held sink %s, inner %s); '
+         'target shed calls %s, shedding refused %s; GL with the sink held %s, at the end %s; moved %s, after %s' % (
+             used, used, bool(gone), len(fired), bool(held), bool(inner), target_shed, refused, gl_held, gl_end,
+             moved, after))
+    loops = len(catalogue)
+    check('T1 token: late finalize notifies (old sinks\' tokens and the next sink\'s addresses) never authorise '
+          'releasing the GL context of a newer sink still alive: its shed is refused and its context thread lives '
+          '(@@ gstglcontext with it held)',
+          all(moved) and used >= 3 and gone is not None and finalized is not None and bool(held) and bool(target_shed)
+          and refused and gl_held[0] >= 1, (moved, used, bool(gone), bool(held), target_shed, refused, gl_held),
+          measured=gl_held[0])
+    check('T2 token: with the extra reference dropped, loops still play and GL threads stay within one per loop file '
+          '(@@ at the end)', all(after) and gl_end[0] <= loops and gl_end[1] <= loops, (after, gl_end),
+          measured=gl_end[0])
+    return {'used': used, 'fired': len(fired), 'target_shed': target_shed, 'refused': refused, 'gl_held': gl_held,
+            'gl_end': gl_end, 'after': after, 'uptime': uptime()}
 
 
 if __name__ == '__main__':

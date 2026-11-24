@@ -67,6 +67,26 @@ B3 refs: with the reference-count check refusing (an extra sink reference), loop
 B4 refs: with the reference-count check refusing (an extra sink reference), loops off screen stay paused: media threads use <= 50 ms CPU in 5 s on the grid (@@ ms)
 fallback-refs: the child finished without a crash or hang
 fallback-refs: the child reported all its oracles and exited 0
+# Coordinator request on 3e937b9. W: the idle warm-up of GDK's download set-up must never touch a preview, a resume
+# or two user actions <= 1 s apart (previews clicked through, page switches), runs once, and holds the GTK thread at
+# most 500 ms when it runs (PROPOSED limit, flagged). T: late weak-ref notifies (old sinks' tokens, the next sink's
+# addresses) must never authorise releasing the GL context of a newer sink still alive.
+W1 warm-up, idle: it runs once per process after the first shed, at least 1 s after the last action, and holds the GTK thread at most 500 ms (@@ ms without run-queue wait) [limit PROPOSED]
+W4 idle: a loop shown again after the warm-up still moves
+warm-idle: the child finished without a crash or hang
+warm-idle: the child reported all its oracles and exited 0
+W2 warm-up, previews clicked through right after the first shed: it never lands inside a preview, a resume or two actions <= 1 s apart (@@ of @@ downloads touching), and still runs once when idle
+W4 previews clicked through: a loop shown again after the warm-up still moves
+warm-browse: the child finished without a crash or hang
+warm-browse: the child reported all its oracles and exited 0
+W3 warm-up, page switches back to back right after the first shed: it never lands inside a preview, a resume or two actions <= 1 s apart (@@ of @@ downloads touching), and still runs once when idle
+W4 page switches back to back: a loop shown again after the warm-up still moves
+warm-pages: the child finished without a crash or hang
+warm-pages: the child reported all its oracles and exited 0
+T1 token: late finalize notifies (old sinks' tokens and the next sink's addresses) never authorise releasing the GL context of a newer sink still alive: its shed is refused and its context thread lives (@@ gstglcontext with it held)
+T2 token: with the extra reference dropped, loops still play and GL threads stay within one per loop file (@@ at the end)
+token: the child finished without a crash or hang
+token: the child reported all its oracles and exited 0
 X1 stress: at least 300 scene-media stress cycles ran with scene loops (@@ attempted, @@ completed)
 X2 stress: zero crashes over those cycles (@@ crashed children)
 X3 stress: the host load was above 15 for part of the run (peak @@)
