@@ -769,7 +769,7 @@ def victim(env, step):
     # close_fds, and GLib's spawn): neither may keep the window's lock alive after the window is killed.
     from gi.repository import GLib
     kid_a = subprocess.Popen(['sleep', '300'])
-    kid_b = GLib.spawn_async(['/bin/sleep', '300'], flags=GLib.SpawnFlags.SEARCH_PATH)[0]
+    kid_b = GLib.spawn_async([shutil.which('sleep'), '300'], flags=GLib.SpawnFlags.SEARCH_PATH)[0]
     print('READY %d %d %d %d %d' % (truth.shed, truth.renew, os.getpid(), kid_a.pid, kid_b), flush=True)
     while True:
         env.pump(.5)
@@ -837,7 +837,7 @@ def stale(env, step, check, info, args):
         check('K1 a window running in another process: inspect (in the window process and as a separate roomctl process) '
               'reports it active with its real counts', v1.pid is not None and not any(
                   not r['readable'] or r['active'] is not True for r in r1.values())
-              and all(v1.truth[0] in c and v1.truth[1] in counts_of(r1, 'resumed')[n]
+              and all((v1.truth or (None, None))[0] in c and (v1.truth or (None, None))[1] in counts_of(r1, 'resumed')[n]
                       for n, c in counts_of(r1, 'shed').items()),
               (v1.truth, v1.pid, {n: (r['readable'], r['active'], r['view']) for n, r in r1.items()}))
         lockfile = directory / ('scene-loops-%s.lock' % v1.pid)
@@ -856,7 +856,7 @@ def stale(env, step, check, info, args):
         check('K2 after the window was killed while the children it spawned still run, inspect does not claim shedding is '
               'active and reports none of the dead window\'s counts', len(kids_alive()) == 2 and all(
                   r['readable'] for r in r2.values()) and not claims_active(r2)
-              and all(v1.truth[0] not in c for c in counts_of(r2, 'shed').values() if v1.truth[0] not in (0,)),
+              and all((v1.truth or (None, None))[0] not in c for c in counts_of(r2, 'shed').values() if v1.truth and v1.truth[0] not in (0,)),
               {n: (r['readable'], r['active'], r['view']) for n, r in r2.items()})
         step('a new window starts')
         window = env.launch(page='rooms')
@@ -891,8 +891,8 @@ def stale(env, step, check, info, args):
         r4 = both(env)
         check('K4 two windows at once: inspect reports one window, the newest, with its own counts (not a sum or a mix)',
               v2.pid is not None and all(r['readable'] and r['active'] is True for r in r4.values()) and all(
-                  c == [v2.truth[0]] for c in counts_of(r4, 'shed').values()) and all(
-                  c == [v2.truth[1]] for c in counts_of(r4, 'resumed').values()),
+                  c == [(v2.truth or (None, None))[0]] for c in counts_of(r4, 'shed').values()) and all(
+                  c == [(v2.truth or (None, None))[1]] for c in counts_of(r4, 'resumed').values()),
               (v2.truth, mine, {n: (r['active'], r['view']) for n, r in r4.items()}))
         step('stale and garbage files beside live windows')
         gone = dead_pid()
@@ -902,8 +902,8 @@ def stale(env, step, check, info, args):
         r5 = both(env)
         check('K5 files from a dead pid (newer than the live windows\') and corrupt files beside live windows do not hide or '
               'replace the newest live window\'s report', all(r['readable'] and r['active'] is True for r in r5.values())
-              and all(c == [v2.truth[0]] for c in counts_of(r5, 'shed').values()) and all(
-                  c == [v2.truth[1]] for c in counts_of(r5, 'resumed').values()),
+              and all(c == [(v2.truth or (None, None))[0]] for c in counts_of(r5, 'shed').values()) and all(
+                  c == [(v2.truth or (None, None))[1]] for c in counts_of(r5, 'resumed').values()),
               {n: (r['active'], r['view']) for n, r in r5.items()})
         return {'v1': v1.truth, 'mine': mine, 'v2': v2.truth, 'uptime': uptime()}
     finally:
