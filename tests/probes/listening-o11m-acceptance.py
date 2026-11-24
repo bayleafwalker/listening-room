@@ -1581,24 +1581,28 @@ def starve(env, step, check, info, scenario):
     catalogue = rooms.loop_cards()
     resumes = []          # (card name, worst stall ms) for every resume of a shed loop
 
-    seen = {}             # card -> the loop its preview wanted (the scene's asset path need not be the preset's url)
+    seen = {}             # card name -> the loop its preview wanted (the scene's asset path need not be the preset's
+                          # url; cards are rebuilt after a room is entered, so they are known by name)
+
+    def name_of(card):
+        return rooms.entry(card).get('name')
 
     def note(card):
         loop = next((l for l in getattr(next_widgets, '_LOOPS', {}).values() if l.wanted), None)
         if loop is not None:
-            seen[id(card)] = loop
+            seen[name_of(card)] = loop
 
     def shed_now(card):
-        loop = seen.get(id(card)) or getattr(next_widgets, '_LOOPS', {}).get(rooms.loop_of(card))
+        loop = seen.get(name_of(card)) or getattr(next_widgets, '_LOOPS', {}).get(rooms.loop_of(card))
         return bool(loop is not None and loop.shed)
 
     def resume(card, seconds):
-        was_shed, worst = shed_now(card), [0.]
+        name, was_shed, worst = name_of(card), shed_now(card), [0.]
         _timed(lambda: rooms.click(card), worst)
         _timed_pump(env, seconds, worst)
         note(card)
         if was_shed:
-            resumes.append((rooms.entry(card).get('name'), round(worst[0] * 1000, 1)))
+            resumes.append((name, round(worst[0] * 1000, 1)))
         return worst[0]
 
     moved, entered, playing = [], None, None
@@ -1625,8 +1629,10 @@ def starve(env, step, check, info, scenario):
         pump(15.)
         downloads_before = len([r for r in runs if not r['again']])
         step('back to Rooms, straight to the shed loop')
+        target_name = name_of(target)
         window.show_rooms()
         pump(.3)
+        target = rooms.card_named(target_name) or target
         resume(target, 2.5)
         moved.append(rooms.moves(6.)[0])
         rooms.escape()
