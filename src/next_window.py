@@ -27,7 +27,7 @@ from next_mini import MINI_CSS, MiniPlayer, MiniWindow
 from next_mix import MIX_SHORTCUTS, MixSheet
 from next_rooms import RoomsPage
 from next_watching import Watching
-from next_widgets import (FocalPicture, choose_renderer, show_texture, OutputPopover, Scene, TimerPopover, accent_css, icon_button,
+from next_widgets import (FocalPicture, choose_renderer, hold_main_context, show_texture, OutputPopover, Scene, TimerPopover, accent_css, icon_button,
                           install_css, label, menu_item, name_it, pop_button)
 
 APP_ID = 'app.kotona.ListeningRoom'
@@ -1665,6 +1665,7 @@ class NextApp(Adw.Application):
 
     def do_startup(self):
         Adw.Application.do_startup(self)
+        hold_main_context()     # frames from playing scene loops reach Python on this thread only, even at exit
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
 
     def do_activate(self):

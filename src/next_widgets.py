@@ -865,6 +865,22 @@ def shared_loop(path):
 GLib.timeout_add_seconds(GLib.MAXINT32, lambda *_: True, _LOOPS)
 
 
+def hold_main_context():
+    """Make the calling (GTK) thread the owner of the default main context for the rest of the process.
+
+    GTK's video sink hands each decoded frame to the default main context with g_main_context_invoke.
+    When no thread owns that context, GLib runs the hand-off at once on the GStreamer streaming thread:
+    the paintable invalidates and FocalPicture._changed runs there, off the GTK thread. Nobody owns the
+    context after Gtk.Application.run() returns, nor between the iterations of a hand-pumped loop, so
+    a loop still delivering frames while the interpreter shuts down called into Python on a streaming
+    thread and the process died with SIGSEGV at exit. Owned, the hand-off waits in the context for the
+    GTK thread instead (and is dropped at exit). Ownership is recursive, so run() and iteration() on
+    this thread still work. Idempotent per thread."""
+    context = GLib.MainContext.default()
+    if not context.is_owner() and not context.acquire():
+        raise RuntimeError('the default main context is owned by another thread')
+
+
 class Scene(Gtk.Overlay):
     """The room scene, full bleed: still art, or the reviewed loop (muted) when allowed."""
     motion_delay_ms = 0
