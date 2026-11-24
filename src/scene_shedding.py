@@ -23,6 +23,7 @@ from pathlib import Path
 import re
 import tempfile
 import threading
+import time
 
 FILE = 'scene-loops-%d.json'
 LOCK = 'scene-loops-%d.lock'
@@ -51,6 +52,7 @@ def _directory():
 _lock = threading.Condition()
 _asked = _done = 0           # writes asked for and written (the window never waits for the disk)
 _worker = None
+RETRY_S = .2                   # between tries while a reader holds the window's lock file
 _held = None                 # the lock file's descriptor, open for the life of the process
 
 
@@ -77,17 +79,20 @@ def _run():
         with _lock:
             _lock.wait_for(lambda: _done < _asked)
             target, snapshot = _asked, dict(_status, pid=os.getpid())
-        _save(snapshot)
+        if not _save(snapshot):
+            time.sleep(RETRY_S)       # the lock is busy (a status reader holds it for an instant): try again
+            continue
         with _lock:
             _done = target
             _lock.notify_all()
 
 
 def _save(snapshot):
+    """Write the status; False only when the window's own lock could not be taken yet (to be retried)."""
     global _held
     directory = _directory()
     if directory is None:
-        return
+        return True
     try:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if _held is None:
@@ -96,7 +101,7 @@ def _save(snapshot):
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 os.close(descriptor)
-                return
+                return False
             _held = descriptor
         descriptor, name = tempfile.mkstemp(dir=directory, prefix='.scene-loops-')
         with os.fdopen(descriptor, 'w') as handle:
@@ -104,6 +109,7 @@ def _save(snapshot):
         os.replace(name, directory / (FILE % os.getpid()))
     except OSError:
         pass                      # a status file is never worth disturbing the window
+    return True
 
 
 def _remove():

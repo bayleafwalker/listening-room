@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -137,6 +138,24 @@ class SceneSheddingStatus(unittest.TestCase):
         child.kill()
         child.wait()
         self.assertEqual(scene_shedding.status()['state'], 'unreported')
+
+    def test_a_reader_holding_the_lock_file_at_first_report_only_delays_it(self):
+        import fcntl
+        directory = self.runtime / 'listening-hub'
+        directory.mkdir()
+        reader = os.open(directory / (scene_shedding.LOCK % os.getpid()), os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(lambda: os.path.exists('/proc/self/fd/%d' % reader) and os.close(reader))
+        fcntl.flock(reader, fcntl.LOCK_SH)
+        scene_shedding.decided('active', '4.24.0')
+        scene_shedding.shed()
+        time.sleep(.5)                       # still held: nothing reported, nothing lost, window not blocked
+        self.assertEqual(scene_shedding.status()['state'], 'unreported')
+        os.close(reader)                     # the reader lets go; no further shed or resume happens
+        deadline = time.monotonic() + 5
+        while scene_shedding.status()['state'] == 'unreported' and time.monotonic() < deadline:
+            time.sleep(.05)
+        status = scene_shedding.status()
+        self.assertEqual((status['state'], status['shed']), ('active', 1))
 
     def test_hostile_or_damaged_files_are_ignored_and_never_break_status(self):
         for number, record in ((1, '{not json'), (2, {'state': 'bogus', 'pid': 2}), (3, {'pid': 3}),
