@@ -31,22 +31,27 @@ LEVEL_STEP = 5
 class PresenterRow(Gtk.Box):
     """Speech has controls of its own; it never borrows music transport."""
     def __init__(self, send):
-        super().__init__(spacing=12, margin_top=12)
+        # Title and status, then the controls wrapping beneath, like the layer rows: the Mix fits a narrow window.
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin_top=12)
         self.send, self.updating = send, False
-        self.append(label('Presenter', ['layer-title']))
-        self.status = label('', ['dim-label']); self.status.set_hexpand(True); self.append(self.status)
-        self.less = Gtk.Button(label='Less talking')
-        self.less.connect('clicked', lambda *_: send('presenter.feedback', {'action': 'less'})); self.append(self.less)
-        self.music_only = Gtk.Button(label='Music only')
-        self.music_only.connect('clicked', lambda *_: send('presenter.feedback', {'action': 'music_only'})); self.append(self.music_only)
+        top = Gtk.Box(spacing=14)
+        top.append(label('Presenter', ['layer-title']))
+        self.status = label('', ['dim-label'], ellipsize=True); self.status.set_hexpand(True); top.append(self.status)
+        self.append(top)
+        controls = Adw.WrapBox(child_spacing=16, line_spacing=8)
         self.level = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
         self.level.set_size_request(160, -1)
         name_it(self.level, 'Presenter level', None)
         self.level.connect('value-changed', lambda w: None if self.updating else send('presenter.configure', {'level': round(w.get_value(), 1)}))
-        self.append(self.level)
+        controls.append(self.level)
         self.mute = Gtk.ToggleButton(label='Mute')
         self.mute.connect('toggled', lambda b: None if self.updating else send('presenter.configure', {'muted': b.get_active()}))
-        self.append(self.mute)
+        controls.append(self.mute)
+        self.less = Gtk.Button(label='Less talking')
+        self.less.connect('clicked', lambda *_: send('presenter.feedback', {'action': 'less'})); controls.append(self.less)
+        self.music_only = Gtk.Button(label='Music only')
+        self.music_only.connect('clicked', lambda *_: send('presenter.feedback', {'action': 'music_only'})); controls.append(self.music_only)
+        self.append(controls)
 
     def update(self, value):
         self.updating = True
