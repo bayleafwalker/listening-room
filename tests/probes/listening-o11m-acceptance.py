@@ -1120,6 +1120,12 @@ def _kinds_diff(before, after):
     return {k: after.get(k, 0) - before.get(k, 0) for k in set(before) | set(after) if after.get(k, 0) != before.get(k, 0)}
 
 
+def _split_dmabuf(kinds):
+    """(dmabuf fds, every other fd) from _fd_kinds()."""
+    dmabuf = kinds.get('/dmabuf', 0)
+    return dmabuf, sum(kinds.values()) - dmabuf
+
+
 SETTLE_S = 12.   # C4-R1: RELEASE_MS (1 s) plus the sweep's own bound for closing old sources (20 tries x 500 ms)
 
 
@@ -1172,6 +1178,7 @@ def churn(env, step, check, info):
     step('churn')
     peak_ctx = peak_disp = 0
     peak_fds, cycles, shed_resumes, races, sampled = base_fds, 0, 0, 0, []
+    dmabuf_samples = []      # C4-R2: the stills' dmabuf fds after every cycle
     previous = None
     for cycle in range(CHURN_CYCLES):
         race = previous is not None and cycle % 5 == 4
@@ -1192,6 +1199,7 @@ def churn(env, step, check, info):
         previous = card
         ctx, disp = _gl()
         peak_ctx, peak_disp, peak_fds = max(peak_ctx, ctx), max(peak_disp, disp), max(peak_fds, _fds())
+        dmabuf_samples.append(_split_dmabuf(_fd_kinds())[0])
     waited = _quiet(env)
     end_gl, end_fds = _gl(), _fds()
     _quiet(env, at_least=SETTLE_S)
@@ -1232,10 +1240,27 @@ def churn(env, step, check, info):
     print('SUPERSEDED %s C4 [ORIGINAL, superseded by C4-R1] churn: open files do not grow beyond one per loop file once '
           'settled (%+d since the first pass, for %d loop files)' % ('PASS' if grown <= loops else 'FAIL', grown, loops),
           flush=True)
+    # C4-R1 [superseded by C4-R2, coordinator ruling on dd4985e]: the dmabuf fds the stills hold swing by up to +17
+    # between settled samples (o11m-final: +17 after the churn, +2 after one more pass) without growing with the
+    # cycles. C4-R2 judges the two kinds apart: every other fd stays within one per loop file of the first pass, 12 s
+    # after the last release; the dmabuf fds do not grow between the two churn halves (median of the per-cycle samples,
+    # second half against first, by more than one per loop file). A leak of one per resume adds about 70 per half.
     grown_r1 = max(end_r1, final_r1) - base_r1
-    check('C4-R1 churn: open files do not grow beyond one per loop file, %.0f s after the last release (@@ since the '
-          'first pass, for %d loop files)' % (SETTLE_S, loops), grown_r1 <= loops,
-          (base_r1, end_r1, final_r1, peak_fds), measured='%+d' % grown_r1)
+    print('SUPERSEDED %s C4-R1 [superseded by C4-R2] churn: open files do not grow beyond one per loop file, %.0f s '
+          'after the last release (%+d since the first pass, for %d loop files)' % (
+              'PASS' if grown_r1 <= loops else 'FAIL', SETTLE_S, grown_r1, loops), flush=True)
+    other = [_split_dmabuf(k)[1] for k in (base_kinds, end_kinds, final_kinds)]
+    grown_other = max(other[1:]) - other[0]
+    half = len(dmabuf_samples) // 2
+    first, second = (statistics.median(dmabuf_samples[:half]) if half else 0,
+                     statistics.median(dmabuf_samples[half:]) if half else 0)
+    info('churn: fds other than dmabuf %s (first pass, after the churn, after one more pass); dmabuf per cycle, '
+         'median %.1f in the first half, %.1f in the second, samples %s' % (other, first, second, dmabuf_samples))
+    check('C4-R2 churn: open files other than dmabuf do not grow beyond one per loop file %.0f s after the last release '
+          '(@@ since the first pass), and the stills\' dmabuf fds do not grow between the churn halves (median @@ '
+          'then @@, for %d loop files)' % (SETTLE_S, loops),
+          half > 0 and grown_other <= loops and second - first <= loops,
+          (other, first, second), measured=('%+d' % grown_other, '%.1f' % first, '%.1f' % second))
     check('C5 churn: loops still move when shown, during the churn and after it (@@ of @@ sampled)',
           sampled and all(sampled) and all(after), (sampled, after),
           measured=(sum(sampled) + sum(after), len(sampled) + len(after)))
