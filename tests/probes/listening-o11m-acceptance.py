@@ -240,11 +240,13 @@ class Load:
 
     def start_for(self, target, within_s):
         """Start enough helpers that the 1-minute load average is expected to pass `target` within `within_s` even
-        from a quiet host: it moves toward the runnable count as 1 - exp(-t/60), so from load L it needs
-        (target - L) / (1 - exp(-within_s/60)) more runnable processes (at most 32)."""
+        from a quiet host: it moves from L toward the runnable count R as L*e + R*(1 - e), e = exp(-t/60), so it
+        needs R = (target - L*e) / (1 - e) helpers, counting nothing else as runnable (at most 32). The first
+        sizing took L as a lasting base, (target - L) / (1 - e): after the cost window's helpers L is decaying, and
+        run 3 on 3ae4a1f started 7 helpers at load 13.2 and peaked at 13.5."""
         import math
-        load = os.getloadavg()[0]
-        want = int(math.ceil((target - load) / (1 - math.exp(-within_s / 60.))))
+        load, decay = os.getloadavg()[0], math.exp(-within_s / 60.)
+        want = int(math.ceil((target - load * decay) / (1 - decay)))
         for _ in range(max(0, min(want - len(self.procs), 32 - len(self.procs)))):
             self.procs.append(subprocess.Popen([sys.executable, '-c', 'while True: pass'], preexec_fn=die_with_parent))
         self.info('load helpers: %d started (load 1m %.1f, sized to pass %.0f within %.0f s)' % (
