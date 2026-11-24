@@ -4,8 +4,8 @@
 # R2/R3 for shown and playing (a probe child that returns with its window open, or raises, segfaults or aborts at
 # teardown: 79 of 80 runs), and N3 (no CHANGELOG entry yet). Every other check passes on main. Evidence and
 # readings: the O11F-TEARDOWN acceptance phase-1 report.
-# Author-set, FLAGGED FOR A RULING: EXIT_S 15 s, the run counts (10 for the reproducing probe-child states, 200 for
-# Ctrl+C with a room playing, 20 elsewhere) and READY_S 120 s.
+# Author-set limits, ruled by the coordinator in phase 1: EXIT_S 15 s, the run counts (10 for the reproducing
+# probe-child states, 200 for Ctrl+C with a room playing, 20 elsewhere; the cheaper 10 was declined) and READY_S 120 s.
 # Entries with @@ declare the measured part of the name; everything else must match exactly.
 Q1 Q the user closes the window, scene loops shown: every run reached that scene state (20 runs)
 Q2 Q the user closes the window, scene loops shown: no Listening Room process ended in a native crash (20 runs)

@@ -86,10 +86,10 @@ HERE = Path(__file__).resolve()
 REPO = HERE.parents[2]
 
 # ---------------------------------------------------------------------------- thresholds and run counts
-# Author-set (FLAGGED FOR A RULING in the phase-1 report): how long a process may take to end once its exit path
+# Author-set, ruled by the coordinator in phase 1: how long a process may take to end once its exit path
 # starts. systemd's default stop timeout is 90 s; a clean exit of an idle GTK app takes well under a second.
 EXIT_S = 15.
-# Author-set: how long a run may take to bring the scene to its state (8 previews plus up to 15 s to let go).
+# Author-set, ruled in phase 1: how long a run may take to bring the scene to its state (8 previews plus up to 15 s to let go).
 READY_S = 120.
 RELEASE_WAIT_S = 20.      # author: how long the shed state may take to let every loop go (O11-MEDIA allows 15 s)
 CHILD_TIMEOUT_S = 300.
@@ -108,7 +108,7 @@ PATHS = [
     ('R', 'child-raise', 'a probe child raises', STATES),
 ]
 # Runs per (path, state), from the crash rates measured on main 6f9c7a3 (2.7.0) in phase 1, load 4-17 (author-set,
-# FLAGGED FOR A RULING; the phase-1 report has the readings):
+# ruled by the coordinator in phase 1; the phase-1 report has the readings):
 #   - the probe child that raises, or returns with its window open, with a loop shown or playing: 79 crashes in 80
 #     runs (Clopper-Pearson 95% lower bound 0.75 per state). 10 runs: an unfixed build passes with p <= 1e-6.
 #   - the shipped window on Ctrl+C with a room playing: 3 crashes in 200 runs (1.5%; 95% CI 0.3-4.3%). 200 runs: an
