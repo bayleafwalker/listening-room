@@ -379,10 +379,11 @@ DECODER_THREADS = 1
 LOOP_LIMIT = 12           # loop files that may hold a pipeline: the catalogue's, plus a few of your own
 RELEASE_MS = 1000         # an unwanted loop waits this long before it stops (leaving a preview to enter keeps it)
 TRIM_MS = 500             # after a release: close old sources' files and trim the heap (looked at again until done)
-WARM_MS = 1000            # after the first shed: GDK's download set-up waits until no loop has played for this long
+WARM_MS = 1000            # after the first shed: GDK's download set-up waits for this long without input, repaint
+                          # or a change to which loops play
+WARM_POLL_MS = 250
 SWEEP_TRIES = 20          # ... at most this many times (10 s)
 _LOOPS = {}               # loop path -> _Loop
-_QUIET = [0]              # when a loop was last wanted (GLib monotonic microseconds)
 SHED_GTK = (4, 24, 0)      # the GTK whose video sink leaks its GL context (see _load_shed); others keep the sink
 GST_MEDIA_FILE_FIELDS = 5  # GtkGstMediaFile's own fields after its parent (GTK 4.24), the GstPlay first
 _PLAY = {}                # GstPlay/GStreamer calls through ctypes (_load_play) and the release sweep's work, or 'off'
@@ -470,8 +471,8 @@ class _Loop:
 
     def want(self, scene, playing):
         (self.wanted.add if playing else self.wanted.discard)(id(scene))
+        _Warm.busy()
         if self.wanted:
-            _QUIET[0] = GLib.get_monotonic_time()
             if self.releasing:
                 GLib.source_remove(self.releasing)
                 self.releasing = 0
@@ -746,19 +747,61 @@ def _after_release():
         _PLAY['sweep'] = GLib.timeout_add(TRIM_MS, _sweep)
 
 
-def _warm_download(media):
-    """Once, after the first loop gives up its sink: download its last frame, while nothing is being shown.
+class _Warm:
+    """Once, after the first loop gives up its sink: download its last frame while the window is quiet.
 
     GDK sets up its dmabuf download path (with software GL, 150-270 ms on the GTK thread) the first time a
     frame needs it. Before sinks were dropped and renewed, the loops never needed it; a renewed sink's frames
-    do, so without this the first loop shown again after a release paid for it as a stall. It waits until
-    no loop has played for WARM_MS (nothing is being looked at, and no preview is being clicked through)."""
-    if any(loop.wanted for loop in _LOOPS.values()) or GLib.get_monotonic_time() - _QUIET[0] < WARM_MS * 1000:
-        return True
-    image = media.get_current_image()
-    if isinstance(image, Gdk.Texture) and image.get_width() > 0:
-        image.download(bytearray(image.get_width() * image.get_height() * 4), image.get_width() * 4)
-    return False
+    do, so without this the first loop shown again after a release paid for it as a stall. So it is paid
+    once, when nothing has happened for WARM_MS: no input to any window (capture phase: every key, click,
+    scroll and pointer move), no repaint of any window (page switches, animations, a playing scene) and no
+    change to which loops play. Anything of the kind starts the wait over. Repaints are the frame clock's
+    'paint' phase, which runs only for invalidated content ('after-paint' runs on every tick: the window
+    keeps tick callbacks, so it would never be quiet)."""
+    pending = None            # the media whose frame is downloaded, until it is
+    quiet_since = 0           # GLib monotonic microseconds
+    source = 0
+    watches = []              # (object, handler id) on the windows and their frame clocks
+    controllers = []          # (window, controller)
+
+    @classmethod
+    def busy(cls, *_args):
+        cls.quiet_since = GLib.get_monotonic_time()
+        return False          # an event controller's legacy handler: let the event through
+
+    @classmethod
+    def start(cls, media):
+        if cls.pending is not None or cls.source:
+            return
+        cls.pending = media
+        cls.busy()
+        for window in Gtk.Window.list_toplevels():
+            controller = Gtk.EventControllerLegacy()
+            controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            controller.connect('event', cls.busy)
+            window.add_controller(controller)
+            cls.controllers.append((window, controller))
+            clock = window.get_frame_clock()
+            if clock is not None:
+                cls.watches.append((clock, clock.connect('paint', cls.busy)))
+        cls.source = GLib.timeout_add(WARM_POLL_MS, cls.poll, priority=GLib.PRIORITY_LOW)
+
+    @classmethod
+    def poll(cls):
+        if any(loop.wanted for loop in _LOOPS.values()) or \
+                GLib.get_monotonic_time() - cls.quiet_since < WARM_MS * 1000:
+            return True
+        cls.source = 0
+        for owner, handler in cls.watches:
+            owner.disconnect(handler)
+        for window, controller in cls.controllers:
+            window.remove_controller(controller)
+        cls.watches, cls.controllers = [], []
+        media, cls.pending = cls.pending, False      # False: done for the life of the process
+        image = media.get_current_image()
+        if isinstance(image, Gdk.Texture) and image.get_width() > 0:
+            image.download(bytearray(image.get_width() * image.get_height() * 4), image.get_width() * 4)
+        return False
 
 
 def _sweep():
@@ -785,8 +828,8 @@ def _sweep():
             elif renderer:
                 loop.renderer = renderer
             loop.shed = bool(renderer)
-            if loop.shed and not _PLAY.get('warmed'):
-                _PLAY['warmed'] = GLib.timeout_add(WARM_MS, _warm_download, loop.media, priority=GLib.PRIORITY_LOW)
+            if loop.shed:
+                _Warm.start(loop.media)
     _PLAY['stopping'] = stopping
     if _PLAY['sources'] or _PLAY['stopping']:
         _PLAY['tries'] += 1

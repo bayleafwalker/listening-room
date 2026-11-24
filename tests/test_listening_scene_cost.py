@@ -396,8 +396,8 @@ class StoppedLoopsDropTheirSink(unittest.TestCase):
                          'stopped': lambda player: player in self.ready,
                          'shed': lambda player: self.calls.append(('shed', player)) or 'renderer:%s' % player,
                          'renew': lambda player, renderer: self.calls.append(('renew', player, renderer)),
-                         'unref': lambda renderer: self.calls.append(('unref', renderer)),
-                         'warmed': 1}, clear=True)]:
+                         'unref': lambda renderer: self.calls.append(('unref', renderer))}, clear=True),
+                     mock.patch.object(next_widgets._Warm, 'start')]:
             item.start()
             self.addCleanup(item.stop)
 
@@ -449,28 +449,66 @@ class StoppedLoopsDropTheirSink(unittest.TestCase):
 
 
 class DownloadSetUpWaitsForQuiet(unittest.TestCase):
-    """GDK's dmabuf download set-up is paid once after the first shed, never while a loop plays."""
-    def test_it_waits_while_a_loop_plays_and_downloads_the_last_frame_once_quiet(self):
-        texture = mock.Mock(spec=next_widgets.Gdk.Texture)
-        texture.get_width.return_value, texture.get_height.return_value = 4, 2
-        media = mock.Mock(get_current_image=mock.Mock(return_value=texture))
-        playing = mock.Mock(wanted={'scene'})
-        with mock.patch.dict(next_widgets._LOOPS, {'drive.mp4': playing}, clear=True), \
-                mock.patch.object(next_widgets, '_QUIET', [0]):
-            self.assertTrue(next_widgets._warm_download(media), 'asks again later while a loop plays')
-            playing.wanted = set()
-            next_widgets._QUIET[0] = next_widgets.GLib.get_monotonic_time()
-            self.assertTrue(next_widgets._warm_download(media), 'and until none has played for WARM_MS')
-            texture.download.assert_not_called()
-            next_widgets._QUIET[0] -= next_widgets.WARM_MS * 1000
-            self.assertFalse(next_widgets._warm_download(media))
-        args = texture.download.call_args[0]
+    """GDK's dmabuf download set-up is paid once after the first shed, only after WARM_MS without input,
+    repaint or a change to which loops play; it never starts twice."""
+    def setUp(self):
+        self.texture = mock.Mock(spec=next_widgets.Gdk.Texture)
+        self.texture.get_width.return_value, self.texture.get_height.return_value = 4, 2
+        self.media = mock.Mock(get_current_image=mock.Mock(return_value=self.texture))
+        self.window, self.clock = mock.Mock(), mock.Mock()
+        self.window.get_frame_clock.return_value = self.clock
+        for item in [mock.patch.object(next_widgets._Warm, 'pending', None),
+                     mock.patch.object(next_widgets._Warm, 'source', 0),
+                     mock.patch.object(next_widgets._Warm, 'watches', []),
+                     mock.patch.object(next_widgets._Warm, 'controllers', []),
+                     mock.patch.object(next_widgets._Warm, 'quiet_since', 0),
+                     mock.patch.object(next_widgets.Gtk.Window, 'list_toplevels', return_value=[self.window]),
+                     mock.patch.object(next_widgets.Gtk, 'EventControllerLegacy'),
+                     mock.patch.object(next_widgets.GLib, 'timeout_add', return_value=7),
+                     mock.patch.dict(next_widgets._LOOPS, clear=True)]:
+            item.start()
+            self.addCleanup(item.stop)
+
+    def age(self):
+        next_widgets._Warm.quiet_since -= next_widgets.WARM_MS * 1000 + 1
+
+    def test_it_waits_for_quiet_then_downloads_the_last_frame_once_and_unhooks(self):
+        warm = next_widgets._Warm
+        warm.start(self.media)
+        self.window.add_controller.assert_called_once()
+        self.clock.connect.assert_called_once_with('paint', warm.busy)
+        self.assertTrue(warm.poll(), 'not before WARM_MS')
+        self.age()
+        next_widgets._LOOPS['drive.mp4'] = mock.Mock(wanted={'scene'})
+        self.assertTrue(warm.poll(), 'not while a loop plays')
+        next_widgets._LOOPS['drive.mp4'].wanted = set()
+        self.age()
+        warm.busy()                                  # any input, repaint or change of wanted loops
+        self.assertTrue(warm.poll(), 'the wait starts over')
+        self.texture.download.assert_not_called()
+        self.age()
+        self.assertFalse(warm.poll())
+        args = self.texture.download.call_args[0]
         self.assertEqual((len(args[0]), args[1]), (4 * 2 * 4, 4 * 4))
+        self.window.remove_controller.assert_called_once()
+        self.clock.disconnect.assert_called_once()
+        warm.start(self.media)
+        self.assertEqual(self.window.add_controller.call_count, 1, 'once for the life of the process')
+
+    def test_any_change_to_the_wanted_loops_counts_as_activity(self):
+        with mock.patch.object(next_widgets.Gtk.MediaFile, 'new_for_filename', side_effect=FakeMedia), \
+                mock.patch.object(next_widgets, 'gst_player', return_value=None):
+            loop = next_widgets._Loop('drive.mp4')
+            for playing in (True, False):
+                next_widgets._Warm.quiet_since = 0
+                loop.want('scene', playing)
+                self.assertGreater(next_widgets._Warm.quiet_since, 0, 'wanted %s' % playing)
 
     def test_a_still_that_is_not_a_texture_is_left_alone(self):
-        media = mock.Mock(get_current_image=mock.Mock(return_value=mock.Mock(spec=[])))
-        with mock.patch.dict(next_widgets._LOOPS, clear=True), mock.patch.object(next_widgets, '_QUIET', [0]):
-            self.assertFalse(next_widgets._warm_download(media))
+        self.media.get_current_image.return_value = mock.Mock(spec=[])
+        next_widgets._Warm.start(self.media)
+        self.age()
+        self.assertFalse(next_widgets._Warm.poll())
 
 
 class GStreamerPlayer(unittest.TestCase):
