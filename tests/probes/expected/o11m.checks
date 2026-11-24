@@ -91,6 +91,15 @@ T1 token: late finalize notifies (old sinks' tokens and the next sink's addresse
 T2 token: with the extra reference dropped, loops still play and GL threads stay within one per loop file (@@ at the end)
 token: the child finished without a crash or hang
 token: the child reported all its oracles and exited 0
+# Coordinator request on 3ae4a1f: the warm-up waits for no input, repaint or loop change; sessions where that quiet
+# never comes must still resume shed loops within R1's 100 ms (W5: a room left playing on Now; W6: previews clicked
+# through without a pause).
+W5 starvation, a room left playing on Now, then straight back to a shed loop: resuming a shed loop never holds the GTK thread over 100 ms, whether or not the warm-up ever ran (worst @@ ms without run-queue wait over @@ resumes)
+starve-now: the child finished without a crash or hang
+starve-now: the child reported all its oracles and exited 0
+W6 starvation, previews clicked through without a pause, two passes: resuming a shed loop never holds the GTK thread over 100 ms, whether or not the warm-up ever ran (worst @@ ms without run-queue wait over @@ resumes)
+starve-browse: the child finished without a crash or hang
+starve-browse: the child reported all its oracles and exited 0
 X1 stress: at least 300 scene-media stress cycles ran with scene loops (@@ attempted, @@ completed)
 X2 stress: zero crashes over those cycles (@@ crashed children)
 X3 stress: the host load was above 15 for part of the run (peak @@)

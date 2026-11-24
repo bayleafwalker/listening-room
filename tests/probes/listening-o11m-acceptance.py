@@ -49,6 +49,8 @@ Parts (each child is a subprocess, so a segfault is a result):
           a resume or two actions <= 1 s apart, runs once, and holds the GTK thread at most 500 ms (ruled).
   token   the weak-ref token (coordinator request on 3e937b9): late notifies fired by hand with old sinks' tokens and
           the next sink's addresses must not authorise releasing the context of that sink, kept alive.
+  starve-now / starve-browse   warm-up starvation (coordinator request on 3ae4a1f): a room left playing on Now, or
+          previews clicked through without a pause; resumes of shed loops stay within R1's 100 ms either way.
   stress  criterion 2: tests/probes/listening-scene-media-stress.py, 10 children x 30 cycles = 300 cycles,
           3 at a time; host load above 15 for part of the run (nice-19 helpers for at most its first 60 s, up to
           load 16, then stopped); every signal is a crash.
@@ -345,7 +347,7 @@ def run_parent(args):
     if args.inject:
         print('DIAGNOSTIC RUN: --inject %s (not an acceptance run)' % args.inject, flush=True)
     parts = set(filter(None, args.only.split(','))) or {'setup', 'pages', 'media', 'churn', 'fallback', 'warm', 'token',
-                                                              'stress', 'notes'}
+                                                              'starve', 'stress', 'notes'}
     media_ready = subprocess.call([sys.executable, '-c', GST_READY], stderr=subprocess.DEVNULL) == 0
     if 'setup' in parts:
         check('S1 the dev shell provides GStreamer playbin3 to the window (scene loops can play)', media_ready,
@@ -400,6 +402,9 @@ def run_parent(args):
                 summary[mode] = child(mode, timeout=300)
         if 'token' in parts:           # coordinator request on 3e937b9: the weak-ref token
             summary['token'] = child('token', timeout=300)
+        if 'starve' in parts:          # coordinator request on 3ae4a1f: a session where quiet never comes
+            for mode in ('starve-now', 'starve-browse'):
+                summary[mode] = child(mode, timeout=300)
 
         # ------------------------------------------------------------ criterion 2: stress, zero crashes
         if 'stress' in parts:
@@ -547,6 +552,8 @@ def run_child(mode, args):
             result = warm(env, step, check, info, mode.split('-', 1)[1])
         elif mode == 'token':
             result = token(env, step, check, info)
+        elif mode.startswith('starve-'):
+            result = starve(env, step, check, info, mode.split('-', 1)[1])
         else:
             result = media(env, step, check, info)
         print('RESULT ' + json.dumps(result, default=str), flush=True)
@@ -1532,6 +1539,122 @@ def warm(env, step, check, info, scenario):
     check('W4 %s: a loop shown again after the warm-up still moves' % label, resumed, resumed)
     return {'scenario': scenario, 'hooked': hooked, 'shed': shed, 'armed': armed, 'downloads': downloads,
             'calls': len(runs), 'since_last': since_last, 'acts': len(acts), 'uptime': uptime()}
+
+
+# ---------------------------------------------------------------------------- child: warm-up starvation (3ae4a1f)
+# Coordinator request on 3ae4a1f: the warm-up now waits for WARM_MS without input, repaint or a change to which loops
+# play. If quiet never comes in a normal session, a later resume of a shed loop pays GDK's download set-up as a stall
+# (246-268 ms with the warm-up disabled, implementer's p5 evidence). The oracle does not care whether the warm-up ran:
+# resumes of shed loops must stay within R1's 100 ms however the session went.
+#   now     one loop shown and shed, then a room entered and left playing on Now for 15 s (a scene repainting all
+#           the time), then back to Rooms and straight to the shed loop.
+#   browse  previews clicked through without a pause (1.2-2 s each, 0.3-0.7 s apart) for two passes over the loops:
+#           the second pass resumes loops the first pass shed.
+
+def _timed_pump(env, seconds, worst):
+    """Run the main loop for `seconds`; worst[0] keeps the longest dispatch without run-queue wait (s)."""
+    ctx, end = env.context, time.monotonic() + seconds
+    while time.monotonic() < end:
+        t0, w0 = time.monotonic(), schedstat_wait_s()
+        dispatched = ctx.iteration(False)
+        stall = max(0., (time.monotonic() - t0) - (schedstat_wait_s() - w0))
+        worst[0] = max(worst[0], stall)
+        if not dispatched:
+            time.sleep(.002)
+
+
+def _timed(act, worst):
+    t0, w0 = time.monotonic(), schedstat_wait_s()
+    act()
+    worst[0] = max(worst[0], max(0., (time.monotonic() - t0) - (schedstat_wait_s() - w0)))
+
+
+def starve(env, step, check, info, scenario):
+    import random
+    import next_widgets
+    pump, rng = env.pump, random.Random(53)
+    runs, hooked = _record_warm(next_widgets)
+    window = env.launch(page='rooms')
+    window.show_rooms()
+    pump(2.)
+    rooms = o10p.Rooms(env, window)
+    catalogue = rooms.loop_cards()
+    resumes = []          # (card name, worst stall ms) for every resume of a shed loop
+
+    seen = {}             # card -> the loop its preview wanted (the scene's asset path need not be the preset's url)
+
+    def note(card):
+        loop = next((l for l in getattr(next_widgets, '_LOOPS', {}).values() if l.wanted), None)
+        if loop is not None:
+            seen[id(card)] = loop
+
+    def shed_now(card):
+        loop = seen.get(id(card)) or getattr(next_widgets, '_LOOPS', {}).get(rooms.loop_of(card))
+        return bool(loop is not None and loop.shed)
+
+    def resume(card, seconds):
+        was_shed, worst = shed_now(card), [0.]
+        _timed(lambda: rooms.click(card), worst)
+        _timed_pump(env, seconds, worst)
+        note(card)
+        if was_shed:
+            resumes.append((rooms.entry(card).get('name'), round(worst[0] * 1000, 1)))
+        return worst[0]
+
+    moved, entered, playing = [], None, None
+    if scenario == 'now':
+        target, room = catalogue[0], catalogue[1]
+        step('show a loop, leave it, wait for its shed')
+        rooms.click(target)
+        moved.append(rooms.moves(6.)[0])
+        note(target)
+        pump(1.)
+        rooms.escape()
+        deadline = time.monotonic() + 15.
+        while not shed_now(target) and time.monotonic() < deadline:
+            pump(.1)
+        step('enter another room, leave it playing on Now')
+        rooms.click(room)
+        pump(1.)
+        widgets = window.rooms.preview_widgets
+        if widgets and widgets.get('enter') is not None:
+            widgets['enter'].emit('clicked')
+        env.settle(1.5)
+        entered = window.current_page() == 'now'
+        playing = rooms.moves(6.)[0]
+        pump(15.)
+        downloads_before = len([r for r in runs if not r['again']])
+        step('back to Rooms, straight to the shed loop')
+        window.show_rooms()
+        pump(.3)
+        resume(target, 2.5)
+        moved.append(rooms.moves(6.)[0])
+        rooms.escape()
+    else:
+        step('previews clicked through, two passes')
+        for index in range(2 * len(catalogue)):
+            card = catalogue[index % len(catalogue)]
+            resume(card, rng.uniform(1.2, 2.))
+            if index % 4 == 3:
+                moved.append(rooms.moves(3.)[0])
+            rooms.escape()
+            pump(rng.uniform(.3, .7))
+        downloads_before = len([r for r in runs if not r['again']])
+    pump(2.)
+    downloads = [r for r in runs if not r['again']]
+    worst = max([ms for _, ms in resumes] or [-1.])
+    info('starve %s: warm-up hooked %s, downloads before the resume(s) %d, at the end %d; entered %s, playing %s; '
+         'resumes of shed loops %s; moved %s; load %.1f' % (scenario, hooked, downloads_before, len(downloads), entered,
+                                                            playing, resumes, moved, os.getloadavg()[0]))
+    label = {'now': 'a room left playing on Now, then straight back to a shed loop',
+             'browse': 'previews clicked through without a pause, two passes'}[scenario]
+    check('W%d starvation, %s: resuming a shed loop never holds the GTK thread over %d ms, whether or not the warm-up '
+          'ever ran (worst @@ ms without run-queue wait over @@ resumes)' % (
+              5 if scenario == 'now' else 6, label, RESUME_STALL_MS),
+          bool(resumes) and all(moved) and (scenario != 'now' or (entered and playing)) and worst <= RESUME_STALL_MS,
+          (resumes, moved, entered, playing, downloads_before), measured=(worst, len(resumes)))
+    return {'scenario': scenario, 'resumes': resumes, 'downloads_before': downloads_before,
+            'downloads': len(downloads), 'entered': entered, 'playing': playing, 'uptime': uptime()}
 
 
 # ---------------------------------------------------------------------------- child: the weak-ref token (3e937b9)
