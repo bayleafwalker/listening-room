@@ -1171,11 +1171,16 @@ def retry(env, step, check, info, mode):
               all(x['readable'] and x['active'] is True and catches_up(x, events, distinct) for x in both_now.values())
               and events[0] >= 2 and events[1] >= 1,
               (events, distinct, {n: (x['active'], x['view']) for n, x in both_now.items()}, during['view']))
-        rooms.click(cards[2])
-        pump(1.5)
-        truth.arm()
-        rooms.escape()
+        gaps.clear()
+        last[0] = time.monotonic()
+        for card in (cards[2], cards[0], cards[2]):        # the same kind of work with no reader: the baseline for K13
+            rooms.click(card)
+            pump(1.2)
+            truth.arm()
+            rooms.escape()
+            pump(.3)
         wait(env, lambda: sum(bool(l.shed) for l in loops_of(nw)) >= 3, SHED_WAIT_S)
+        baseline = max(gaps) if gaps else 0.
         after = settle(env, truth)
         events2, distinct2 = truth.now()
         check('K11 and the report keeps tracking afterwards: a further shed is reported',
@@ -1183,9 +1188,11 @@ def retry(env, step, check, info, mode):
               (events, events2, [x['view'] for x in after]))
         check('K12 while a reader held the lock for 6 s with the status write retrying, the status thread used at most %d ms '
               'of CPU: no busy spin (author-set limit)' % SPIN_MS, spin <= SPIN_MS, spin)
-        check('K13 while the status write retried, the GTK main loop kept running: no gap over %.1f s (author-set limit)' % GAP_S,
-              worst <= GAP_S, worst)
-        return {'spin_ms': round(spin, 1), 'worst_gap_s': round(worst, 3), 'uptime': uptime()}
+        # [ORIGINAL, superseded by this wording: "no gap over 1.5 s" absolute; first previews at load 20 alone gave 5.4 s gaps]
+        check('K13 while the status write retried, the GTK main loop kept running: its longest gap was no more than %.1f s '
+              'over the same work done with no reader holding the lock (author-set margin)' % GAP_S,
+              worst <= baseline + GAP_S, (worst, baseline))
+        return {'spin_ms': round(spin, 1), 'worst_gap_s': round(worst, 3), 'baseline_gap_s': round(baseline, 3), 'uptime': uptime()}
     finally:
         if helper is not None:
             helper.kill()
