@@ -90,6 +90,7 @@ LOOPS = 3             # author: loops used for the count checkpoints
 ROUNDS = 4            # author: show-all / leave-all rounds
 BOUNCES = 10          # author: quick show/leave pairs (each far under the product's 1 s release wait)
 SHED_WAIT_S = 20.     # author: how long the loops may take to shed after the last leave
+SETTLE_S = 3.         # author: how long a report may lag the real activity (it is saved on a worker thread)
 REFS_RANGE = (1, 64)  # author: a plausible observed reference count
 
 
@@ -214,9 +215,31 @@ def inspect_cli():
 
 
 def look():
-    code, data, out, err = inspect_cli()
+    try:
+        code, data, out, err = inspect_cli()
+    except Exception as error:      # inspect crashed: reported as unreadable, with the exception
+        return dict(status_of({}), readable=False, code='raised', err=repr(error)[-300:])
     ok = code in (0, None) and isinstance(data, dict) and len(out.strip().splitlines()) == 1
     return dict(status_of(data if isinstance(data, dict) else {}), readable=ok, code=code, err=err[-300:])
+
+
+def catches_up(st, events, distinct):
+    """Whether a report's shed and resumed numbers have caught up with what really happened (events or distinct loops)."""
+    return (any(v in (events[0], distinct[0]) for v in st['shed'].values())
+            and any(v in (events[1], distinct[1]) for v in st['resumed'].values()))
+
+
+def settle(env, truth, limit=SETTLE_S):
+    """Both readings of the report, once they have caught up with the real activity (up to `limit` s: the window saves its
+    status on a worker thread, so a report may lag a shed by a moment). [ORIGINAL, superseded by this wait: read at once;
+    the first positive run on 60d5b63 saw reports one write behind at mid-activity checkpoints.]"""
+    deadline = time.monotonic() + limit
+    while True:
+        st, rst = look(), env.remote.look()
+        events, distinct = truth.now()
+        if (catches_up(st, events, distinct) and catches_up(rst, events, distinct)) or time.monotonic() > deadline:
+            return st, rst
+        env.pump(.2)
 
 
 def tracking_paths(checkpoints, key, field='st'):
@@ -412,8 +435,7 @@ def active(env, step, check, info):
 
     def checkpoint(label, expect_shed, expect_resumed):
         """Read the report; record it with what the wrappers counted and what the workload implies (None: unknowable)."""
-        st = look()
-        rst = env.remote.look()
+        st, rst = settle(env, truth)
         events, distinct = truth.now()
         checkpoints.append({'label': label, 'st': st, 'rst': rst, 'truth': (events, distinct), 'expect': (expect_shed, expect_resumed),
                             'currently': sum(bool(l.shed) for l in loops_of(nw)),
@@ -507,8 +529,8 @@ def active(env, step, check, info):
     pump(1.)
     after = truth.now()
     bounce = (after[0][0] - before[0][0], after[0][1] - before[0][1])
-    st = look()
-    cp = {'label': 'after bounces', 'st': st, 'shed': (after[0][0], after[1][0]), 'resumed': (after[0][1], after[1][1])}
+    st, rst_b = settle(env, truth)
+    cp = {'label': 'after bounces', 'st': st, 'rst': rst_b, 'shed': (after[0][0], after[1][0]), 'resumed': (after[0][1], after[1][1])}
     bounce_paths = (tracking_paths(checkpoints + [cp], 'shed'), tracking_paths(checkpoints + [cp], 'resumed'))
     check('A4 after %d quick show/leave pairs the report follows the real sheds and resumes, not the clicks' % BOUNCES,
           bool(bounce_paths[0]) and bool(bounce_paths[1]) and settled and bounce[0] < BOUNCES and bounce[1] < BOUNCES,
@@ -892,14 +914,28 @@ def junk(env, step, check, info):
             'scene-loops-counts-wrong.json': json.dumps(dict(record(gone, state='unreported'), shed='many', resumed=[])),
             'scene-loops-big.json': ('{"pid": %d, "pad": "%s"}' % (gone, 'x' * 3_000_000)),
         }
-        for name, content in junk_files.items():
+        failed = {}
+        for name, content in junk_files.items():          # one at a time, so a crash on one cannot hide the others
+            for old in directory.glob('scene-loops-*'):
+                if old.is_dir():
+                    old.rmdir()
+                else:
+                    old.unlink()
             plant(name, content)
+            r = both(env)
+            if not all(x['readable'] for x in r.values()) or claims_active(r):
+                failed[name] = {n: (x['readable'], x['code'], x['err'][-120:], x['active']) for n, x in r.items()}
+        for old in directory.glob('scene-loops-*'):
+            old.unlink()
         (directory / 'scene-loops-dir.json').mkdir(exist_ok=True)
         r = both(env)
-        check('J3 corrupt, truncated, empty, binary, wrong-typed, unknown-state, oversized and odd-named status files '
-              '(and a directory named like one): inspect stays readable (exit 0, one JSON line) and makes no active claim',
-              all(x['readable'] for x in r.values()) and not claims_active(r),
-              {n: (x['readable'], x['code'], x['err'], x['active'], x['view']) for n, x in r.items()})
+        if not all(x['readable'] for x in r.values()) or claims_active(r):
+            failed['scene-loops-dir.json (a directory)'] = {n: (x['readable'], x['code'], x['err'][-120:], x['active'])
+                                                            for n, x in r.items()}
+        (directory / 'scene-loops-dir.json').rmdir()
+        check('J3 corrupt, truncated, empty, binary, wrong-typed, unknown-state, oversized, impossible-pid and odd-named '
+              'status files (and a directory named like one), each alone: inspect stays readable (exit 0, one JSON line) '
+              'and makes no active claim', not failed, failed)
         return {'uptime': uptime()}
     finally:
         live.kill()
