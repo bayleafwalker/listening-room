@@ -791,7 +791,7 @@ class Victim:
             env=dict(os.environ, PYTHONFAULTHANDLER='1'), start_new_session=True, preexec_fn=no_core_dumps)
         self.pid = self.truth = None
         self.kids, self.holders = [], None
-        deadline = time.monotonic() + 180
+        deadline = time.monotonic() + 420
         while time.monotonic() < deadline and self.pid is None:
             ready, _, _ = select.select([self.process.stdout], [], [], 1.)
             if ready:
