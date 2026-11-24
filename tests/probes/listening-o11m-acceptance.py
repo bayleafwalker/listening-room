@@ -1608,6 +1608,7 @@ def starve(env, step, check, info, scenario):
     moved, entered, playing = [], None, None
     if scenario == 'now':
         target, room = catalogue[0], catalogue[1]
+        target_name = name_of(target)
         step('show a loop, leave it, wait for its shed')
         rooms.click(target)
         moved.append(rooms.moves(6.)[0])
@@ -1629,7 +1630,6 @@ def starve(env, step, check, info, scenario):
         pump(15.)
         downloads_before = len([r for r in runs if not r['again']])
         step('back to Rooms, straight to the shed loop')
-        target_name = name_of(target)
         window.show_rooms()
         pump(.3)
         target = rooms.card_named(target_name) or target
