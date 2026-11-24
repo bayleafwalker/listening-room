@@ -39,6 +39,12 @@ class SceneSheddingStatus(unittest.TestCase):
         patch.start()
         self.addCleanup(patch.stop)
         scene_shedding._status.update(state=None, gtk=None, refs_observed=None, sink_finalized=None, shed=0, resumed=0)
+        scene_shedding.flush()
+        if scene_shedding._held is not None:
+            os.close(scene_shedding._held)
+        patch = mock.patch.object(scene_shedding, '_held', None)
+        patch.start()
+        self.addCleanup(patch.stop)
         patch = mock.patch('atexit.register')
         patch.start()
         self.addCleanup(patch.stop)
@@ -102,22 +108,54 @@ class SceneSheddingStatus(unittest.TestCase):
         self.assertNotIn(threading.current_thread(), threads)
         self.assertEqual(status_now()['shed'], 1)
 
-    def test_a_window_that_is_gone_is_not_reported(self):
-        gone = subprocess.Popen([sys.executable, '-c', 'pass'])
-        gone.wait()
+    def plant(self, number, record):
         directory = self.runtime / 'listening-hub'
-        directory.mkdir()
-        (directory / (scene_shedding.FILE % gone.pid)).write_text(json.dumps(
-            {'state': 'active', 'gtk': '4.24.0', 'refs_observed': None, 'shed': 9, 'resumed': 9, 'pid': gone.pid}))
+        directory.mkdir(exist_ok=True)
+        (directory / (scene_shedding.FILE % number)).write_text(record if isinstance(record, str) else json.dumps(record))
+
+    def test_a_stale_file_whose_pid_now_belongs_to_a_live_process_is_not_a_window(self):
+        sleeper = subprocess.Popen(['sleep', '30'])
+        self.addCleanup(sleeper.wait)
+        self.addCleanup(sleeper.kill)
+        self.plant(sleeper.pid, {'state': 'active', 'gtk': '4.24.0', 'shed': 9, 'resumed': 9, 'pid': sleeper.pid})
+        self.assertEqual(status_now()['state'], 'unreported')
+        lock = self.runtime / 'listening-hub' / (scene_shedding.LOCK % sleeper.pid)
+        lock.write_text('')           # a lock file nobody holds is still not a window
         self.assertEqual(status_now()['state'], 'unreported')
 
-    def test_damaged_or_unknown_files_are_ignored(self):
+    def test_a_window_in_another_process_is_seen_while_it_runs_and_not_after(self):
+        code = ('import os, sys, time; sys.path.insert(0, %r); import scene_shedding as s; '
+                's.decided("active", "4.24.0"); s.shed(); s.flush(); print("up", flush=True); time.sleep(60)'
+                % str(Path(scene_shedding.__file__).parent))
+        child = subprocess.Popen([sys.executable, '-c', code], stdout=subprocess.PIPE, text=True, env=dict(os.environ))
+        self.addCleanup(child.stdout.close)
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        self.assertEqual(child.stdout.readline().strip(), 'up')
+        seen = scene_shedding.status()
+        self.assertEqual((seen['state'], seen['shed'], seen['windows']), ('active', 1, 1))
+        child.kill()
+        child.wait()
+        self.assertEqual(scene_shedding.status()['state'], 'unreported')
+
+    def test_hostile_or_damaged_files_are_ignored_and_never_break_status(self):
+        for number, record in ((1, '{not json'), (2, {'state': 'bogus', 'pid': 2}), (3, {'pid': 3}),
+                               (4, [1, 2]), (5, 'null'), (6, {'state': ['active'], 'pid': 6}),
+                               (10 ** 8, {'state': 'active', 'pid': 10 ** 30}), (7, {'state': 'active', 'pid': 10 ** 30}),
+                               (0, {'state': 'active', 'pid': 0}), (8, {'state': 'active', 'pid': True}),
+                               (1, {'state': 'active', 'pid': 1}), (9, {'state': 'active', 'pid': -9}),
+                               (11, {'state': 'active', 'pid': '11'}), (12, {'state': 'active', 'pid': 13})):
+            self.plant(number, record)
         directory = self.runtime / 'listening-hub'
-        directory.mkdir()
-        (directory / (scene_shedding.FILE % 1)).write_text('{not json')
-        (directory / (scene_shedding.FILE % 2)).write_text(json.dumps({'state': 'bogus', 'pid': os.getpid()}))
-        (directory / (scene_shedding.FILE % 3)).write_text(json.dumps({'pid': os.getpid()}))
-        self.assertEqual(status_now()['state'], 'unreported')
+        (directory / 'scene-loops-abc.json').write_text('{}')
+        (directory / (scene_shedding.FILE % 99)).mkdir()
+        status = status_now()
+        self.assertEqual((status['state'], status['windows']), ('unreported', 0))
+        out = io.StringIO()
+        with mock.patch.object(sys, 'argv', ['listening-roomctl', 'inspect']), \
+                mock.patch.object(roomctl.session_client, 'request', return_value={}), mock.patch('sys.stdout', out):
+            self.assertEqual(roomctl.main(), 0)
+        self.assertEqual(json.loads(out.getvalue())['scene_loop_shedding']['state'], 'unreported')
 
     def test_without_a_runtime_directory_nothing_is_written_and_status_is_unreported(self):
         with mock.patch.dict(os.environ):

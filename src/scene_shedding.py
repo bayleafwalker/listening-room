@@ -16,14 +16,19 @@ The reader never imports GTK, so any tool can use it. State names are stable:
   no_player    the loops' players cannot be reached, so off-screen loops are only paused
   unreported   no running window has reported (the window is closed, or no scene loop has played yet)
 """
+import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import threading
 
 FILE = 'scene-loops-%d.json'
-PREFIX, SUFFIX = 'scene-loops-', '.json'
+LOCK = 'scene-loops-%d.lock'
+NAME = re.compile(r'scene-loops-([0-9]{1,9})\.json')
+# A window is live only while it holds an exclusive flock on its lock file: the kernel drops the lock when
+# the process ends, so a stale file is never mistaken for a window, whatever pid the system reuses.
 
 SUMMARIES = {
     'active': 'Shedding is active: an off-screen scene loop frees its video output and gets a new one when shown.',
@@ -46,6 +51,7 @@ def _directory():
 _lock = threading.Condition()
 _asked = _done = 0           # writes asked for and written (the window never waits for the disk)
 _worker = None
+_held = None                 # the lock file's descriptor, open for the life of the process
 
 
 def _write():
@@ -78,11 +84,20 @@ def _run():
 
 
 def _save(snapshot):
+    global _held
     directory = _directory()
     if directory is None:
         return
     try:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if _held is None:
+            descriptor = os.open(directory / (LOCK % os.getpid()), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                os.close(descriptor)
+                return
+            _held = descriptor
         descriptor, name = tempfile.mkstemp(dir=directory, prefix='.scene-loops-')
         with os.fdopen(descriptor, 'w') as handle:
             json.dump(snapshot, handle)
@@ -97,6 +112,7 @@ def _remove():
     if directory is not None:
         try:
             (directory / (FILE % os.getpid())).unlink()
+            (directory / (LOCK % os.getpid())).unlink()
         except OSError:
             pass
 
@@ -127,27 +143,42 @@ def resumed():
     _write()
 
 
-def _alive(pid):
+def _live(directory, path):
+    """The status record in `path` when a running window holds its lock, else None. Never raises."""
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True               # exists, not ours to signal
-    return True
+        match = NAME.fullmatch(path.name)
+        record = json.loads(path.read_text())
+        pid = record['pid']
+        if (not match or isinstance(pid, bool) or not isinstance(pid, int) or pid != int(match.group(1))
+                or not isinstance(record['state'], str) or record['state'] not in SUMMARIES):
+            return None
+        descriptor = os.open(directory / (LOCK % pid), os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return record                      # the window holds it exclusively: it is running
+        finally:
+            os.close(descriptor)               # (also drops a shared lock we just got: nobody holds it)
+        return None
+    except Exception:
+        return None
 
 
 def status():
     """The newest running window's report, with a plain-language `summary` (always the same keys)."""
     directory = _directory()
     found = []
-    for path in (directory.glob(PREFIX + '*' + SUFFIX) if directory and directory.is_dir() else ()):
-        try:
-            record = json.loads(path.read_text())
-            if _alive(record['pid']) and record['state'] in SUMMARIES:
+    try:
+        paths = sorted(directory.glob('scene-loops-*.json')) if directory and directory.is_dir() else []
+    except OSError:
+        paths = []
+    for path in paths:
+        record = _live(directory, path)
+        if record is not None:
+            try:
                 found.append((path.stat().st_mtime, record))
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
+            except OSError:
+                continue
     found.sort(key=lambda item: item[0])
     record = found[-1][1] if found else {'state': 'unreported'}
     def count(key):
