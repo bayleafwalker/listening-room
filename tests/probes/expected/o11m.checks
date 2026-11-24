@@ -1,0 +1,109 @@
+# O11-MEDIA acceptance (tests/probes/listening-o11m-acceptance.py), written by the independent acceptance author.
+# This is the TARGET: every check passes. On main 70db15e (2.5.0) it fails H1 (41-49 MB per loop), P1-P3 (paused loops
+# keep +66 threads, 56 streaming threads, 41-49 MB each), R0 and N1; H2 lands either side of 400 MB (373-412). R1 failed
+# on main at load 20+ (first return 193-297 ms) and passed at load ~10 (41 ms). For X3 the stress run gets nice-19 load
+# helpers for at most its first 60 s, up to load 16 (coordinator ruling). Evidence and readings: the O11m acceptance phase-1 report.
+# Author-set limits P1 <= 24, P2 <= 7, P3 <= 10 MB, F9 <= 0.1 and the 15 s let-go wait were accepted by the coordinator (phase 1).
+# Entries with @@ declare the measured part of the name; everything else must match exactly.
+S1 the dev shell provides GStreamer playbin3 to the window (scene loops can play)
+# F8 [ORIGINAL, superseded by F8r] (old build 0750cc4's median + 25%: Listen 14.4, Now 24.0, Mix 11.0 ms) still runs and
+# prints as a SUPERSEDED line, not counted: Listen lands either side of its limit on main. Coordinator ruling, phase 1:
+# record each median and guard against regression, no worse than 2.5.0's measured median + 25% (baseline: the worse of
+# the two phase-1 main runs, Listen 14.5, Now 16.9, Mix 12.9 ms).
+F8r switching to Listen: median GTK-thread CPU recorded and no worse than 2.5.0's 14.5 ms + 25% = 18.1 ms (median of 10, @@ ms)
+F8r switching to Now: median GTK-thread CPU recorded and no worse than 2.5.0's 16.9 ms + 25% = 21.1 ms (median of 10, @@ ms)
+F8r opening Mix: median GTK-thread CPU recorded and no worse than 2.5.0's 12.9 ms + 25% = 16.1 ms (median of 10, @@ ms)
+pages: the child finished without a crash or hang
+pages: the child reported all its oracles and exited 0
+M0 fixture: 8 catalogue loop rooms with 8 distinct loop files
+M1 every catalogue loop visibly played in its preview before its cost was measured
+H0 the cost was measured at load 20+ (1-minute load @@ at the first loop, @@ with all 8)
+H1 each catalogue loop after the first adds at most 40 MB, the O10 way and as a robust slope (@@ MB per loop, Theil-Sen @@ MB)
+H2 the 8 catalogue loops cost under 400 MB in total, at every sample after the first loop (@@ MB at the end, worst @@ MB)
+# P1 [ORIGINAL, superseded by P1r] still runs and prints as a SUPERSEDED line, not counted: it counted GLib's worker
+# pool too, which idles out (3ac5e81: -14 pool threads), so it passed at +18 while the media held 32 threads.
+P1r with all 8 catalogue loops off screen the media holds at most 24 threads, GLib's worker pool aside (2.5.0: +80; @@)
+# P2, P3 and R0 [ORIGINAL, superseded by P2-R1, P3-R1 and R0-R1] still run and print as SUPERSEDED lines, not counted.
+# Coordinator rulings, phase 2 on dd4985e (O11-DECISIONS.md): the GstVideoDmabufPool watcher threads belong to the still
+# (P1r still bounds them); a paused loop may keep 20 MB, the still's frame and the dmabuf pool its buffer pins.
+P2-R1 ... and at most 7 GStreamer streaming threads, the still's dmabuf pool watchers aside (2.5.0: 48; @@)
+P3-R1 a paused loop keeps at most 20 MB, under half of 2.5.0's 42-49 MB (Theil-Sen @@ MB per loop over the 8 off-screen samples)
+R0-R1 the entered room played, and with it off screen the media also let go (@@ streaming threads, the still's dmabuf pool watchers aside)
+R1 returning to a loop that let go never holds the GTK thread over 100 ms (4 previews and Now; worst @@ ms without run-queue wait)
+R2 returning to a loop that let go shows no black or blank frame (sampled at about 30 Hz)
+R3 a loop that let go moves again when shown (4 previews and Now)
+R4 resuming previews is inert: no controller command, no process, no audio sink
+L1 a resumed scene keeps looping past its 20 s clip, with no black or blank frame at the seam
+L2 reduced motion: returning to a loop shows its still and acquires nothing (no new streaming thread, no player built)
+F9 Python GObject wrappers stay flat across previews: at most 0.1 more per preview over 20 (@@ per preview)
+D1 no player is disposed while the window lives: no GstPlay thread went away (@@ lost of @@ seen)
+D2 no player pipeline is built twice for a loop file, after every loop was shown, let go and shown again (@@ built for 8 loop files)
+D3 no Gtk.MediaFile with an open file is cleared, re-opened or finalized while the window lives
+media: the child finished without a crash or hang
+media: the child reported all its oracles and exited 0
+# Coordinator ruling, phase 2 on dd4985e: the workaround that drops GTK 4.24.0's leaked GL context reference is a
+# memory-safety risk of the 2.3.2 class. C: release -> resume churn across loops, part of it at load > 15. B: the fallback
+# when the version gate (gate) or the reference-count check (refs, refused for real by an extra sink reference) does not match.
+C1 churn: at least 100 release-resume cycles of a shed loop ran across the 8 loop files (@@ cycles, @@ resumes of a shed loop)
+C3 churn: GL context and display threads never exceed one per loop file (peak @@ gstglcontext, @@ gldisplay-event, for 8 loop files; @@ and @@ once settled)
+# C4 [ORIGINAL, superseded by C4-R1] still runs and prints as a SUPERSEDED line, not counted: its 3 s settle ended
+# before the release and sweep bound, and dmabuf fds of the stills swing between samples (+17 right after the churn, +2 after one more pass, dd4985e o11m-run).
+# C4-R1 [superseded by C4-R2, coordinator ruling on dd4985e] also prints as a SUPERSEDED line: the stills' dmabuf fds
+# swing by up to +17 between settled samples without growing with the cycles. C4-R2 judges other fds and dmabuf apart.
+C4-R2 churn: open files other than dmabuf do not grow beyond one per loop file 12 s after the last release (@@ since the first pass), and the stills' dmabuf fds do not grow between the churn halves (median @@ then @@, for 8 loop files)
+C5 churn: loops still move when shown, during the churn and after it (@@ of @@ sampled)
+churn: the child finished without a crash or hang
+churn: the child reported all its oracles and exited 0
+# C6 setup [ORIGINAL, superseded by the ruling on 326a4eb]: helpers started with the churn child (peak 12.8-15.7 on a
+# quiet host). [e23a98f, superseded by ruling part 2]: they started up to 40 s before it, sized as before (14.2 at the
+# end of the budget). Now as many start as the 1-minute load needs to pass 17 within the 60 s from a quiet host; the
+# 60 s budget, the load-16 cap and the limit (> 15) are unchanged.
+C6 churn: the host load was above 15 for part of the churn (peak @@)
+B1 gate: with the GTK version gate not matching, shedding is off for the process (@@ loops shed)
+B2 gate: with the GTK version gate not matching, GL context threads stay at one per loop and do not grow across resumes (@@ after release, @@ after 6 resumes, for 8 loops)
+B3 gate: with the GTK version gate not matching, loops still play, resume (6 resumes) and loop past their clip
+B4 gate: with the GTK version gate not matching, loops off screen stay paused: media threads use <= 50 ms CPU in 5 s on the grid (@@ ms)
+fallback-gate: the child finished without a crash or hang
+fallback-gate: the child reported all its oracles and exited 0
+B1 refs: with the reference-count check refusing (an extra sink reference), shedding is off for the process (@@ loops shed)
+B2 refs: with the reference-count check refusing (an extra sink reference), GL context threads stay at one per loop and do not grow across resumes (@@ after release, @@ after 6 resumes, for 8 loops)
+B3 refs: with the reference-count check refusing (an extra sink reference), loops still play, resume (6 resumes) and loop past their clip
+B4 refs: with the reference-count check refusing (an extra sink reference), loops off screen stay paused: media threads use <= 50 ms CPU in 5 s on the grid (@@ ms)
+fallback-refs: the child finished without a crash or hang
+fallback-refs: the child reported all its oracles and exited 0
+# Coordinator request on 3e937b9. W: the idle warm-up of GDK's download set-up must never touch a preview, a resume
+# or two user actions <= 1 s apart (previews clicked through, page switches), runs once, and holds the GTK thread at
+# most 500 ms when it runs (limit ruled on 326a4eb). T: late weak-ref notifies (old sinks' tokens, the next sink's
+# addresses) must never authorise releasing the GL context of a newer sink still alive.
+W1 warm-up, idle: it runs once per process after the first shed, at least 1 s after the last action, and holds the GTK thread at most 500 ms (@@ ms without run-queue wait) [limit ruled]
+W4 idle: a loop shown again after the warm-up still moves
+warm-idle: the child finished without a crash or hang
+warm-idle: the child reported all its oracles and exited 0
+W2 warm-up, previews clicked through right after the first shed: it never lands inside a preview, a resume or two actions <= 1 s apart (@@ of @@ downloads touching), and still runs once when idle
+W4 previews clicked through: a loop shown again after the warm-up still moves
+warm-browse: the child finished without a crash or hang
+warm-browse: the child reported all its oracles and exited 0
+W3 warm-up, page switches back to back right after the first shed: it never lands inside a preview, a resume or two actions <= 1 s apart (@@ of @@ downloads touching), and still runs once when idle
+W4 page switches back to back: a loop shown again after the warm-up still moves
+warm-pages: the child finished without a crash or hang
+warm-pages: the child reported all its oracles and exited 0
+T1 token: late finalize notifies (old sinks' tokens and the next sink's addresses) never authorise releasing the GL context of a newer sink still alive: its shed is refused and its context thread lives (@@ gstglcontext with it held)
+T2 token: with the extra reference dropped, loops still play and GL threads stay within one per loop file (@@ at the end)
+token: the child finished without a crash or hang
+token: the child reported all its oracles and exited 0
+# Coordinator request on 3ae4a1f: the warm-up waits for no input, repaint or loop change; sessions where that quiet
+# never comes must still resume shed loops within R1's 100 ms (W5: a room left playing on Now; W6: previews clicked
+# through without a pause).
+W5 starvation, a room left playing on Now, then straight back to a shed loop: resuming a shed loop never holds the GTK thread over 100 ms, whether or not the warm-up ever ran (worst @@ ms without run-queue wait over @@ resumes)
+starve-now: the child finished without a crash or hang
+starve-now: the child reported all its oracles and exited 0
+W6 starvation, previews clicked through without a pause, two passes: resuming a shed loop never holds the GTK thread over 100 ms, whether or not the warm-up ever ran (worst @@ ms without run-queue wait over @@ resumes)
+starve-browse: the child finished without a crash or hang
+starve-browse: the child reported all its oracles and exited 0
+X1 stress: at least 300 scene-media stress cycles ran with scene loops (@@ attempted, @@ completed)
+X2 stress: zero crashes over those cycles (@@ crashed children)
+# X3 sizing [ORIGINAL phase-1 sizing (16 + 4 - load helpers), superseded by the ruling on 2b6ce8b]: now sized like C6
+# (decaying-load model, target 17 within the 60 s); the 60 s budget, the load-16 cap and the limit (> 15) are unchanged.
+X3 stress: the host load was above 15 for part of the run (peak @@)
+X4 stress: every stress child finished all its cycles without raising
+N1 the CHANGELOG records the change: the section above 2.5.0 says what happens to loops off screen
