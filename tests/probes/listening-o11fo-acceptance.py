@@ -85,7 +85,7 @@ o11m = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(o11m)       # definitions only (_hold_video_sink, _quiet); its main is guarded
 uptime, no_core_dumps = o10p.uptime, o10p.no_core_dumps
 
-MODES = ('active', 'gate', 'gl', 'refs', 'junk', 'stale')
+MODES = ('active', 'gate', 'gl', 'refs', 'junk', 'stale', 'reuse', 'racy')
 LOOPS = 3             # author: loops used for the count checkpoints
 ROUNDS = 4            # author: show-all / leave-all rounds
 BOUNCES = 10          # author: quick show/leave pairs (each far under the product's 1 s release wait)
@@ -384,6 +384,8 @@ def run_child(mode, args):
             result = junk(env, step, check, info)
         elif mode == 'stale':
             result = stale(env, step, check, info, args)
+        elif mode in ('reuse', 'racy'):
+            result = start(env, step, check, info, mode)
         else:
             result = fallback(env, step, check, info, mode)
         print('RESULT ' + json.dumps(result, default=str), flush=True)
@@ -723,6 +725,25 @@ def counts_of(reports, key):
     return {name: sorted(set(r[key].values())) for name, r in reports.items()}
 
 
+def lock_holders(path):
+    """(pid, close-on-exec) for every process that has `path` open, from /proc."""
+    found = []
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        try:
+            for fd in os.listdir('/proc/%s/fd' % entry):
+                try:
+                    if os.readlink('/proc/%s/fd/%s' % (entry, fd)) == str(path):
+                        flags = int(next(l for l in open('/proc/%s/fdinfo/%s' % (entry, fd)) if l.startswith('flags:')).split()[1], 8)
+                        found.append((int(entry), bool(flags & 0o2000000)))
+                except (OSError, StopIteration, ValueError):
+                    continue
+        except OSError:
+            continue
+    return found
+
+
 def victim(env, step):
     """A window in its own process: two loops shown and left until shed, then idle until killed."""
     import next_widgets as nw
@@ -744,7 +765,12 @@ def victim(env, step):
         env.pump(.5)
     wait(env, lambda: sum(bool(l.shed) for l in loops_of(nw)) >= 2, SHED_WAIT_S)
     env.pump(1.)
-    print('READY %d %d %d' % (truth.shed, truth.renew, os.getpid()), flush=True)
+    # Children a window may spawn and that outlive it, by the routes the product uses (Python's subprocess with its default
+    # close_fds, and GLib's spawn): neither may keep the window's lock alive after the window is killed.
+    from gi.repository import GLib
+    kid_a = subprocess.Popen(['sleep', '300'])
+    kid_b = GLib.spawn_async(['/bin/sleep', '300'], flags=GLib.SpawnFlags.SEARCH_PATH)[0]
+    print('READY %d %d %d %d %d' % (truth.shed, truth.renew, os.getpid(), kid_a.pid, kid_b), flush=True)
     while True:
         env.pump(.5)
 
@@ -759,6 +785,7 @@ class Victim:
              '--output', str(Path(output) / ('victim-' + name))], stdout=subprocess.PIPE, stderr=log, text=True,
             env=dict(os.environ, PYTHONFAULTHANDLER='1'), start_new_session=True, preexec_fn=no_core_dumps)
         self.pid = self.truth = None
+        self.kids = []
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline and self.pid is None:
             ready, _, _ = select.select([self.process.stdout], [], [], 1.)
@@ -767,8 +794,8 @@ class Victim:
                 if not line:
                     break
                 if line.startswith('READY '):
-                    _, shed_, renew_, pid = line.split()
-                    self.truth, self.pid = (int(shed_), int(renew_)), int(pid)
+                    _, shed_, renew_, pid, *kids = line.split()
+                    self.truth, self.pid, self.kids = (int(shed_), int(renew_)), int(pid), [int(k) for k in kids]
 
     def kill(self):
         if self.pid:
@@ -783,6 +810,11 @@ class Victim:
 
     def cleanup(self):
         self.kill()
+        for kid in self.kids:
+            try:
+                os.kill(kid, 9)
+            except OSError:
+                pass
         try:
             os.killpg(self.process.pid, 9)
         except OSError:
@@ -808,13 +840,22 @@ def stale(env, step, check, info, args):
               and all(v1.truth[0] in c and v1.truth[1] in counts_of(r1, 'resumed')[n]
                       for n, c in counts_of(r1, 'shed').items()),
               (v1.truth, v1.pid, {n: (r['readable'], r['active'], r['view']) for n, r in r1.items()}))
+        lockfile = directory / ('scene-loops-%s.lock' % v1.pid)
+        holders = lock_holders(lockfile)
+        kids_alive = lambda: [k for k in v1.kids if Path('/proc/%d' % k).exists()]
+        check('K6 the window\'s lock is held by the window process alone and its descriptor is close-on-exec, while the '
+              'window has spawned children (Python subprocess and GLib spawn) that stay running', len(v1.kids) == 2
+              and len(kids_alive()) == 2 and holders and {h[0] for h in holders} == {v1.pid} and all(h[1] for h in holders),
+              (v1.pid, v1.kids, holders))
         step('SIGKILL it')
         v1.kill()
         left = file1.exists()
         check('K0 harness precondition: a window killed with SIGKILL leaves its status file behind', left, (v1.pid, left))
         r2 = both(env)
-        check('K2 after the window was killed, inspect does not claim shedding is active and reports none of the dead '
-              'window\'s counts', all(r['readable'] for r in r2.values()) and not claims_active(r2)
+        # [ORIGINAL, superseded by this wording: K2 "after the window was killed, ..." without the children it spawned]
+        check('K2 after the window was killed while the children it spawned still run, inspect does not claim shedding is '
+              'active and reports none of the dead window\'s counts', len(kids_alive()) == 2 and all(
+                  r['readable'] for r in r2.values()) and not claims_active(r2)
               and all(v1.truth[0] not in c for c in counts_of(r2, 'shed').values() if v1.truth[0] not in (0,)),
               {n: (r['readable'], r['active'], r['view']) for n, r in r2.items()})
         step('a new window starts')
@@ -940,6 +981,63 @@ def junk(env, step, check, info):
     finally:
         live.kill()
         live.wait()
+
+
+
+def start(env, step, check, info, mode):
+    """A window starting in this process. reuse: leftovers of a SIGKILLed window with this very pid (a stale status file and
+    an unheld lock file, the pid number reused by the new window). racy: a status reader holds the window's lock file at the
+    moment the window first reports, and lets go a moment later."""
+    import fcntl
+    import next_widgets as nw
+    pump = env.pump
+    directory = status_dir()
+    own = os.getpid()
+    lockpath = directory / ('scene-loops-%d.lock' % own)
+    held = None
+    if mode == 'reuse':
+        lockpath.write_text('')
+        plant('scene-loops-%d.json' % own, record(own))
+        r0 = both(env)
+        check('K9 leftovers of a killed window whose pid number a new process now has (stale status file, unheld lock): '
+              'inspect before the new window reports makes no active claim and reports none of the stale counts',
+              all(r['readable'] for r in r0.values()) and not claims_active(r0) and all(
+                  not ({7, 5} & set(c)) for k in ('shed', 'resumed') for c in counts_of(r0, k).values()),
+              {n: (r['active'], r['view']) for n, r in r0.items()})
+    else:
+        held = os.open(lockpath, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(held, fcntl.LOCK_SH)         # a reader probing the lock at this very moment
+    step('window')
+    window = env.launch(page='rooms')
+    window.show_rooms()
+    pump(2.)
+    rooms = o10p.Rooms(env, window)
+    truth = Truth(nw)
+    rooms.click(rooms.loop_cards()[0])
+    moved = rooms.moves(6.)[0]
+    for _ in range(20):
+        truth.arm()
+        if getattr(nw, '_PLAY', {}).get('shed'):
+            break
+        pump(.25)
+    pump(1.5)
+    if held is not None:
+        os.close(held)                            # the reader is done; the window has had no other change to report
+        pump(SETTLE_S + 2.)
+    else:
+        pump(2.)
+    r1 = both(env)
+    if mode == 'reuse':
+        check('K9b ... and once the new window has reported, inspect shows the new window (active, no stale counts)',
+              moved and all(r['readable'] and r['active'] is True for r in r1.values()) and all(
+                  not ({7, 5} & set(c)) for k in ('shed', 'resumed') for c in counts_of(r1, k).values()),
+              {n: (r['active'], r['view']) for n, r in r1.items()})
+    else:
+        check('K8 a status reader holding the window\'s lock file when the window first reports does not leave the window '
+              'unreported: a moment after it lets go, with the loop on screen, inspect reports shedding active',
+              moved and all(r['readable'] and r['active'] is True for r in r1.values()),
+              {n: (r['active'], r['view']) for n, r in r1.items()})
+    return {'uptime': uptime()}
 
 
 # ---------------------------------------------------------------------------- parent
@@ -1072,7 +1170,7 @@ def run_parent(args):
 
     print('source: %s  renderer: %s' % (summary['source'], os.environ.get('GSK_RENDERER')), flush=True)
     print('uptime at start: %s' % summary['uptime_start'], flush=True)
-    parts = set(filter(None, args.only.split(','))) or {'active', 'gate', 'gl', 'refs', 'junk', 'stale', 'tree', 'notes'}
+    parts = set(filter(None, args.only.split(','))) or {'active', 'gate', 'gl', 'refs', 'junk', 'stale', 'reuse', 'racy', 'tree', 'notes'}
     results = {mode: child(mode) for mode in MODES if mode in parts}
     if {'gate', 'gl', 'refs'} <= set(results):
         reasons = [str(results[m].get('reason', '')).strip() for m in ('gate', 'gl', 'refs')]
