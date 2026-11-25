@@ -11,6 +11,7 @@ from gi.repository import Adw, Gdk, GLib, Graphene, Gtk
 
 import next_model
 import poster_cards
+import scene_shedding
 from next_async import pool, run_async
 
 TEXTURE_LIMIT = 64          # decoded images kept; the least recently shown goes first
@@ -483,6 +484,7 @@ class _Loop:
             if self.shed:
                 self.shed = False
                 _PLAY['renew'](self.player, self.renderer)
+                scene_shedding.resumed()
             self.media.play()
         else:
             self.media.pause()
@@ -532,6 +534,7 @@ def gst_player(media):
             _load_play(ctypes)
         except (OSError, AttributeError):
             _PLAY['off'] = True      # loops then stay paused, never stopped, as before
+            scene_shedding.decided('no_player')
             return None
     from gi.repository import GObject
     try:
@@ -640,11 +643,15 @@ def _load_play(ctypes):
         return state.value <= 3 and pending.value == 0       # GST_STATE_PAUSED, GST_STATE_VOID_PENDING
 
     shed = renew = None
-    if (Gtk.get_major_version(), Gtk.get_minor_version(), Gtk.get_micro_version()) == SHED_GTK:
+    gtk = (Gtk.get_major_version(), Gtk.get_minor_version(), Gtk.get_micro_version())
+    state = 'gtk'
+    if gtk == SHED_GTK:
+        state = 'active'
         try:
             shed, renew = _load_shed(ctypes, gobject, gst, play, pointer, pointers)
         except (OSError, AttributeError):     # no libgstgl: stopped loops keep their sink, as before
-            pass
+            state = 'no_libgstgl'
+    scene_shedding.decided(state, '.'.join(map(str, gtk)))      # for `listening-roomctl inspect`
     _PLAY.update(stop=play.gst_play_stop, type=play.gst_play_get_type(), is_a=gobject.g_type_check_instance_is_a,
                  address=address, source=source, close=close, stopped=stopped, still=still, shed=shed, renew=renew,
                  unref=gobject.g_object_unref,
@@ -741,6 +748,7 @@ def _load_shed(ctypes, gobject, gst, play, pointer, pointers):
                     gst.gst_object_unref(context)                          # GTK 4.24.0's leaked reference
                 else:
                     _PLAY['shed'] = None                                   # not the known case: stop shedding
+                    scene_shedding.refused(refs(context), token in finalized)
                 gst.gst_object_unref(context)
             finalized.discard(token)
         gst.gst_object_unref(pipeline)
@@ -841,6 +849,7 @@ def _sweep():
                 loop.renderer = renderer
             loop.shed = bool(renderer)
             if loop.shed:
+                scene_shedding.shed()
                 _Warm.start(loop.media)
     _PLAY['stopping'] = stopping
     if _PLAY['sources'] or _PLAY['stopping']:

@@ -5,6 +5,14 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `listening-roomctl inspect` reports `scene_loop_shedding`: whether the open window's off-screen
+  room loops give back their video output, or why not (another GTK version, no GStreamer GL
+  library, or switched off after a release found unexpected references, with the count it found),
+  how many loops have shed and resumed, and a plain-language summary. `unreported` means no open
+  window has reported. The window leaves a small status file in its runtime directory; no new
+  socket or action, and shedding itself is unchanged.
+
 ### Fixed
 - Stopping the window with Ctrl+C in the terminal that started it, while a room played on Now,
   could end in a crash (segfault) as the process exited: GTK's video sink kept handing over the

@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import sys
 
+import scene_shedding
+
 from player_core import (  # noqa: F401  (re-exported)
     BUILTIN_SCENES, CATALOG, COUNTRY_CODES, PREFERENCE_KEYS, RUNTIME, SOCKET, STATE, HubError,
     all_info, ambience_module, clean, ensure_baseline, favorites, ipc, load_json, mute, notify, play,
@@ -39,7 +41,8 @@ def inspect_state():
     return {'players': infos, 'selected': selected, 'selected_id': selected['id'] if selected else None,
             'system_volume': system_volume(), 'preferences': preferences(), 'sources': sources(),
             'favorites': favorites(), 'profiles': [{'id': k, 'name': k} for k in sorted(profiles())],
-            'scenes': scenes(), 'ambience': ambience, 'video': video}
+            'scenes': scenes(), 'ambience': ambience, 'video': video,
+            'scene_loop_shedding': scene_shedding.status()}
 
 def choose(prompt, options, custom=False):
     if not options and not custom:
