@@ -1,0 +1,93 @@
+# O11F-OBSERVE acceptance (tests/probes/listening-o11fo-acceptance.py), written by the independent acceptance author.
+# This is the TARGET: every check passes on the finished outcome. On main 6f9c7a3 (2.7.0) the report does not exist, so
+# N1, A1-A4, N2, X1-X5 (cross-process), G1-G4, L1-L4, R1-R6, P1, T1-T4 and C1 fail; N1b, A0, A7, A8 (the probe's own ground truth and the
+# no-side-effect checks), the child-health checks and T5-T8 (source_tree behaviours that already hold) pass.
+# Author-set limits (flagged for a coordinator ruling): 20 s shed wait, 4 rounds x 3 loops, 10 bounces, reference count 1..64.
+# Open interface choices the oracles read by meaning: field names, "how many loops have shed" as events or distinct loops.
+# X1-X5 (coordinator ruling, phase 1): roomctl run as a separate process through the shipped script and a real socket.
+# Phase 2 (60d5b63 merged): K0-K5 (SIGKILLed window, new window, two windows, stale/garbage files beside live ones) and J1-J3 (planted files, no window) added at the coordinator's request.
+# Revisions: the parser reads the ruled `state` names (gtk, no_libgstgl, refused, no_player, unreported are "not active"); checkpoint reads wait up to 3 s (author-set) for the report to catch up with the real counts, the status being saved on a worker thread.
+# Phase 2 on feat/o11f-observe 54184d6 (lock-based liveness, retrying status write): K6 (lock held by the window alone, close-on-exec, children running),
+# K8 (a reader holding the lock at first report), K9/K9b (reused pid with leftovers), K10-K15b (a held or hammering reader, no spin, main loop, exit) and the reworded K2 and K13 were added.
+# Author-set limits: 3 s report lag, 150 ms status-thread CPU in 6 s, 1.5 s main-loop gap margin over the same work with no reader, 2 s exit hook, 5 s process exit, 10 s hammer.
+N1 with no window ever opened, inspect is readable (exit 0, one JSON line) and has a shedding report that does not claim shedding is active
+N1b inspect did not start the shedding machinery: the GStreamer calls it would load are untouched
+X3 as a separate process (shipped roomctl.py over the real socket) with no window open, inspect is readable and has a shedding report that does not claim shedding is active
+A0 fixture: at least 3 catalogue loop rooms with distinct loop files
+A1 with a loop on screen and nothing refused, inspect reports scene-loop shedding active
+X1 as a separate process (shipped roomctl.py over the real socket) with a loop on screen, inspect reports scene-loop shedding active
+A8 under constant inspect polling the loops still shed once per leave and resume once per show (the probe's own count of real sheds and resumes matches the workload)
+A2 the report counts the loops that have shed, and the count matches real sheds at every checkpoint over 4 rounds of 3 loops
+A3 the report counts the loops that have resumed, and the count matches real resumes at every checkpoint (a first show is not a resume)
+X2 as a separate process, the shed and resumed counts match real sheds and resumes at every checkpoint over 4 rounds of 3 loops
+A4 after 10 quick show/leave pairs the report follows the real sheds and resumes, not the clicks
+A7 inspect never changes shedding: 40 inspects with loops shed leave every loop's state, the shed and resume calls and the shedding hooks as they were, and nothing wakes afterwards
+N2 with the window closed, inspect is still readable (exit 0, one JSON line) and has a shedding report whose counts, if it gives them, are not above what really happened
+X5 as a separate process with the window closed, inspect is still readable and has a shedding report whose counts, if it gives them, are not above what really happened
+active: the child finished without a crash or hang
+active: the child reported all its oracles and exited 0
+G1 gate: with a different GTK version, inspect reports shedding not active and the reason names GTK
+G2 gate: the counts are there and zero (no loop shed or resumed), and the loops still play
+G3 gate: after loops are shown and left again the report is unchanged: not active, same reason, counts zero
+G4 gate: the report is plain language
+gate: the child finished without a crash or hang
+gate: the child reported all its oracles and exited 0
+L1 gl: with libgstgl missing, inspect reports shedding not active and the reason names libgstgl
+L2 gl: the counts are there and zero (no loop shed or resumed), and the loops still play
+L3 gl: after loops are shown and left again the report is unchanged: not active, same reason, counts zero
+L4 gl: the report is plain language
+gl: the child finished without a crash or hang
+gl: the child reported all its oracles and exited 0
+R1 refs: before the release is refused, inspect does not say shedding is off
+R2 refs: after the refused release, inspect reports shedding not active and the reason names references
+R3 refs: the report shows the observed reference count (a whole number from 1 to 64)
+R4 refs: the counts agree with what happened (at most the loop whose release was refused shed; resumes never above sheds)
+R5 refs: the loops still play and resume, and afterwards shedding is still reported off for the same reason
+R6 refs: the report is plain language
+X4 refs: as a separate process (shipped roomctl.py over the real socket), inspect reports shedding not active, the reason names references and shows the observed count (a whole number from 1 to 64)
+refs: the child finished without a crash or hang
+refs: the child reported all its oracles and exited 0
+J1 a status file whose pid is dead, alone: inspect is readable, does not claim shedding is active and reports none of its counts
+J2 a stale file whose pid was reused by an unrelated live process (not a Listening Room window): inspect is readable and makes no false active claim and reports none of its counts
+J3 corrupt, truncated, empty, binary, wrong-typed, unknown-state, oversized, impossible-pid and odd-named status files (and a directory named like one), each alone: inspect stays readable (exit 0, one JSON line) and makes no active claim
+junk: the child finished without a crash or hang
+junk: the child reported all its oracles and exited 0
+K1 a window running in another process: inspect (in the window process and as a separate roomctl process) reports it active with its real counts
+K6 the window's lock is held by the window process alone and its descriptor is close-on-exec, while the window has spawned children (Python subprocess and GLib spawn) that stay running
+K0 harness precondition: a window killed with SIGKILL leaves its status file behind
+K2 after the window was killed while the children it spawned still run, inspect does not claim shedding is active and reports none of the dead window's counts
+K3 a new window after the kill: inspect reports the new window (active, its own real counts), not the dead one's
+K4 two windows at once: inspect reports one window, the newest, with its own counts (not a sum or a mix)
+K5 files from a dead pid (newer than the live windows') and corrupt files beside live windows do not hide or replace the newest live window's report
+stale: the child finished without a crash or hang
+stale: the child reported all its oracles and exited 0
+K9 leftovers of a killed window whose pid number a new process now has (stale status file, unheld lock): inspect before the new window reports makes no active claim and reports none of the stale counts
+K9b ... and once the new window has reported, inspect shows the new window (active, no stale counts)
+reuse: the child finished without a crash or hang
+reuse: the child reported all its oracles and exited 0
+K8 a status reader holding the window's lock file when the window first reports does not leave the window unreported: a moment after it lets go, with the loop on screen, inspect reports shedding active
+racy: the child finished without a crash or hang
+racy: the child reported all its oracles and exited 0
+K10 with a reader holding the window's lock through 4 sheds and 2 resumes and then letting go, the report catches up to the latest counts and says active (nothing stale or out of order)
+K11 and the report keeps tracking afterwards: a further shed is reported
+K12 while a reader held the lock for 6 s with the status write retrying, the status thread used at most 150 ms of CPU: no busy spin (author-set limit)
+K13 while the status write retried, the GTK main loop kept running: its longest gap was no more than 1.5 s over the same work done with no reader holding the lock (author-set margin)
+hold: the child finished without a crash or hang
+hold: the child reported all its oracles and exited 0
+K14 a reader that keeps taking and dropping the window's lock does not keep the window unreported: shedding is reported active within 10 s of the loop being on screen
+hammer: the child finished without a crash or hang
+hammer: the child reported all its oracles and exited 0
+K15 with a reader holding the lock and the status write retrying, the exit hook takes at most 2 s and the status worker is a daemon thread (author-set limit)
+exit: the child finished without a crash or hang
+exit: the child reported all its oracles and exited 0
+K15b with a reader holding the lock and the status write retrying, the process exits within 5 s of finishing (author-set)
+P1 the three "not active" reasons are all given and differ from each other (another GTK version, no libgstgl, refused release)
+T1 source_tree: the --source tree is also on PYTHONPATH and LISTENING_HUB_SOURCE names another tree: the --source tree wins (and LISTENING_HUB_SOURCE follows it)
+T2 source_tree: the --source tree is also on PYTHONPATH and LISTENING_HUB_SOURCE is unset: the --source tree is used, not the default tree
+T3 source_tree: the same when --source is spelled differently from the PYTHONPATH entry (trailing slash)
+T4 source_tree: the same when PYTHONPATH lists the --source tree after the default tree
+T5 source_tree: the dev loop's PYTHONPATH export alone is not a choice: LISTENING_HUB_SOURCE names another tree and that tree wins
+T6 source_tree: the PYTHONPATH export alone, no LISTENING_HUB_SOURCE: the default tree
+T7 source_tree: another tree only exported on PYTHONPATH (never put first on sys.path by the caller) is not a choice either: LISTENING_HUB_SOURCE wins
+T8 source_tree: control, a --source tree that is not on PYTHONPATH still wins over LISTENING_HUB_SOURCE
+C1 the CHANGELOG [Unreleased] section records the inspect addition: scene-loop shedding status
