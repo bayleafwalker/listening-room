@@ -5,6 +5,16 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- Stopping the window with Ctrl+C in the terminal that started it, while a room played on Now,
+  could end in a crash (segfault) as the process exited: GTK's video sink kept handing over the
+  loop's frames, and with the main loop gone a frame update ran on GStreamer's own thread, into
+  Python while it was shutting down. On the way out the window now pauses its room loops and waits
+  for them to come to rest (at most a second), and its thread keeps the main context to the end, so
+  no frame reaches Python off that thread. The loops are only paused, as when they are off screen.
+  Test harnesses that drive the window by hand, and exited with a segfault after their last check,
+  are covered too.
+
 ## [2.7.0] - 2026-11-24
 
 ### Added

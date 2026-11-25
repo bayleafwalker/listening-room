@@ -377,6 +377,7 @@ def _gst_known():
 # Each stop leaves the old file source referenced (not by this code), so its file is closed (_sweep).
 DECODER_THREADS = 1
 LOOP_LIMIT = 12           # loop files that may hold a pipeline: the catalogue's, plus a few of your own
+EXIT_PAUSE_MS = 1000      # at exit, how long the loops may take to come to rest
 RELEASE_MS = 1000         # an unwanted loop waits this long before it stops (leaving a preview to enter keeps it)
 TRIM_MS = 500             # after a release: close old sources' files and trim the heap (looked at again until done)
 WARM_MS = 1000            # after the first shed: GDK's download set-up waits for this long without input, repaint
@@ -628,6 +629,16 @@ def _load_play(ctypes):
         gst.gst_object_unref(pipeline)
         return state.value <= 2 and pending.value == 0       # GST_STATE_READY, GST_STATE_VOID_PENDING
 
+    def still(player):
+        """Whether the player's pipeline is paused (or below) with no state change pending: nothing streams."""
+        pipeline = play.gst_play_get_pipeline(player)
+        if not pipeline:
+            return True
+        state, pending = ctypes.c_int(), ctypes.c_int()
+        gst.gst_element_get_state(pipeline, ctypes.byref(state), ctypes.byref(pending), 0)
+        gst.gst_object_unref(pipeline)
+        return state.value <= 3 and pending.value == 0       # GST_STATE_PAUSED, GST_STATE_VOID_PENDING
+
     shed = renew = None
     if (Gtk.get_major_version(), Gtk.get_minor_version(), Gtk.get_micro_version()) == SHED_GTK:
         try:
@@ -635,7 +646,7 @@ def _load_play(ctypes):
         except (OSError, AttributeError):     # no libgstgl: stopped loops keep their sink, as before
             pass
     _PLAY.update(stop=play.gst_play_stop, type=play.gst_play_get_type(), is_a=gobject.g_type_check_instance_is_a,
-                 address=address, source=source, close=close, stopped=stopped, shed=shed, renew=renew,
+                 address=address, source=source, close=close, stopped=stopped, still=still, shed=shed, renew=renew,
                  unref=gobject.g_object_unref,
                  sources=[], stopping=[], tries=0)
 
@@ -863,6 +874,46 @@ def shared_loop(path):
 # A source that never fires holds the loops from C, so interpreter shutdown never finalizes one
 # (that would be a teardown too); the process exits with them paused.
 GLib.timeout_add_seconds(GLib.MAXINT32, lambda *_: True, _LOOPS)
+
+
+def hold_main_context():
+    """Make the calling (GTK) thread the owner of the default main context for the rest of the process.
+
+    GTK's video sink hands each decoded frame to the default main context with g_main_context_invoke.
+    When no thread owns that context, GLib runs the hand-off at once on the GStreamer streaming thread:
+    the paintable invalidates and FocalPicture._changed runs there, off the GTK thread. Nobody owns the
+    context after Gtk.Application.run() returns, nor between the iterations of a hand-pumped loop, so
+    a loop still delivering frames while the interpreter shuts down called into Python on a streaming
+    thread and the process died with SIGSEGV at exit. Owned, the hand-off waits in the context for the
+    GTK thread instead (and is dropped at exit). Ownership is recursive, so run() and iteration() on
+    this thread still work. Idempotent per thread."""
+    context = GLib.MainContext.default()
+    if not context.is_owner() and not context.acquire():
+        raise RuntimeError('the default main context is owned by another thread')
+
+
+def _rest_loops_at_exit():
+    """Before the interpreter finalizes: pause every loop and wait (EXIT_PAUSE_MS at most) until each pipeline
+    is paused or below, with no state change pending. Owning the main context covers a frame handed over
+    while Python runs, but not the rest of the way out: with a room playing on Now when Ctrl+C ended the
+    window, a frame was handed over after the last Python exit handler, ran on the streaming thread and
+    called into the finalized interpreter (SIGSEGV). A paused pipeline hands over no frames. This is the
+    pause a loop gets off screen: the MediaFile and its GstPlay (and its thread) stay, never cleared,
+    stopped or finalized."""
+    import time
+    for loop in _LOOPS.values():
+        if loop.media.get_playing():
+            loop.media.pause()
+    waiting = [loop for loop in _LOOPS.values() if loop.player is not None and 'still' in _PLAY]
+    deadline = time.monotonic() + EXIT_PAUSE_MS / 1000
+    while waiting and time.monotonic() < deadline:
+        waiting = [loop for loop in waiting if not _PLAY['still'](loop.player)]
+        if waiting:
+            time.sleep(.01)
+
+
+import atexit  # noqa: E402
+atexit.register(_rest_loops_at_exit)
 
 
 class Scene(Gtk.Overlay):

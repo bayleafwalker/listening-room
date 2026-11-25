@@ -58,6 +58,22 @@ class WindowSmoke(unittest.TestCase):
                 return True
         return False
 
+    def test_a_hand_off_to_the_main_context_from_another_thread_runs_on_the_gtk_thread(self):
+        # GTK's video sink hands each frame to the default context with g_main_context_invoke. With
+        # nobody owning the context (between hand-pumped iterations, or after Application.run returns)
+        # GLib ran it on the streaming thread, and at exit that crashed the interpreter.
+        GLib = self.env.GLib
+        context = GLib.MainContext.default()
+        ran = []
+        worker = threading.Thread(target=lambda: context.invoke_full(
+            GLib.PRIORITY_DEFAULT, lambda *_: ran.append(threading.current_thread()) and False))
+        worker.start()
+        worker.join(5)
+        self.assertEqual(ran, [], 'the hand-off ran on the worker thread, not in the main context')
+        self.env.pump(.2)
+        self.assertEqual(ran, [threading.main_thread()])
+        self.assertTrue(context.is_owner(), 'the GTK thread does not own the default main context')
+
     def test_every_surface_draws(self):
         env = self.env
         window = env.launch(page='rooms')
