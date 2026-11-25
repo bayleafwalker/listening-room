@@ -5,6 +5,8 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-11-25
+
 ### Added
 - `listening-roomctl inspect` reports `scene_loop_shedding`: whether the open window's off-screen
   room loops give back their video output, or why not (another GTK version, no GStreamer GL
